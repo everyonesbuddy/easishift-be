@@ -54,12 +54,8 @@ exports.createCheckoutSession = async (req, res, next) => {
       subscription_data: {
         metadata: { tenantId, planKey },
       },
-      success_url: `${
-        process.env.FRONTEND_URL || "http://localhost:3000"
-      }/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${
-        process.env.FRONTEND_URL || "http://localhost:3000"
-      }/billing/cancel`,
+      success_url: `http://localhost:3000/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `http://localhost:3000/billing/cancel`,
     });
 
     res.status(200).json({ url: session.url, id: session.id });

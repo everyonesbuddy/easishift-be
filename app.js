@@ -27,20 +27,45 @@ if (process.env.NODE_ENV === "development") {
 }
 
 // ✅ Middleware
-// Stripe requires the raw request body for webhook signature verification.
-// We mount a raw parser specifically for the webhook path before the
-// general JSON parser.
-app.use("/api/v1/stripe/webhook", bodyParser.raw({ type: "application/json" }));
-
-app.use(express.json({ limit: "5mb" }));
-app.use(cookieParser());
+// JSON parser with Stripe webhook-safe verification.
+// Capture raw request body for Stripe webhook endpoints so signature
+// verification code can use `req.rawBody`.
 app.use(
-  cors({
-    origin: "http://localhost:5173", // You can later restrict this to your frontend domain
-    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-    credentials: true,
+  express.json({
+    limit: "5mb",
+    verify: (req, res, buf) => {
+      const url = req.originalUrl || req.url || "";
+      if (url.startsWith("/api/v1/stripe/webhook")) {
+        req.rawBody = buf.toString();
+      }
+    },
   })
 );
+
+app.use(cookieParser());
+
+// CORS: allow production site and local dev. Use a whitelist and echo origin
+// back when credentials are required. Stripe webhooks and other server-to-
+// server calls will have no Origin and are allowed.
+const whitelist = ["https://easishift.com", "http://localhost:5173"];
+
+app.use(
+  cors({
+    origin: function (origin, callback) {
+      if (!origin) return callback(null, true); // allow server-to-server (Stripe, etc.)
+      if (whitelist.indexOf(origin) !== -1) {
+        return callback(null, true);
+      }
+      return callback(new Error("CORS not allowed"));
+    },
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    credentials: true,
+    allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
+  })
+);
+
+// Enable preflight for all routes
+app.options("*", cors());
 
 // ✅ Cron job example: send appointment reminders daily at 8 AM
 cron.schedule("0 8 * * *", async () => {

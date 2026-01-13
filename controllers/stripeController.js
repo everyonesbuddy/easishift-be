@@ -78,7 +78,15 @@ exports.handleWebhook = async (req, res) => {
 
   let event;
   try {
-    event = stripe.webhooks.constructEvent(req.body, sig, webhookSecret);
+    // Prefer rawBody captured by the express.json verify hook or route-level raw
+    // body parser. If not available, stringify the parsed body as a fallback
+    // (useful for local dev where signature verification may not be strict).
+    let payload = req.rawBody || req.body;
+    if (payload && typeof payload !== "string" && !Buffer.isBuffer(payload)) {
+      payload = JSON.stringify(payload);
+    }
+
+    event = stripe.webhooks.constructEvent(payload, sig, webhookSecret);
   } catch (err) {
     console.error("⚠️  Webhook signature verification failed.", err.message);
     return res.status(400).send(`Webhook Error: ${err.message}`);

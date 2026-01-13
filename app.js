@@ -64,8 +64,8 @@ app.use(
   })
 );
 
-// Enable preflight for all routes
-app.options("*", cors());
+// Note: no explicit app.options('*') call because some path parsers reject '*'.
+// The CORS middleware applied above will handle preflight requests.
 
 // ✅ Cron job example: send appointment reminders daily at 8 AM
 cron.schedule("0 8 * * *", async () => {

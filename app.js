@@ -34,17 +34,10 @@ app.use("/api/v1/stripe/webhook", bodyParser.raw({ type: "application/json" }));
 
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
-// app.use(
-//   cors({
-//     origin: "http://localhost:5173", // You can later restrict this to your frontend domain
-//     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
-//     credentials: true,
-//   })
-// );
 app.use(
   cors({
-    origin: "*",
-    methods: ["GET", "PUT", "POST", "DELETE", "OPTIONS", "PATCH"],
+    origin: "http://localhost:5173", // You can later restrict this to your frontend domain
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     credentials: true,
   })
 );

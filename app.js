@@ -1,6 +1,7 @@
 const express = require("express");
 const cors = require("cors");
 const cookieParser = require("cookie-parser");
+const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const cron = require("node-cron");
 const { sendPendingReminders } = require("./utils/scheduleJobs");
@@ -16,6 +17,7 @@ const scheduleRoutes = require("./routes/scheduleRoutes");
 const timeOffRoutes = require("./routes/timeOffRoutes");
 const coverageRoutes = require("./routes/coverageRoutes");
 const preferencesRoutes = require("./routes/preferencesRoutes");
+const stripeRoutes = require("./routes/stripeRoutes");
 
 const app = express();
 
@@ -25,6 +27,11 @@ if (process.env.NODE_ENV === "development") {
 }
 
 // ✅ Middleware
+// Stripe requires the raw request body for webhook signature verification.
+// We mount a raw parser specifically for the webhook path before the
+// general JSON parser.
+app.use("/api/v1/stripe/webhook", bodyParser.raw({ type: "application/json" }));
+
 app.use(express.json({ limit: "5mb" }));
 app.use(cookieParser());
 app.use(
@@ -68,6 +75,7 @@ app.use("/api/v1/schedules", scheduleRoutes);
 app.use("/api/v1/timeoff", timeOffRoutes);
 app.use("/api/v1/coverage", coverageRoutes);
 app.use("/api/v1/preferences", preferencesRoutes);
+app.use("/api/v1/stripe", stripeRoutes);
 
 // ✅ Global Error Handler
 app.use(errorHandler);

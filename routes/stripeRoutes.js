@@ -4,6 +4,7 @@ const bodyParser = require("body-parser");
 const {
   createCheckoutSession,
   handleWebhook,
+  cancelSubscription,
 } = require("../controllers/stripeController");
 
 const auth = require("../middleware/authMiddleware");
@@ -25,6 +26,15 @@ router.post(
   tenant,
   restrictTo("admin"),
   createCheckoutSession
+);
+
+// Cancel subscription (admin)
+router.post(
+  "/cancel-subscription",
+  auth,
+  tenant,
+  restrictTo("admin"),
+  cancelSubscription
 );
 
 module.exports = router;

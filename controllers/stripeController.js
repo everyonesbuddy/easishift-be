@@ -69,6 +69,66 @@ exports.createCheckoutSession = async (req, res, next) => {
 };
 
 /**
+ * Cancel a subscription for the current tenant (admin only).
+ * Body params: { subscriptionId?, atPeriodEnd?: boolean }
+ * If subscriptionId is not provided, the tenant's stripeSubscriptionId is used.
+ */
+exports.cancelSubscription = async (req, res, next) => {
+  try {
+    const atPeriodEnd =
+      req.body.atPeriodEnd === true || req.query.atPeriodEnd === "true";
+
+    // Expect tenant middleware to have set req.tenantId for protected routes
+    const tenantId = req.tenantId || (req.user && req.user.tenantId);
+    if (!tenantId)
+      return res.status(400).json({ message: "Tenant context required" });
+
+    const requestedSubscriptionId = req.body.subscriptionId || null;
+
+    // Load tenant to find subscription if not passed
+    const tenant = await Tenant.findById(tenantId);
+    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+
+    const subscriptionId =
+      requestedSubscriptionId || tenant.stripeSubscriptionId;
+    if (!subscriptionId)
+      return res
+        .status(400)
+        .json({ message: "No subscriptionId provided or found for tenant" });
+
+    let subscription;
+    if (atPeriodEnd) {
+      subscription = await stripe.subscriptions.update(subscriptionId, {
+        cancel_at_period_end: true,
+      });
+    } else {
+      subscription = await stripe.subscriptions.del(subscriptionId);
+    }
+
+    // Prepare tenant update based on result
+    const update = {
+      subscriptionStatus:
+        subscription.status ||
+        (subscription.cancel_at_period_end ? "active" : undefined),
+    };
+
+    // If fully canceled, clear plan and subscription fields
+    if (!atPeriodEnd && subscription.status === "canceled") {
+      update.planKey = null;
+      update.seatLimit = 1;
+      update.stripeSubscriptionId = null;
+      update.stripePriceId = null;
+    }
+
+    await Tenant.findByIdAndUpdate(tenantId, update, { new: true });
+
+    res.status(200).json({ success: true, subscription });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * Stripe Webhook handler.
  * Verifies signature and updates Tenant billing info and seatLimit.
  */

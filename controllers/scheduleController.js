@@ -5,6 +5,7 @@ const Preferences = require("../models/preferencesModel");
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const { hasConflict } = require("../utils/scheduleUtils");
+const { sendEmail } = require("../utils/sendEmail");
 
 // AUTO-GENERATE SCHEDULE FOR SELECTED COVERAGES
 exports.autoGenerateSchedule = async (req, res, next) => {
@@ -75,7 +76,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     });
 
     console.log(
-      `Loaded existing schedules for ${existingSchedules.length} shifts`
+      `Loaded existing schedules for ${existingSchedules.length} shifts`,
     );
 
     const generated = [];
@@ -83,7 +84,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     // 4) LOOP THROUGH COVERAGES
     for (const cov of coverageList) {
       console.log(
-        `\nProcessing coverage: ${cov._id}, role: ${cov.role}, start: ${cov.startTime}, end: ${cov.endTime}`
+        `\nProcessing coverage: ${cov._id}, role: ${cov.role}, start: ${cov.startTime}, end: ${cov.endTime}`,
       );
 
       const weekday = cov.date.getUTCDay();
@@ -117,19 +118,19 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           timeOffMap[id]?.some(
             (to) =>
               new Date(to.start) <= cov.endTime &&
-              new Date(to.end) >= cov.startTime
+              new Date(to.end) >= cov.startTime,
           )
         ) {
           skipReason = `has approved time off overlapping coverage`;
         } else if (
           existingByStaff[id]?.some(
-            (s) => !(s.endTime <= cov.startTime || s.startTime >= cov.endTime)
+            (s) => !(s.endTime <= cov.startTime || s.startTime >= cov.endTime),
           )
         ) {
           skipReason = `already scheduled for overlapping shift`;
         } else if (
           existingByStaff[id]?.some(
-            (s) => Math.abs(s.endTime - cov.startTime) < 30 * 60 * 1000
+            (s) => Math.abs(s.endTime - cov.startTime) < 30 * 60 * 1000,
           )
         ) {
           skipReason = `less than 30 min break from previous shift`;
@@ -152,7 +153,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         (s) =>
           s.role === cov.role &&
           s.startTime.getTime() === cov.startTime.getTime() &&
-          s.endTime.getTime() === cov.endTime.getTime()
+          s.endTime.getTime() === cov.endTime.getTime(),
       );
 
       const needed = cov.requiredCount - alreadyAssigned.length;
@@ -164,7 +165,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       }
 
       available = available.sort(
-        (a, b) => (workload[a._id] || 0) - (workload[b._id] || 0)
+        (a, b) => (workload[a._id] || 0) - (workload[b._id] || 0),
       );
 
       const selected = available.slice(0, needed);
@@ -183,7 +184,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         });
 
         console.log(
-          `Assigned staff ${staff.name} (${staff._id}) to coverage ${cov._id}`
+          `Assigned staff ${staff.name} (${staff._id}) to coverage ${cov._id}`,
         );
 
         generated.push(newShift);
@@ -194,11 +195,46 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         existingSchedules.push(newShift);
         if (!existingByStaff[staff._id]) existingByStaff[staff._id] = [];
         existingByStaff[staff._id].push(newShift);
+
+        // Notify staff by email about the new assignment (best-effort)
+        try {
+          if (staff.email) {
+            const subject = `New shift assigned: ${cov.role} - ${cov.startTime.toUTCString()}`;
+            const html = `
+              <p>Hi ${staff.name || "team member"},</p>
+              <p>You have been assigned a new shift:</p>
+              <ul>
+                <li><strong>Role:</strong> ${cov.role}</li>
+                <li><strong>Start (UTC):</strong> ${cov.startTime.toUTCString()}</li>
+                <li><strong>End (UTC):</strong> ${cov.endTime.toUTCString()}</li>
+                <li><strong>Notes:</strong> Auto-generated</li>
+              </ul>
+              <p>Please contact your admin if you have any questions.</p>
+            `;
+
+            const result = await sendEmail(staff.email, subject, html);
+            if (result && result.success) {
+              console.log(
+                `Notification email sent to ${staff.email} for shift ${newShift._id}`,
+              );
+            } else {
+              console.error(
+                `Notification email failed for ${staff.email} (shift ${newShift._id}):`,
+                result && result.error ? result.error : "unknown error",
+              );
+            }
+          }
+        } catch (err) {
+          console.error(
+            `Failed to send assignment email to ${staff._id}:`,
+            err && err.message ? err.message : err,
+          );
+        }
       }
     }
 
     console.log(
-      `\nAuto-scheduling complete, ${generated.length} shift(s) generated`
+      `\nAuto-scheduling complete, ${generated.length} shift(s) generated`,
     );
 
     res.json({
@@ -243,6 +279,42 @@ exports.createSchedule = async (req, res, next) => {
       status: "scheduled",
       meta: { createdBy: req.user._id },
     });
+
+    // Notify assigned staff (best-effort)
+    try {
+      const staff = await User.findById(staffId);
+      if (staff && staff.email) {
+        const subject = `New shift assigned: ${role} - ${new Date(startTime).toUTCString()}`;
+        const html = `
+          <p>Hi ${staff.name || "team member"},</p>
+          <p>You have been assigned a new shift:</p>
+          <ul>
+            <li><strong>Role:</strong> ${role}</li>
+            <li><strong>Start (UTC):</strong> ${new Date(startTime).toUTCString()}</li>
+            <li><strong>End (UTC):</strong> ${new Date(endTime).toUTCString()}</li>
+            <li><strong>Notes:</strong> ${notes || ""}</li>
+          </ul>
+          <p>Please contact your admin if you have any questions.</p>
+        `;
+
+        const result = await sendEmail(staff.email, subject, html);
+        if (result && result.success) {
+          console.log(
+            `Notification email sent to ${staff.email} for schedule ${schedule._id}`,
+          );
+        } else {
+          console.error(
+            `Notification email failed for ${staff.email} (schedule ${schedule._id}):`,
+            result && result.error ? result.error : "unknown error",
+          );
+        }
+      }
+    } catch (err) {
+      console.error(
+        `Failed to send assignment email for schedule ${schedule._id}:`,
+        err && err.message ? err.message : err,
+      );
+    }
 
     res.status(201).json(schedule);
   } catch (err) {
@@ -330,7 +402,7 @@ exports.updateSchedule = async (req, res, next) => {
     const updated = await Schedule.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
       updates,
-      { new: true }
+      { new: true },
     ).populate("staffId", "-passwordHash");
 
     if (!updated)

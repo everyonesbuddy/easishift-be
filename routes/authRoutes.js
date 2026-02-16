@@ -15,6 +15,8 @@ const {
   registerStaff,
   loginStaff,
   changePassword,
+  forgotPassword,
+  resetPassword,
   getAllUsers,
   getUserById,
   updateUser,
@@ -36,6 +38,10 @@ router.post("/login/staff", loginStaff);
 
 // Change passwords
 router.patch("/change-password", auth, changePassword);
+
+// Forgot/reset password
+router.post("/forgot-password", forgotPassword);
+router.post("/reset-password", resetPassword);
 
 // Get all users (optionally filter by role)
 router.get("/users", auth, tenant, getAllUsers);

@@ -43,7 +43,7 @@ const scheduleSchema = new mongoose.Schema(
       publishedAt: Date,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Simple validation: start must be before end

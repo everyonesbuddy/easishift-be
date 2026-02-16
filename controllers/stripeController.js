@@ -4,14 +4,51 @@ const Tenant = require("../models/tenantModel");
 // Use env key but allow a fallback dummy to avoid crashes in dev without env set
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 
-// Plan mapping: planKey -> price (cents) and seats (yearly plans)
+// Plan mapping: planKey -> price (cents) and seats
 // Prices are in cents: $3000 -> 300000 cents
+const yearlyStarterPriceCents = 300000;
+const yearlyGrowthPriceCents = 500000;
+const yearlyPremiumPriceCents = 700000;
+
+const monthlyFromYearly = (yearlyPriceCents) =>
+  Math.round((yearlyPriceCents / 12) * 1.2);
+
 const PLANS = {
-  starter: { priceCents: 300000, seats: 10, name: "Starter" },
-  growth: { priceCents: 500000, seats: 20, name: "Growth" },
-  premium: { priceCents: 700000, seats: 30, name: "Premium" },
-  test: { priceCents: 200, seats: 12, name: "Test" },
+  starterYearly: {
+    priceCents: yearlyStarterPriceCents,
+    seats: 10,
+    name: "Starter Yearly",
+  },
+  growthYearly: {
+    priceCents: yearlyGrowthPriceCents,
+    seats: 20,
+    name: "Growth Yearly",
+  },
+  premiumYearly: {
+    priceCents: yearlyPremiumPriceCents,
+    seats: 30,
+    name: "Premium Yearly",
+  },
+  starterMonthly: {
+    priceCents: monthlyFromYearly(yearlyStarterPriceCents),
+    seats: 10,
+    name: "Starter Monthly",
+  },
+  growthMonthly: {
+    priceCents: monthlyFromYearly(yearlyGrowthPriceCents),
+    seats: 20,
+    name: "Growth Monthly",
+  },
+  premiumMonthly: {
+    priceCents: monthlyFromYearly(yearlyPremiumPriceCents),
+    seats: 30,
+    name: "Premium Monthly",
+  },
+  // test: { priceCents: 200, seats: 12, name: "Test" },
 };
+
+const intervalFromPlanKey = (planKey) =>
+  planKey && planKey.toLowerCase().endsWith("monthly") ? "month" : "year";
 
 /**
  * Create a Checkout Session for a tenant to purchase a subscription.
@@ -40,8 +77,8 @@ exports.createCheckoutSession = async (req, res, next) => {
         {
           price_data: {
             currency: "usd",
-            product_data: { name: `${plan.name} plan (Patient Communication)` },
-            recurring: { interval: "year" },
+            product_data: { name: `${plan.name} plan (EasiShift)` },
+            recurring: { interval: intervalFromPlanKey(planKey) },
             unit_amount: plan.priceCents,
           },
           quantity: 1,
@@ -187,12 +224,12 @@ exports.handleWebhook = async (req, res) => {
 
         // Remove undefined fields
         Object.keys(update).forEach(
-          (k) => update[k] === undefined && delete update[k]
+          (k) => update[k] === undefined && delete update[k],
         );
 
         await Tenant.findByIdAndUpdate(tenantId, update, { new: true });
         console.log(
-          `✅ Tenant ${tenantId} updated after checkout.session.completed`
+          `✅ Tenant ${tenantId} updated after checkout.session.completed`,
         );
       }
     }
@@ -204,7 +241,7 @@ exports.handleWebhook = async (req, res) => {
       if (subscriptionId) {
         await Tenant.findOneAndUpdate(
           { stripeSubscriptionId: subscriptionId },
-          { subscriptionStatus: "active" }
+          { subscriptionStatus: "active" },
         );
       }
     }
@@ -216,7 +253,7 @@ exports.handleWebhook = async (req, res) => {
       if (subscriptionId) {
         await Tenant.findOneAndUpdate(
           { stripeSubscriptionId: subscriptionId },
-          { subscriptionStatus: "past_due" }
+          { subscriptionStatus: "past_due" },
         );
       }
     }
@@ -231,16 +268,23 @@ exports.handleWebhook = async (req, res) => {
       const status = subscription.status; // active, past_due, canceled, incomplete
 
       // Try to map price -> planKey if possible
-      let planKey = null;
-      if (
-        subscription.items &&
-        subscription.items.data &&
-        subscription.items.data[0]
-      ) {
-        const unitAmount = subscription.items.data[0].price.unit_amount;
-        planKey =
-          Object.keys(PLANS).find((k) => PLANS[k].priceCents === unitAmount) ||
-          null;
+      let planKey = subscription.metadata && subscription.metadata.planKey;
+      if (!planKey) {
+        if (
+          subscription.items &&
+          subscription.items.data &&
+          subscription.items.data[0]
+        ) {
+          const price = subscription.items.data[0].price;
+          const unitAmount = price.unit_amount;
+          const interval = price.recurring && price.recurring.interval;
+          planKey =
+            Object.keys(PLANS).find(
+              (k) =>
+                PLANS[k].priceCents === unitAmount &&
+                intervalFromPlanKey(k) === interval,
+            ) || null;
+        }
       }
 
       const update = { subscriptionStatus: status };
@@ -251,7 +295,7 @@ exports.handleWebhook = async (req, res) => {
 
       await Tenant.findOneAndUpdate(
         { stripeSubscriptionId: subscriptionId },
-        update
+        update,
       );
     }
 

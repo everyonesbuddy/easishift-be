@@ -5,7 +5,7 @@ const Schedule = require("../models/scheduleModel");
 function normalizeToUTC(date) {
   const d = new Date(date);
   return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate())
+    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
   );
 }
 
@@ -15,21 +15,31 @@ exports.createCoverage = async (req, res, next) => {
     if (req.user.role !== "admin")
       return res.status(403).json({ message: "Admins only" });
 
-    const { date, role, requiredCount, note, startTime, endTime } = req.body;
+    const { dates, date, role, requiredCount, note, startTime, endTime } =
+      req.body;
 
-    const normalizedDate = normalizeToUTC(date);
+    const inputDates = Array.isArray(dates) ? dates : date ? [date] : [];
 
-    const doc = await Coverage.create({
+    if (!inputDates.length)
+      return res.status(400).json({ message: "dates is required" });
+
+    const docs = inputDates.map((d) => ({
       tenantId: req.tenantId,
-      date: normalizedDate,
+      date: normalizeToUTC(d),
       role,
       startTime, // already UTC
       endTime, // already UTC
       requiredCount,
       note,
-    });
+    }));
 
-    res.status(201).json(doc);
+    if (docs.length === 1 && !Array.isArray(dates)) {
+      const doc = await Coverage.create(docs[0]);
+      return res.status(201).json(doc);
+    }
+
+    const created = await Coverage.create(docs);
+    res.status(201).json(created);
   } catch (err) {
     next(err);
   }
@@ -75,7 +85,7 @@ exports.updateCoverage = async (req, res, next) => {
     const updated = await Coverage.findOneAndUpdate(
       { _id: id, tenantId: req.tenantId },
       update,
-      { new: true }
+      { new: true },
     );
 
     if (!updated)

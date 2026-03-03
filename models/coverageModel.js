@@ -18,7 +18,22 @@ const coverageSchema = new mongoose.Schema(
 
     role: {
       type: String,
-      enum: ["doctor", "nurse", "receptionist", "billing", "staff", "other"],
+      enum: [
+        "doctor",
+        "nurse",
+        "receptionist",
+        "billing",
+        "staff",
+        "rn", // Registered Nurse
+        "lpn", // Licensed Practical Nurse
+        "cna", // Certified Nursing Assistant
+        "med_aide", // Medication Aide / Med Tech
+        "caregiver", // Direct Care Worker
+        "activity_aide",
+        "dietary_aide",
+        "housekeeper",
+        "other",
+      ],
       required: true,
       index: true,
     },
@@ -41,13 +56,13 @@ const coverageSchema = new mongoose.Schema(
 
     note: { type: String },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 // Prevent duplicate coverage/shifts entries for same tenant, date, role, and shift time
 coverageSchema.index(
   { tenantId: 1, date: 1, role: 1, startTime: 1, endTime: 1 },
-  { unique: true }
+  { unique: true },
 );
 
 module.exports = mongoose.model("Coverage", coverageSchema);

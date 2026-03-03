@@ -2,6 +2,25 @@
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const { sendEmail } = require("../utils/sendEmail");
+const { sendSMS } = require("../utils/sendSMS");
+
+const buildE164Number = (countryCode, phone) => {
+  if (!phone) return null;
+
+  const rawPhone = String(phone).trim();
+  if (!rawPhone) return null;
+  if (rawPhone.startsWith("+")) return rawPhone;
+
+  if (!countryCode) return null;
+  const normalizedCountryCode = String(countryCode).trim();
+  if (!normalizedCountryCode) return null;
+
+  const prefix = normalizedCountryCode.startsWith("+")
+    ? normalizedCountryCode
+    : `+${normalizedCountryCode}`;
+
+  return `${prefix}${rawPhone}`;
+};
 
 // Create request (staff)
 exports.requestTimeOff = async (req, res, next) => {
@@ -12,7 +31,7 @@ exports.requestTimeOff = async (req, res, next) => {
         .status(400)
         .json({ message: "startTime and endTime required" });
 
-    const to = await TimeOff.create({
+    const timeOffRequest = await TimeOff.create({
       tenantId: req.tenantId,
       staffId: req.user._id,
       startTime,
@@ -25,7 +44,7 @@ exports.requestTimeOff = async (req, res, next) => {
       const admins = await User.find({
         tenantId: req.tenantId,
         role: "admin",
-      }).select("name email");
+      }).select("name email userPhone userPhoneCountryCode");
       if (admins && admins.length) {
         const recipients = admins.map((a) => a.email).filter(Boolean);
         if (recipients.length) {
@@ -45,24 +64,45 @@ exports.requestTimeOff = async (req, res, next) => {
           const result = await sendEmail(recipients, subject, html);
           if (result && result.success) {
             console.log(
-              `Notification email sent to admins for time-off request ${to._id}`,
+              `Notification email sent to admins for time-off request ${timeOffRequest._id}`,
             );
           } else {
             console.error(
-              `Notification email failed for time-off request ${to._id}:`,
+              `Notification email failed for time-off request ${timeOffRequest._id}:`,
               result && result.error ? result.error : "unknown error",
+            );
+          }
+        }
+
+        for (const admin of admins) {
+          const adminPhone = buildE164Number(
+            admin.userPhoneCountryCode,
+            admin.userPhone,
+          );
+          if (!adminPhone) continue;
+
+          const smsBody = `${req.user.name || "A staff member"} requested time off. Start (UTC): ${new Date(startTime).toUTCString()}. End (UTC): ${new Date(endTime).toUTCString()}.`;
+          const smsResult = await sendSMS(adminPhone, smsBody);
+          if (smsResult && smsResult.success) {
+            console.log(
+              `Notification SMS sent to admin ${adminPhone} for time-off request ${timeOffRequest._id}`,
+            );
+          } else {
+            console.error(
+              `Notification SMS failed for admin ${adminPhone} (time-off request ${timeOffRequest._id}):`,
+              smsResult && smsResult.error ? smsResult.error : "unknown error",
             );
           }
         }
       }
     } catch (err) {
       console.error(
-        `Error sending time-off notification emails:`,
+        `Error sending time-off notifications:`,
         err && err.message ? err.message : err,
       );
     }
 
-    res.status(201).json(to);
+    res.status(201).json(timeOffRequest);
   } catch (err) {
     next(err);
   }
@@ -100,7 +140,9 @@ exports.reviewTimeOff = async (req, res, next) => {
 
     // Notify staff about the decision (best-effort)
     try {
-      const staff = await User.findById(updated.staffId).select("name email");
+      const staff = await User.findById(updated.staffId).select(
+        "name email userPhone userPhoneCountryCode",
+      );
       if (staff && staff.email) {
         const subject = `Your time-off request has been ${status}`;
         const html = `
@@ -126,9 +168,27 @@ exports.reviewTimeOff = async (req, res, next) => {
           );
         }
       }
+
+      const to = staff
+        ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
+        : null;
+      if (to) {
+        const smsBody = `Your time-off request has been ${status}. Start (UTC): ${new Date(updated.startTime).toUTCString()}. End (UTC): ${new Date(updated.endTime).toUTCString()}.`;
+        const smsResult = await sendSMS(to, smsBody);
+        if (smsResult && smsResult.success) {
+          console.log(
+            `Notification SMS sent to ${to} for time-off ${updated._id}`,
+          );
+        } else {
+          console.error(
+            `Notification SMS failed for ${to} (time-off ${updated._id}):`,
+            smsResult && smsResult.error ? smsResult.error : "unknown error",
+          );
+        }
+      }
     } catch (err) {
       console.error(
-        `Error sending time-off decision email:`,
+        `Error sending time-off decision notifications:`,
         err && err.message ? err.message : err,
       );
     }

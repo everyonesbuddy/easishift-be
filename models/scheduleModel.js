@@ -17,7 +17,22 @@ const scheduleSchema = new mongoose.Schema(
     },
     role: {
       type: String,
-      enum: ["doctor", "nurse", "receptionist", "billing", "staff", "other"],
+      enum: [
+        "doctor",
+        "nurse",
+        "receptionist",
+        "billing",
+        "staff",
+        "rn", // Registered Nurse
+        "lpn", // Licensed Practical Nurse
+        "cna", // Certified Nursing Assistant
+        "med_aide", // Medication Aide / Med Tech
+        "caregiver", // Direct Care Worker
+        "activity_aide",
+        "dietary_aide",
+        "housekeeper",
+        "other",
+      ],
       required: true,
       index: true,
     },
@@ -33,7 +48,7 @@ const scheduleSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["scheduled", "completed", "cancelled"],
+      enum: ["scheduled", "completed", "call_out"],
       default: "scheduled",
     },
     notes: { type: String },

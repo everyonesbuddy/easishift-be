@@ -15,8 +15,8 @@ async function hasConflict({
   const filter = {
     tenantId,
     staffId,
-    // ignore completed or cancelled schedules when checking conflicts
-    status: { $nin: ["completed", "cancelled"] },
+    // ignore completed schedules when checking conflicts
+    status: { $nin: ["completed"] },
     $or: [
       // existing starts before new end AND existing ends after new start => overlap
       {

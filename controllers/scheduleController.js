@@ -6,6 +6,34 @@ const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
+const { sendSMS } = require("../utils/sendSMS");
+
+const buildE164Number = (countryCode, phone) => {
+  if (!phone) return null;
+
+  const rawPhone = String(phone).trim();
+  if (!rawPhone) return null;
+  if (rawPhone.startsWith("+")) return rawPhone;
+
+  if (!countryCode) return null;
+  const normalizedCountryCode = String(countryCode).trim();
+  if (!normalizedCountryCode) return null;
+
+  const prefix = normalizedCountryCode.startsWith("+")
+    ? normalizedCountryCode
+    : `+${normalizedCountryCode}`;
+
+  return `${prefix}${rawPhone}`;
+};
+
+const formatCoverageForMessage = (coverage) => ({
+  coverageId: coverage._id,
+  role: coverage.role,
+  date: new Date(coverage.date).toISOString(),
+  startTime: new Date(coverage.startTime).toISOString(),
+  endTime: new Date(coverage.endTime).toISOString(),
+  requiredCount: coverage.requiredCount,
+});
 
 // AUTO-GENERATE SCHEDULE FOR SELECTED COVERAGES
 exports.autoGenerateSchedule = async (req, res, next) => {
@@ -14,7 +42,12 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     if (!coverageIds || !Array.isArray(coverageIds) || !coverageIds.length) {
       console.log("No coverageIds provided");
-      return res.status(400).json({ message: "coverageIds are required" });
+      return res.status(400).json({
+        status: "error",
+        errorCode: "COVERAGE_IDS_REQUIRED",
+        message: "coverageIds are required",
+        hint: "Select at least one coverage and try AI-generate again.",
+      });
     }
 
     const tenantId = req.tenantId;
@@ -27,7 +60,12 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     if (!coverageList.length) {
       console.log("No valid coverage found");
-      return res.status(404).json({ message: "No valid coverage found" });
+      return res.status(404).json({
+        status: "error",
+        errorCode: "NO_VALID_COVERAGE_FOUND",
+        message: "No valid coverage found for the selected coverageIds",
+        hint: "Refresh coverage data and reselect open coverage items.",
+      });
     }
 
     console.log(`Found ${coverageList.length} coverage(s) to process`);
@@ -55,7 +93,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     console.log(`Loaded time-off records for ${timeOff.length} staff`);
 
-    // 3) LOAD EXISTING SCHEDULES (ignore completed/cancelled so they don't block auto-generation)
+    // 3) LOAD EXISTING SCHEDULES (ignore completed + legacy cancelled; keep call_out for availability checks)
     const existingSchedules = await Schedule.find({
       tenantId,
       status: { $nin: ["completed", "cancelled"] },
@@ -71,6 +109,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     const workload = {};
     existingSchedules.forEach((s) => {
+      if (s.status === "call_out") return;
       const minutes = (s.endTime - s.startTime) / 60000;
       workload[s.staffId] = (workload[s.staffId] || 0) + minutes;
     });
@@ -80,6 +119,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     );
 
     const generated = [];
+    const coverageResults = [];
+    const notifications = {
+      email: { sent: 0, failed: 0 },
+      sms: { sent: 0, failed: 0 },
+    };
 
     // 4) LOOP THROUGH COVERAGES
     for (const cov of coverageList) {
@@ -87,11 +131,20 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         `\nProcessing coverage: ${cov._id}, role: ${cov.role}, start: ${cov.startTime}, end: ${cov.endTime}`,
       );
 
+      const coverageMeta = formatCoverageForMessage(cov);
+
       const weekday = cov.date.getUTCDay();
 
       const roleStaff = await User.find({ tenantId, role: cov.role });
       if (!roleStaff.length) {
         console.log(`No staff found for role ${cov.role}`);
+        coverageResults.push({
+          ...coverageMeta,
+          status: "skipped",
+          reasonCode: "NO_STAFF_FOR_ROLE",
+          message: `No staff found with role ${cov.role}.`,
+          assignedCount: 0,
+        });
         continue;
       }
 
@@ -107,6 +160,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       // FILTER AVAILABLE STAFF
       let available = [];
+      const skippedByReason = {};
       for (const staff of roleStaff) {
         const id = staff._id.toString();
         const pref = prefMap[id];
@@ -114,6 +168,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
         if (pref?.unavailableDaysOfWeek?.includes(weekday)) {
           skipReason = `unavailable on weekday ${weekday}`;
+        } else if (
+          existingByStaff[id]?.some(
+            (s) =>
+              s.status === "call_out" &&
+              s.role === cov.role &&
+              s.startTime.getTime() === cov.startTime.getTime() &&
+              s.endTime.getTime() === cov.endTime.getTime(),
+          )
+        ) {
+          skipReason = `called out for this shift`;
         } else if (
           timeOffMap[id]?.some(
             (to) =>
@@ -137,6 +201,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         }
 
         if (skipReason) {
+          skippedByReason[skipReason] = (skippedByReason[skipReason] || 0) + 1;
           console.log(`Skipping staff ${staff.name} (${id}): ${skipReason}`);
         } else {
           available.push(staff);
@@ -146,11 +211,21 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       if (!available.length) {
         console.log("No available staff for this coverage");
+        coverageResults.push({
+          ...coverageMeta,
+          status: "skipped",
+          reasonCode: "NO_AVAILABLE_STAFF",
+          message:
+            "No eligible staff available due to conflicts, time off, call out, availability preferences, or break constraints.",
+          assignedCount: 0,
+          skippedByReason,
+        });
         continue;
       }
 
       const alreadyAssigned = existingSchedules.filter(
         (s) =>
+          s.status !== "call_out" &&
           s.role === cov.role &&
           s.startTime.getTime() === cov.startTime.getTime() &&
           s.endTime.getTime() === cov.endTime.getTime(),
@@ -161,6 +236,14 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       if (needed <= 0) {
         console.log("Coverage already fully assigned");
+        coverageResults.push({
+          ...coverageMeta,
+          status: "already_filled",
+          reasonCode: "ALREADY_FULLY_ASSIGNED",
+          message: "Coverage is already fully assigned.",
+          assignedCount: 0,
+          alreadyAssignedCount: alreadyAssigned.length,
+        });
         continue;
       }
 
@@ -169,6 +252,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       );
 
       const selected = available.slice(0, needed);
+      const assignmentDetails = [];
 
       for (const staff of selected) {
         const newShift = await Schedule.create({
@@ -188,6 +272,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         );
 
         generated.push(newShift);
+        assignmentDetails.push({
+          scheduleId: newShift._id,
+          staffId: staff._id,
+          staffName: staff.name,
+        });
 
         const minutes = (cov.endTime - cov.startTime) / 60000;
         workload[staff._id] = (workload[staff._id] || 0) + minutes;
@@ -214,37 +303,122 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
             const result = await sendEmail(staff.email, subject, html);
             if (result && result.success) {
+              notifications.email.sent += 1;
               console.log(
                 `Notification email sent to ${staff.email} for shift ${newShift._id}`,
               );
             } else {
+              notifications.email.failed += 1;
               console.error(
                 `Notification email failed for ${staff.email} (shift ${newShift._id}):`,
                 result && result.error ? result.error : "unknown error",
               );
             }
           }
+
+          const to = buildE164Number(
+            staff.userPhoneCountryCode,
+            staff.userPhone,
+          );
+          if (to) {
+            const smsBody = `New shift assigned: ${cov.role}. Start (UTC): ${cov.startTime.toUTCString()}. End (UTC): ${cov.endTime.toUTCString()}.`;
+            const smsResult = await sendSMS(to, smsBody);
+            if (smsResult && smsResult.success) {
+              notifications.sms.sent += 1;
+              console.log(
+                `Notification SMS sent to ${to} for shift ${newShift._id}`,
+              );
+            } else {
+              notifications.sms.failed += 1;
+              console.error(
+                `Notification SMS failed for ${to} (shift ${newShift._id}):`,
+                smsResult && smsResult.error
+                  ? smsResult.error
+                  : "unknown error",
+              );
+            }
+          }
         } catch (err) {
+          notifications.email.failed += staff.email ? 1 : 0;
+          notifications.sms.failed += buildE164Number(
+            staff.userPhoneCountryCode,
+            staff.userPhone,
+          )
+            ? 1
+            : 0;
           console.error(
-            `Failed to send assignment email to ${staff._id}:`,
+            `Failed to send assignment notifications to ${staff._id}:`,
             err && err.message ? err.message : err,
           );
         }
       }
+
+      const unfilledCount = Math.max(0, needed - selected.length);
+      coverageResults.push({
+        ...coverageMeta,
+        status: unfilledCount > 0 ? "partially_filled" : "filled",
+        message:
+          unfilledCount > 0
+            ? `Assigned ${selected.length} of ${needed} needed staff.`
+            : `Assigned ${selected.length} staff successfully.`,
+        assignedCount: selected.length,
+        neededCount: needed,
+        availableCount: available.length,
+        alreadyAssignedCount: alreadyAssigned.length,
+        unfilledCount,
+        skippedByReason,
+        assignments: assignmentDetails,
+      });
     }
 
     console.log(
       `\nAuto-scheduling complete, ${generated.length} shift(s) generated`,
     );
 
+    const summary = {
+      requestedCoverageIds: coverageIds.length,
+      processedCoverageCount: coverageList.length,
+      generatedShiftCount: generated.length,
+      filledCoverageCount: coverageResults.filter((r) => r.status === "filled")
+        .length,
+      partiallyFilledCoverageCount: coverageResults.filter(
+        (r) => r.status === "partially_filled",
+      ).length,
+      skippedCoverageCount: coverageResults.filter(
+        (r) => r.status === "skipped",
+      ).length,
+      alreadyFilledCoverageCount: coverageResults.filter(
+        (r) => r.status === "already_filled",
+      ).length,
+      notifications,
+    };
+
+    const successMessage = generated.length
+      ? `Auto-scheduling completed: ${generated.length} shift(s) generated across ${summary.filledCoverageCount + summary.partiallyFilledCoverageCount} coverage item(s).`
+      : "Auto-scheduling completed with no new shifts generated.";
+
+    const warningMessage = summary.skippedCoverageCount
+      ? `${summary.skippedCoverageCount} coverage item(s) were skipped. Review coverageResults for details.`
+      : null;
+
     res.json({
-      message: "Auto-scheduling complete",
+      status: "success",
+      message: successMessage,
+      warning: warningMessage,
+      summary,
+      coverageResults,
       generatedCount: generated.length,
       schedules: generated,
     });
   } catch (err) {
     console.error("Error in autoGenerateSchedule:", err);
-    next(err);
+    return res.status(500).json({
+      status: "error",
+      errorCode: "AUTO_SCHEDULE_FAILED",
+      message:
+        "Auto-scheduling failed. Please try again, and contact support if the issue persists.",
+      details: err && err.message ? err.message : "Unknown error",
+    });
   }
 };
 
@@ -309,9 +483,27 @@ exports.createSchedule = async (req, res, next) => {
           );
         }
       }
+
+      const to = staff
+        ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
+        : null;
+      if (to) {
+        const smsBody = `New shift assigned: ${role}. Start (UTC): ${new Date(startTime).toUTCString()}. End (UTC): ${new Date(endTime).toUTCString()}.`;
+        const smsResult = await sendSMS(to, smsBody);
+        if (smsResult && smsResult.success) {
+          console.log(
+            `Notification SMS sent to ${to} for schedule ${schedule._id}`,
+          );
+        } else {
+          console.error(
+            `Notification SMS failed for ${to} (schedule ${schedule._id}):`,
+            smsResult && smsResult.error ? smsResult.error : "unknown error",
+          );
+        }
+      }
     } catch (err) {
       console.error(
-        `Failed to send assignment email for schedule ${schedule._id}:`,
+        `Failed to send assignment notifications for schedule ${schedule._id}:`,
         err && err.message ? err.message : err,
       );
     }

@@ -16,7 +16,13 @@ const tenantSchema = new mongoose.Schema(
       trim: true,
     },
 
-    phone: {
+    tenantPhone: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    tenantPhoneCountryCode: {
       type: String,
       default: null,
       trim: true,
@@ -91,7 +97,7 @@ const tenantSchema = new mongoose.Schema(
       default: null,
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("Tenant", tenantSchema);

@@ -9,38 +9,173 @@ function normalizeToUTC(date) {
   );
 }
 
+function formatDuplicateSchedule({ date, role, startTime, endTime }) {
+  return {
+    date: new Date(date).toISOString(),
+    role,
+    startTime: new Date(startTime).toISOString(),
+    endTime: new Date(endTime).toISOString(),
+  };
+}
+
+function buildDuplicateSummary(duplicates) {
+  const preview = duplicates.slice(0, 3).map((item) => {
+    return `${item.role} (${item.date} | ${item.startTime} - ${item.endTime})`;
+  });
+
+  const remaining = duplicates.length - preview.length;
+  return remaining > 0
+    ? `${preview.join(", ")}, and ${remaining} more`
+    : preview.join(", ");
+}
+
 // CREATE
 exports.createCoverage = async (req, res, next) => {
   try {
     if (req.user.role !== "admin")
       return res.status(403).json({ message: "Admins only" });
 
-    const { dates, date, role, requiredCount, note, startTime, endTime } =
-      req.body;
+    const { dates, shifts } = req.body;
 
-    const inputDates = Array.isArray(dates) ? dates : date ? [date] : [];
-
-    if (!inputDates.length)
-      return res.status(400).json({ message: "dates is required" });
-
-    const docs = inputDates.map((d) => ({
-      tenantId: req.tenantId,
-      date: normalizeToUTC(d),
-      role,
-      startTime, // already UTC
-      endTime, // already UTC
-      requiredCount,
-      note,
-    }));
-
-    if (docs.length === 1 && !Array.isArray(dates)) {
-      const doc = await Coverage.create(docs[0]);
-      return res.status(201).json(doc);
+    if (!Array.isArray(dates) || !dates.length) {
+      return res
+        .status(400)
+        .json({ message: "dates is required and must be a non-empty array" });
     }
 
-    const created = await Coverage.create(docs);
+    if (!Array.isArray(shifts) || !shifts.length) {
+      return res.status(400).json({
+        message: "shifts is required and must be a non-empty array",
+      });
+    }
+
+    const normalizedDates = dates.map((d) => normalizeToUTC(d));
+    const hasInvalidDate = normalizedDates.some((d) =>
+      Number.isNaN(d.getTime()),
+    );
+    if (hasInvalidDate) {
+      return res.status(400).json({
+        message: "One or more dates are invalid",
+      });
+    }
+
+    for (const [index, shift] of shifts.entries()) {
+      if (!shift || typeof shift !== "object") {
+        return res.status(400).json({
+          message: `Shift at index ${index} must be an object`,
+        });
+      }
+
+      const { role, requiredCount, startTime, endTime } = shift;
+
+      if (!role || !startTime || !endTime) {
+        return res.status(400).json({
+          message: `Shift at index ${index} must include role, startTime, and endTime`,
+        });
+      }
+
+      const parsedStart = new Date(startTime);
+      const parsedEnd = new Date(endTime);
+
+      if (
+        Number.isNaN(parsedStart.getTime()) ||
+        Number.isNaN(parsedEnd.getTime())
+      ) {
+        return res.status(400).json({
+          message: `Shift at index ${index} has invalid startTime or endTime`,
+        });
+      }
+
+      if (parsedStart >= parsedEnd) {
+        return res.status(400).json({
+          message: `Shift at index ${index} must have endTime after startTime`,
+        });
+      }
+
+      if (requiredCount !== undefined && Number(requiredCount) < 0) {
+        return res.status(400).json({
+          message: `Shift at index ${index} has invalid requiredCount`,
+        });
+      }
+    }
+
+    const docs = [];
+    const requestKeys = new Set();
+    const duplicateRequestMap = new Map();
+    for (const date of normalizedDates) {
+      for (const shift of shifts) {
+        const startTime = new Date(shift.startTime);
+        const endTime = new Date(shift.endTime);
+        const uniqueKey = `${date.toISOString()}-${shift.role}-${startTime.toISOString()}-${endTime.toISOString()}`;
+        const duplicateItem = formatDuplicateSchedule({
+          date,
+          role: shift.role,
+          startTime,
+          endTime,
+        });
+
+        if (requestKeys.has(uniqueKey)) {
+          duplicateRequestMap.set(uniqueKey, duplicateItem);
+          continue;
+        }
+
+        requestKeys.add(uniqueKey);
+        docs.push({
+          tenantId: req.tenantId,
+          date,
+          role: shift.role,
+          startTime,
+          endTime,
+          requiredCount:
+            shift.requiredCount !== undefined ? shift.requiredCount : 1,
+          note: shift.note,
+        });
+      }
+    }
+
+    if (duplicateRequestMap.size) {
+      const duplicates = Array.from(duplicateRequestMap.values());
+      return res.status(400).json({
+        status: "error",
+        message: `Your request contains ${duplicates.length} duplicate schedule(s): ${buildDuplicateSummary(duplicates)}. Remove these duplicate entries and submit again, or use Edit if you need to change an existing schedule.`,
+        duplicateType: "request",
+        duplicates,
+      });
+    }
+
+    const conflicts = await Coverage.find({
+      tenantId: req.tenantId,
+      $or: docs.map((doc) => ({
+        date: doc.date,
+        role: doc.role,
+        startTime: doc.startTime,
+        endTime: doc.endTime,
+      })),
+    })
+      .select("date role startTime endTime")
+      .lean();
+
+    if (conflicts.length) {
+      const duplicates = conflicts.map(formatDuplicateSchedule);
+      return res.status(409).json({
+        status: "error",
+        message: `${duplicates.length} schedule(s) already exist: ${buildDuplicateSummary(duplicates)}. No new schedules were created. Remove these entries from your request, or click Edit on the existing schedule(s) to update them.`,
+        duplicateType: "existing",
+        duplicates,
+      });
+    }
+
+    const created = await Coverage.insertMany(docs, { ordered: true });
     res.status(201).json(created);
   } catch (err) {
+    if (err?.code === 11000) {
+      return res.status(409).json({
+        status: "error",
+        message:
+          "One or more schedules already exist. No new schedules were created. If you want to make changes, click the Edit button on the existing schedule instead of creating a new one.",
+      });
+    }
+
     next(err);
   }
 };
@@ -139,7 +274,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
     const schedules = await Schedule.find({
       tenantId,
       role,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "call_out", "cancelled"] },
       $or: coverages.map((c) => ({
         startTime: c.startTime,
         endTime: c.endTime,
@@ -194,7 +329,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     // If a role was provided, include it so we only count schedules for that role.
     const scheduleQuery = {
       tenantId,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "call_out"] },
       $or: coverages.map((c) => ({
         startTime: c.startTime,
         endTime: c.endTime,

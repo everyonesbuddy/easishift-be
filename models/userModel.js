@@ -17,6 +17,16 @@ const userSchema = new mongoose.Schema(
       unique: true,
       lowercase: true,
     },
+    userPhone: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+    userPhoneCountryCode: {
+      type: String,
+      default: null,
+      trim: true,
+    },
     passwordHash: {
       type: String,
       required: true,
@@ -31,6 +41,14 @@ const userSchema = new mongoose.Schema(
         "receptionist",
         "billing",
         "staff",
+        "rn", // Registered Nurse
+        "lpn", // Licensed Practical Nurse
+        "cna", // Certified Nursing Assistant
+        "med_aide", // Medication Aide / Med Tech
+        "caregiver", // Direct Care Worker
+        "activity_aide",
+        "dietary_aide",
+        "housekeeper",
         "other",
       ],
       default: "staff",

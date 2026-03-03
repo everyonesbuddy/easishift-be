@@ -6,7 +6,18 @@ exports.sendPendingReminders = async () => {
   const pendingMessages = await Message.find({ status: "pending" });
   for (const msg of pendingMessages) {
     try {
-      await sendSMS(msg.patientId, msg.content);
+      const result = await sendSMS(msg.patientId, msg.content);
+      if (!result || !result.success) {
+        msg.status = "failed";
+        await msg.save();
+        console.error(
+          `🚫 Failed to send message to ${msg.patientId}: ${
+            result && result.error ? result.error : "unknown error"
+          }`,
+        );
+        continue;
+      }
+
       msg.status = "sent";
       msg.sentAt = new Date();
       await msg.save();

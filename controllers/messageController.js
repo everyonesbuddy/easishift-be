@@ -49,12 +49,33 @@ exports.getMessagesBySender = async (req, res, next) => {
 // ✉️ Create message
 exports.createMessage = async (req, res, next) => {
   try {
-    const message = await Message.create({
-      ...req.body,
-      tenantId: req.tenantId,
-    });
+    const { receiverIds = [], ...messageData } = req.body;
 
-    res.status(201).json(message);
+    if (!Array.isArray(receiverIds)) {
+      return res.status(400).json({ message: "receiverIds must be an array" });
+    }
+
+    const recipients = [...new Set(receiverIds.map((id) => id.toString()))];
+
+    if (!recipients.length) {
+      return res
+        .status(400)
+        .json({ message: "At least one receiver is required" });
+    }
+
+    const messagesToCreate = recipients.map((recipientId) => ({
+      ...messageData,
+      receiverId: recipientId,
+      tenantId: req.tenantId,
+    }));
+
+    const createdMessages = await Message.insertMany(messagesToCreate);
+
+    if (createdMessages.length === 1) {
+      return res.status(201).json(createdMessages[0]);
+    }
+
+    res.status(201).json(createdMessages);
   } catch (err) {
     next(err);
   }
@@ -66,7 +87,7 @@ exports.markMessageRead = async (req, res, next) => {
     const message = await Message.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
       { read: true },
-      { new: true }
+      { new: true },
     );
 
     if (!message) return res.status(404).json({ message: "Message not found" });

@@ -1,6 +1,7 @@
 // controllers/timeOffController.js
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
+const Preferences = require("../models/preferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
@@ -21,6 +22,12 @@ const buildE164Number = (countryCode, phone) => {
 
   return `${prefix}${rawPhone}`;
 };
+
+const isTimeOffEmailNotificationEnabled = (preferences) =>
+  preferences?.timeOffEmailNotificationsEnabled !== false;
+
+const isTimeOffSmsNotificationEnabled = (preferences) =>
+  preferences?.timeOffSmsNotificationsEnabled !== false;
 
 // Create request (staff)
 exports.requestTimeOff = async (req, res, next) => {
@@ -46,7 +53,8 @@ exports.requestTimeOff = async (req, res, next) => {
         role: "admin",
       }).select("name email userPhone userPhoneCountryCode");
       if (admins && admins.length) {
-        const recipients = admins.map((a) => a.email).filter(Boolean);
+        const recipients = admins.map((admin) => admin.email).filter(Boolean);
+
         if (recipients.length) {
           const subject = `Time-off request: ${req.user.name || req.user._id}`;
           const html = `
@@ -140,10 +148,26 @@ exports.reviewTimeOff = async (req, res, next) => {
 
     // Notify staff about the decision (best-effort)
     try {
-      const staff = await User.findById(updated.staffId).select(
+      const updatedStaffId =
+        updated.staffId && updated.staffId._id
+          ? updated.staffId._id
+          : updated.staffId;
+
+      const staff = await User.findById(updatedStaffId).select(
         "name email userPhone userPhoneCountryCode",
       );
-      if (staff && staff.email) {
+      const staffPreference = staff
+        ? await Preferences.findOne({
+            tenantId: req.tenantId,
+            staffId: staff._id,
+          })
+        : null;
+
+      if (
+        staff &&
+        staff.email &&
+        isTimeOffEmailNotificationEnabled(staffPreference)
+      ) {
         const subject = `Your time-off request has been ${status}`;
         const html = `
           <p>Hi ${staff.name || "team member"},</p>
@@ -169,9 +193,10 @@ exports.reviewTimeOff = async (req, res, next) => {
         }
       }
 
-      const to = staff
-        ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
-        : null;
+      const to =
+        staff && isTimeOffSmsNotificationEnabled(staffPreference)
+          ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
+          : null;
       if (to) {
         const smsBody = `Your time-off request has been ${status}. Start (UTC): ${new Date(updated.startTime).toUTCString()}. End (UTC): ${new Date(updated.endTime).toUTCString()}.`;
         const smsResult = await sendSMS(to, smsBody);

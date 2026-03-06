@@ -55,12 +55,33 @@ const preferencesSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    scheduleEmailNotificationsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
+    scheduleSmsNotificationsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
+    timeOffEmailNotificationsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
+    timeOffSmsNotificationsEnabled: {
+      type: Boolean,
+      default: true,
+    },
+
     timezone: {
       type: String,
       default: "UTC",
     },
   },
-  { timestamps: true }
+  { timestamps: true },
 );
 
 module.exports = mongoose.model("Preferences", preferencesSchema);

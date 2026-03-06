@@ -26,6 +26,12 @@ const buildE164Number = (countryCode, phone) => {
   return `${prefix}${rawPhone}`;
 };
 
+const isScheduleEmailNotificationEnabled = (preferences) =>
+  preferences?.scheduleEmailNotificationsEnabled !== false;
+
+const isScheduleSmsNotificationEnabled = (preferences) =>
+  preferences?.scheduleSmsNotificationsEnabled !== false;
+
 const formatCoverageForMessage = (coverage) => ({
   coverageId: coverage._id,
   role: coverage.role,
@@ -255,6 +261,8 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       const assignmentDetails = [];
 
       for (const staff of selected) {
+        const staffPref = prefMap[staff._id.toString()];
+
         const newShift = await Schedule.create({
           tenantId,
           staffId: staff._id,
@@ -287,7 +295,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
         // Notify staff by email about the new assignment (best-effort)
         try {
-          if (staff.email) {
+          if (staff.email && isScheduleEmailNotificationEnabled(staffPref)) {
             const subject = `New shift assigned: ${cov.role} - ${cov.startTime.toUTCString()}`;
             const html = `
               <p>Hi ${staff.name || "team member"},</p>
@@ -316,10 +324,9 @@ exports.autoGenerateSchedule = async (req, res, next) => {
             }
           }
 
-          const to = buildE164Number(
-            staff.userPhoneCountryCode,
-            staff.userPhone,
-          );
+          const to = isScheduleSmsNotificationEnabled(staffPref)
+            ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
+            : null;
           if (to) {
             const smsBody = `New shift assigned: ${cov.role}. Start (UTC): ${cov.startTime.toUTCString()}. End (UTC): ${cov.endTime.toUTCString()}.`;
             const smsResult = await sendSMS(to, smsBody);
@@ -457,7 +464,18 @@ exports.createSchedule = async (req, res, next) => {
     // Notify assigned staff (best-effort)
     try {
       const staff = await User.findById(staffId);
-      if (staff && staff.email) {
+      const staffPref = staff
+        ? await Preferences.findOne({
+            tenantId: req.tenantId,
+            staffId: staff._id,
+          })
+        : null;
+
+      if (
+        staff &&
+        staff.email &&
+        isScheduleEmailNotificationEnabled(staffPref)
+      ) {
         const subject = `New shift assigned: ${role} - ${new Date(startTime).toUTCString()}`;
         const html = `
           <p>Hi ${staff.name || "team member"},</p>
@@ -484,9 +502,10 @@ exports.createSchedule = async (req, res, next) => {
         }
       }
 
-      const to = staff
-        ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
-        : null;
+      const to =
+        staff && isScheduleSmsNotificationEnabled(staffPref)
+          ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
+          : null;
       if (to) {
         const smsBody = `New shift assigned: ${role}. Start (UTC): ${new Date(startTime).toUTCString()}. End (UTC): ${new Date(endTime).toUTCString()}.`;
         const smsResult = await sendSMS(to, smsBody);

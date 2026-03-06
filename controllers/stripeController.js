@@ -6,42 +6,42 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 
 // Plan mapping: planKey -> price (cents) and seats
 // Prices are in cents: $3000 -> 300000 cents
-const yearlyStarterPriceCents = 300000;
-const yearlyGrowthPriceCents = 500000;
-const yearlyPremiumPriceCents = 700000;
-
-const monthlyFromYearly = (yearlyPriceCents) =>
-  Math.round((yearlyPriceCents / 12) * 1.2);
+const yearlyStarterPriceCents = 400000;
+const yearlyGrowthPriceCents = 700000;
+const yearlyPremiumPriceCents = 900000;
+const monthlyStarterPriceCents = 40000;
+const monthlyGrowthPriceCents = 70000;
+const monthlyPremiumPriceCents = 90000;
 
 const PLANS = {
   starterYearly: {
     priceCents: yearlyStarterPriceCents,
-    seats: 10,
+    seats: 50,
     name: "Starter Yearly",
   },
   growthYearly: {
     priceCents: yearlyGrowthPriceCents,
-    seats: 20,
+    seats: 100,
     name: "Growth Yearly",
   },
   premiumYearly: {
     priceCents: yearlyPremiumPriceCents,
-    seats: 30,
+    seats: 150,
     name: "Premium Yearly",
   },
   starterMonthly: {
-    priceCents: monthlyFromYearly(yearlyStarterPriceCents),
-    seats: 10,
+    priceCents: monthlyStarterPriceCents,
+    seats: 50,
     name: "Starter Monthly",
   },
   growthMonthly: {
-    priceCents: monthlyFromYearly(yearlyGrowthPriceCents),
-    seats: 20,
+    priceCents: monthlyGrowthPriceCents,
+    seats: 100,
     name: "Growth Monthly",
   },
   premiumMonthly: {
-    priceCents: monthlyFromYearly(yearlyPremiumPriceCents),
-    seats: 30,
+    priceCents: monthlyPremiumPriceCents,
+    seats: 150,
     name: "Premium Monthly",
   },
   // test: { priceCents: 200, seats: 12, name: "Test" },

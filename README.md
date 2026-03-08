@@ -1,211 +1,276 @@
-🏥 Patient Engagement & Portal Backend - README
-Project Overview
+# EasiShift Backend
 
-This project is a multi-tenant healthcare portal built using the MERN stack (MongoDB, Express, React, Node.js).
-It’s designed for private practices or hospitals, providing:
+Multi-tenant workforce scheduling backend for care facilities and healthcare operations teams.
 
-Patient portal (registration, login, forms, messages)
+This service powers:
 
-Staff portal (appointment management, patient management, follow-ups)
+- tenant onboarding and staff management
+- role-based authentication and authorization
+- coverage planning and shift scheduling
+- time-off requests and review workflows
+- internal staff messaging
+- admin/staff summary dashboards
+- subscription billing with Stripe
+- notification delivery via email and SMS
 
-Multi-tenant support so each hospital/clinic has isolated data
+---
 
-Automated reminders for appointments and follow-ups
+## Tech Stack
 
-Secure communication via email/SMS
+- Node.js + Express
+- MongoDB + Mongoose
+- JWT auth (Bearer token / cookie)
+- Stripe (subscriptions + webhooks)
+- Postmark / SMTP for email
+- Twilio for SMS
 
-Role-based access control for staff
+---
 
-🚀 Features
-1. Multi-Tenant Architecture
+## Current Domain Model
 
-Tenant: Represents a hospital or clinic.
+- **Tenant**: organization account, subscription status, seat limits, billing IDs
+- **User**: staff user under tenant (admin, rn, lpn, cna, caregiver, etc.)
+- **Coverage**: required staffing slots by role/date/time and required headcount
+- **Schedule**: assigned shifts per staff member
+- **Preferences**: staff scheduling preferences and notification toggles
+- **TimeOff**: staff PTO/leave requests with admin approval flow
+- **Message**: internal staff-to-staff tenant-scoped messages
 
-Each tenant has its own staff and patients.
+All tenant data is isolated using `tenantId`.
 
-tenantId is included in every model to isolate data.
+---
 
-2. Authentication & Authorization
+## Auth + Access Control
 
-Staff login: email + password.
+- `authMiddleware`: verifies JWT and attaches `req.user` + `req.tenantId`
+- `tenantMiddleware`: validates tenant exists and attaches `req.tenant`
+- `roleMiddleware`: route-level role restrictions (for example `admin`, `superadmin`)
 
-Patient login: portal account created via invite token.
+### Auth Endpoints
 
-JWT-based authentication with middleware:
+- `POST /api/v1/auth/signup/tenant` - create tenant + initial admin
+- `POST /api/v1/auth/signup/staff` - create staff (admin only)
+- `POST /api/v1/auth/login/staff` - staff/admin login
+- `PATCH /api/v1/auth/change-password` - authenticated password change
+- `POST /api/v1/auth/forgot-password` - issue reset token
+- `POST /api/v1/auth/reset-password` - reset with token
+- `GET /api/v1/auth/users` - list tenant users
+- `GET /api/v1/auth/:id` - get user by id
+- `PUT /api/v1/auth/:id` - update user
+- `DELETE /api/v1/auth/:id` - delete user (admin only)
 
-authMiddleware → verifies JWT and attaches user/patient info
+---
 
-tenantMiddleware → attaches tenant info
+## API Surface
 
-roleMiddleware → restricts routes by staff role
+### Tenants
 
-3. Patient Registration
+- `GET /api/v1/tenants` - list tenants (`superadmin`)
+- `POST /api/v1/tenants` - create tenant (`superadmin`)
+- `GET /api/v1/tenants/:id` - get single tenant
 
-Staff/admin creates patient record → generates invite token.
+### Schedules
 
-Patient uses token to complete portal registration.
+- `GET /api/v1/schedules` - list schedules (query by `staffId`, `from`, `to`)
+- `POST /api/v1/schedules` - create shift
+- `POST /api/v1/schedules/auto-generate` - auto-generate shifts from coverage (admin)
+- `GET /api/v1/schedules/:id` - get schedule by id
+- `PUT /api/v1/schedules/:id` - update schedule
+- `DELETE /api/v1/schedules/:id` - delete schedule (admin)
 
-Only patients attached to a tenant can access that tenant’s portal.
+### Auto-Generate Scheduling Logic (`POST /api/v1/schedules/auto-generate`)
 
-4. Appointments & Follow-Ups
+The auto-scheduler is a rule-based engine (not a black-box model). It processes selected coverage items in chronological order using this flow:
 
-Staff can create and manage appointments.
+1. It gets each selected coverage ID from `coverageIds`.
+2. For each ID, it reads the coverage details (especially role, start time, end time, required headcount).
+3. It finds existing schedules that match that same role + exact time window.
+4. It calculates how many are still needed:
+   - `needed = requiredCount - alreadyAssignedCount`
+5. If `needed <= 0`, that coverage is marked already full.
+6. If `needed > 0`, it moves to filtering + choosing staff:
+   - filter out ineligible staff (day unavailable, call-out, overlapping time-off, overlapping shifts, short break)
+   - rank eligible staff with fairness/overtime rules
+   - assign the top `needed` staff
 
-Patients can view their appointments in the portal.
+#### Fairness + Overtime Scoring
 
-Follow-ups track tasks like calls, lab tests, medications, or visits.
+When choosing who gets assigned, candidates are ranked by:
 
-Cron jobs can send reminder notifications via email/SMS.
+1. **Lowest projected overtime minutes** after this assignment (above 40h/week).
+2. **Lowest projected weekly minutes** in that same week.
+3. **Lowest recent workload** over the last 28 days.
+4. **Stable tie-breaker** to avoid always picking the same people when all metrics are equal.
 
-5. Forms
+This keeps assignments equitable, reduces repeatedly skipping the same person in near-tie scenarios, and avoids pushing one person close to overtime when alternatives are available.
 
-Patients can fill forms (intake, consent, feedback).
+#### Output Summary
 
-Staff can submit forms on behalf of patients.
+The endpoint returns per-coverage results and an overall summary, including:
 
-Forms include status tracking: pending, reviewed, approved, rejected.
+- `filled`, `partially_filled`, `skipped`, `already_filled` counts
+- `alreadyAssignedCount`, `neededCount`, `unfilledCount`
+- skip reasons for transparency
+- notification delivery counts (email/SMS sent/failed)
 
-6. Messaging
+### Coverage
 
-Internal messaging between staff and patients.
+- `GET /api/v1/coverage` - list coverage entries
+- `GET /api/v1/coverage/unfilled` - unfilled coverage by role
+- `GET /api/v1/coverage/unfilled-auto` - auto-generation helper data (admin)
+- `POST /api/v1/coverage` - create coverage batch (admin)
+- `PUT /api/v1/coverage/:id` - update coverage (admin)
+- `DELETE /api/v1/coverage/:id` - delete coverage (admin)
 
-Optional notifications via email or SMS.
+### Time Off
 
-🗂 Models
-Model	Description
-Tenant	Represents a hospital/clinic
-User	Staff members: admin, doctor, nurse, receptionist
-Patient	Portal users linked to a tenant
-Appointment	Scheduled patient appointments
-FollowUp	Tasks to track ongoing care or lab/visit follow-ups
-FormSubmission	Patient or staff-submitted forms
-Message	Internal messaging between staff and patients
+- `POST /api/v1/timeoff` - request time off
+- `GET /api/v1/timeoff` - list time off (admins see tenant; staff see own)
+- `PATCH /api/v1/timeoff/:id/review` - approve/deny request (admin)
 
-🔧 Middleware
+### Preferences
 
-authMiddleware → Verifies JWT, attaches req.user or req.patient.
+- `GET /api/v1/preferences/me` - get current user preferences
+- `POST /api/v1/preferences/me` - create/update current user preferences
+- `GET /api/v1/preferences/:staffId` - get staff preferences (admin)
 
-tenantMiddleware → Validates tenant existence, attaches req.tenant.
+### Messaging
 
-roleMiddleware → Restricts access to specific staff roles.
+- `GET /api/v1/messages` - list tenant messages
+- `POST /api/v1/messages` - send one-to-many message(s)
+- `GET /api/v1/messages/receiver/:receiverId` - inbox by receiver
+- `GET /api/v1/messages/sender/:senderId` - sent messages by sender
+- `PUT /api/v1/messages/:id/read` - mark read
+- `DELETE /api/v1/messages/:id` - delete message
 
-⚙️ Utilities
+### Summary
 
-sendEmail.js → Sends email notifications using NodeMailer.
+- `GET /api/v1/summary/admin/:adminId` - admin dashboard metrics (admin)
+- `GET /api/v1/summary/staff/:staffId` - staff dashboard metrics
 
-sendSMS.js → Sends SMS via Twilio (or any provider).
+### Billing (Stripe)
 
-scheduleJobs.js → Cron jobs for appointment/follow-up reminders.
+- `POST /api/v1/stripe/create-checkout-session` - create subscription checkout (admin)
+- `POST /api/v1/stripe/cancel-subscription` - cancel active subscription (admin)
+- `POST /api/v1/stripe/webhook` - Stripe webhook receiver (public)
 
-🛣 Routes
-Route	Purpose	Middleware
-/api/v1/auth/login/staff	Staff login	authMiddleware (optional)
-/api/v1/auth/login/patient	Patient login	authMiddleware (optional)
-/api/v1/auth/register-patient	Patient completes registration	Invite token check
-/api/v1/tenants	Create/get tenants	admin only
-/api/v1/patients	CRUD patient records	auth + tenant + roleMiddleware
-/api/v1/appointments	CRUD appointments	auth + tenant + roleMiddleware
-/api/v1/followups	Manage follow-ups	auth + tenant + roleMiddleware
-/api/v1/forms	Submit/review forms	auth + tenant + roleMiddleware
-/api/v1/messages	Send/receive messages	auth + tenant
-🔑 Authentication Flow
+---
 
-Tenant created → Owner/Admin is created.
+## Background Jobs
 
-Staff added → Staff credentials stored with tenantId.
+Configured in `app.js`:
 
-Patient invited → System generates inviteToken.
+- daily reminder job at `0 8 * * *` (uses `sendPendingReminders`)
+- schedule status updater every 2 hours to mark past shifts completed
 
-Patient completes registration → Activates portal.
+---
 
-JWT token issued → attached to req.user or req.patient.
+## Environment Variables
 
-📦 Project Structure
-backend/
-│   server.js
-│   app.js
-│
-├── models/
-│   tenantModel.js
-│   userModel.js
-│   patientModel.js
-│   appointmentModel.js
-│   followUpModel.js
-│   formSubmissionModel.js
-│   messageModel.js
-│
-├── controllers/
-│   authController.js
-│   tenantController.js
-│   patientController.js
-│   appointmentController.js
-│   followUpController.js
-│   formController.js
-│   messageController.js
-│
-├── routes/
-│   authRoutes.js
-│   tenantRoutes.js
-│   patientRoutes.js
-│   appointmentRoutes.js
-│   followUpRoutes.js
-│   formRoutes.js
-│   messageRoutes.js
-│
-├── middleware/
-│   authMiddleware.js
-│   tenantMiddleware.js
-│   roleMiddleware.js
-│   errorMiddleware.js
-│
-└── utils/
-    sendEmail.js
-    sendSMS.js
-    scheduleJobs.js
+Create `config.env` in the project root.
 
-💡 Best Practices / Notes
+### Core
 
-Always query by tenantId to ensure multi-tenant data isolation.
+- `PORT` (default `5000`)
+- `NODE_ENV` (`development` / `production`)
+- `DB_URL` (Mongo connection string)
+- `JWT_SECRET`
 
-Use cron jobs for sending scheduled reminders.
+### Frontend / Password Reset
 
-Use roleMiddleware to enforce least privilege access.
+- `FRONTEND_URL` (used for Stripe success/cancel redirects)
+- `FRONTEND_BASE_URL` (optional base URL for password reset links)
+- `FRONTEND_RESET_PATH` (optional, default `/reset-password`)
 
-Store sensitive info (JWT secret, email credentials, Twilio keys) in .env.
+### Stripe
 
-Patient portal passwords are stored hashed with bcrypt.
+- `STRIPE_SECRET_KEY`
+- `STRIPE_WEBHOOK_SECRET`
 
-⚡ Getting Started
+### Email
 
-Clone repository
+Use Postmark (preferred):
 
-git clone <repo-url>
-cd backend
+- `POSTMARK_API_TOKEN`
+- `POSTMARK_SENDER_EMAIL`
 
+Optional SMTP fallback:
 
-Install dependencies
+- `EMAIL_HOST`
+- `EMAIL_PORT`
+- `EMAIL_USER`
+- `EMAIL_PASS`
+- `EMAIL_SECURE` (`true`/`false`)
+- `EMAIL_FALLBACK_TO_SMTP` (`true` to fallback when Postmark fails)
 
+### SMS (Twilio)
+
+- `TWILIO_SID`
+- `TWILIO_ACCOUNT_SID` (set to same value as `TWILIO_SID` for current validation)
+- `TWILIO_AUTH_TOKEN`
+- `TWILIO_PHONE_NUMBER`
+
+---
+
+## Local Development
+
+Install dependencies:
+
+```bash
 npm install
+```
 
+Run the API server:
 
-Setup .env with:
+```bash
+node server.js
+```
 
-PORT=5000
-DB_URL=mongodb+srv://<user>:<pass>@cluster.mongodb.net/<db>
-JWT_SECRET=your_jwt_secret
-EMAIL_HOST=smtp.example.com
-EMAIL_PORT=587
-EMAIL_USER=email@example.com
-EMAIL_PASS=password
-TWILIO_SID=xxxx
-TWILIO_AUTH_TOKEN=xxxx
-TWILIO_PHONE_NUMBER=+15555555555
-CLIENT_URL=http://localhost:3000
+API base URL:
 
+```text
+http://localhost:5000/api/v1
+```
 
-- Start server
+---
 
-npm run dev
+## CORS Notes
 
+Current allowed origins in `app.js`:
 
-API ready at http://localhost:5000/api/v1/...
+- `https://easishift.com`
+- `http://localhost:5173`
+
+If your frontend runs on a different origin, update the whitelist in `app.js`.
+
+---
+
+## Utility Scripts
+
+- `node scripts/migrate-tenant-defaults.js` - backfills tenant billing/default fields
+- `node scripts/fixMessages.js` - schedule role migration helper for existing records
+
+---
+
+## Project Structure
+
+```text
+.
+├── app.js
+├── server.js
+├── config.env
+├── controllers/
+├── middleware/
+├── models/
+├── routes/
+├── scripts/
+└── utils/
+```
+
+---
+
+## Notes
+
+- This backend is now focused on workforce operations (EasiShift), not patient portal workflows.
+- Use tenant-scoped queries for all protected resources.
+- Keep secrets in `config.env` and never commit real credentials.

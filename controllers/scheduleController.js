@@ -8,6 +8,94 @@ const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
+const MINUTES_IN_WEEK = 40 * 60;
+const FAIRNESS_LOOKBACK_DAYS = 28;
+
+const minutesBetween = (start, end) =>
+  (new Date(end) - new Date(start)) / 60000;
+
+const getUtcWeekStart = (dateLike) => {
+  const date = new Date(dateLike);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() - date.getUTCDay());
+  return date;
+};
+
+const buildWeekKey = (staffId, dateLike) =>
+  `${staffId.toString()}|${getUtcWeekStart(dateLike).toISOString()}`;
+
+const stableHash = (value) => {
+  const text = String(value);
+  let hash = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
+  }
+  return hash;
+};
+
+const buildRankingMetrics = ({
+  staffId,
+  coverageStart,
+  coverageMinutes,
+  coverageId,
+  weeklyWorkload,
+  recentWorkload,
+}) => {
+  const weekKey = buildWeekKey(staffId, coverageStart);
+  const projectedWeekMinutes = (weeklyWorkload[weekKey] || 0) + coverageMinutes;
+  const overtimeMinutes = Math.max(0, projectedWeekMinutes - MINUTES_IN_WEEK);
+  const recentMinutes = recentWorkload[staffId] || 0;
+  const tieBreaker = stableHash(`${coverageId.toString()}|${staffId}`);
+
+  return {
+    weekKey,
+    projectedWeekMinutes,
+    overtimeMinutes,
+    recentMinutes,
+    tieBreaker,
+  };
+};
+
+const compareRankingMetrics = (a, b) => {
+  if (a.overtimeMinutes !== b.overtimeMinutes) {
+    return a.overtimeMinutes - b.overtimeMinutes;
+  }
+
+  if (a.projectedWeekMinutes !== b.projectedWeekMinutes) {
+    return a.projectedWeekMinutes - b.projectedWeekMinutes;
+  }
+
+  if (a.recentMinutes !== b.recentMinutes) {
+    return a.recentMinutes - b.recentMinutes;
+  }
+
+  return a.tieBreaker - b.tieBreaker;
+};
+
+const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
+  if (!cutoffMetrics) return "no cutoff available";
+
+  if (candidateMetrics.overtimeMinutes > cutoffMetrics.overtimeMinutes) {
+    return `higher projected overtime (${candidateMetrics.overtimeMinutes}m > ${cutoffMetrics.overtimeMinutes}m)`;
+  }
+
+  if (
+    candidateMetrics.projectedWeekMinutes > cutoffMetrics.projectedWeekMinutes
+  ) {
+    return `higher projected weekly load (${candidateMetrics.projectedWeekMinutes}m > ${cutoffMetrics.projectedWeekMinutes}m)`;
+  }
+
+  if (candidateMetrics.recentMinutes > cutoffMetrics.recentMinutes) {
+    return `higher recent workload (${candidateMetrics.recentMinutes}m > ${cutoffMetrics.recentMinutes}m)`;
+  }
+
+  if (candidateMetrics.tieBreaker > cutoffMetrics.tieBreaker) {
+    return "tie-breaker rank lower";
+  }
+
+  return "lower overall ranking score";
+};
+
 const buildE164Number = (countryCode, phone) => {
   if (!phone) return null;
 
@@ -77,9 +165,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     console.log(`Found ${coverageList.length} coverage(s) to process`);
 
     // 2) LOAD TIME OFF
-    const now = new Date();
     const end = new Date(Math.max(...coverageList.map((c) => c.endTime)));
     const start = new Date(Math.min(...coverageList.map((c) => c.startTime)));
+    const fairnessWindowStart = new Date(start);
+    fairnessWindowStart.setUTCDate(
+      fairnessWindowStart.getUTCDate() - FAIRNESS_LOOKBACK_DAYS,
+    );
+    const firstCoverageWeekStart = getUtcWeekStart(start);
+    const lastCoverageWeekStart = getUtcWeekStart(end);
+    const weeklyWindowEnd = new Date(lastCoverageWeekStart);
+    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
 
     const timeOff = await TimeOff.find({
       tenantId,
@@ -113,11 +208,30 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       existingByStaff[id].push(s);
     });
 
-    const workload = {};
-    existingSchedules.forEach((s) => {
-      if (s.status === "call_out") return;
-      const minutes = (s.endTime - s.startTime) / 60000;
-      workload[s.staffId] = (workload[s.staffId] || 0) + minutes;
+    const fairnessSchedules = await Schedule.find({
+      tenantId,
+      status: { $in: ["scheduled", "completed"] },
+      startTime: { $lte: end },
+      endTime: { $gte: fairnessWindowStart },
+    }).select("staffId startTime endTime");
+
+    const recentWorkload = {};
+    const weeklyWorkload = {};
+
+    fairnessSchedules.forEach((schedule) => {
+      const staffId = schedule.staffId.toString();
+      const minutes = minutesBetween(schedule.startTime, schedule.endTime);
+
+      recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
+
+      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      if (
+        scheduleWeekStart >= firstCoverageWeekStart &&
+        scheduleWeekStart < weeklyWindowEnd
+      ) {
+        const key = buildWeekKey(staffId, schedule.startTime);
+        weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
+      }
     });
 
     console.log(
@@ -253,11 +367,48 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         continue;
       }
 
-      available = available.sort(
-        (a, b) => (workload[a._id] || 0) - (workload[b._id] || 0),
-      );
+      const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
+      const rankedCandidates = available
+        .map((staff) => {
+          const staffId = staff._id.toString();
+          return {
+            staff,
+            metrics: buildRankingMetrics({
+              staffId,
+              coverageStart: cov.startTime,
+              coverageMinutes,
+              coverageId: cov._id,
+              weeklyWorkload,
+              recentWorkload,
+            }),
+          };
+        })
+        .sort((a, b) => compareRankingMetrics(a.metrics, b.metrics));
 
-      const selected = available.slice(0, needed);
+      console.log(
+        `[Ranking] Coverage ${cov._id}: ranked ${rankedCandidates.length} eligible staff (need ${needed}).`,
+      );
+      rankedCandidates.forEach((entry, rankIndex) => {
+        const { staff, metrics } = entry;
+        console.log(
+          `[Ranking] #${rankIndex + 1} ${staff.name || "Unknown"} (${staff._id}) -> overtime=${metrics.overtimeMinutes}m, projectedWeek=${metrics.projectedWeekMinutes}m, recent28d=${metrics.recentMinutes}m, tie=${metrics.tieBreaker}`,
+        );
+      });
+
+      const selectedRanked = rankedCandidates.slice(0, needed);
+      const selected = selectedRanked.map((entry) => entry.staff);
+      const cutoffMetrics =
+        selectedRanked.length > 0
+          ? selectedRanked[selectedRanked.length - 1].metrics
+          : null;
+
+      rankedCandidates.slice(needed).forEach((entry) => {
+        const reason = getNotSelectedReason(entry.metrics, cutoffMetrics);
+        console.log(
+          `[Not Selected] ${entry.staff.name || "Unknown"} (${entry.staff._id}) for coverage ${cov._id}: ${reason}`,
+        );
+      });
+
       const assignmentDetails = [];
 
       for (const staff of selected) {
@@ -286,8 +437,12 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           staffName: staff.name,
         });
 
-        const minutes = (cov.endTime - cov.startTime) / 60000;
-        workload[staff._id] = (workload[staff._id] || 0) + minutes;
+        const staffId = staff._id.toString();
+        recentWorkload[staffId] =
+          (recentWorkload[staffId] || 0) + coverageMinutes;
+        const weekKey = buildWeekKey(staffId, cov.startTime);
+        weeklyWorkload[weekKey] =
+          (weeklyWorkload[weekKey] || 0) + coverageMinutes;
 
         existingSchedules.push(newShift);
         if (!existingByStaff[staff._id]) existingByStaff[staff._id] = [];

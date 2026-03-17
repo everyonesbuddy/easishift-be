@@ -13,6 +13,7 @@ const router = express.Router();
 const {
   registerTenant,
   registerStaff,
+  bulkRegisterStaff,
   loginStaff,
   changePassword,
   forgotPassword,
@@ -32,6 +33,13 @@ router.post("/signup/tenant", registerTenant);
 
 // Staff signup (admin only)
 router.post("/signup/staff", auth, tenant, restrictTo("admin"), registerStaff);
+router.post(
+  "/signup/staff/bulk",
+  auth,
+  tenant,
+  restrictTo("admin"),
+  bulkRegisterStaff,
+);
 
 // Logins
 router.post("/login/staff", loginStaff);

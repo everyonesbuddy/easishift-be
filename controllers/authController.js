@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
+const { parse } = require("csv-parse/sync");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const { sendEmail } = require("../utils/sendEmail");
@@ -45,6 +46,47 @@ const buildE164Number = (countryCode, phone) => {
     : `+${normalizedCountryCode}`;
 
   return `${prefix}${rawPhone}`;
+};
+
+const normalizeEmail = (email) =>
+  String(email || "")
+    .trim()
+    .toLowerCase();
+
+const resolveRole = (role) =>
+  String(role || "staff")
+    .trim()
+    .toLowerCase();
+
+const getBulkRows = (body) => {
+  if (typeof body.csv === "string" && body.csv.trim()) {
+    const records = parse(body.csv, {
+      columns: true,
+      skip_empty_lines: true,
+      trim: true,
+    });
+
+    return records.map((row, index) => ({
+      rowNumber: index + 2,
+      ...row,
+    }));
+  }
+
+  return [];
+};
+
+const createPasswordSetupLink = async (req, user) => {
+  const setupToken = crypto.randomBytes(32).toString("hex");
+  const setupTokenHash = crypto
+    .createHash("sha256")
+    .update(setupToken)
+    .digest("hex");
+
+  user.passwordResetToken = setupTokenHash;
+  user.passwordResetExpires = new Date(Date.now() + 30 * 60 * 1000);
+  await user.save({ validateBeforeSave: false });
+
+  return buildResetUrl(req, setupToken);
 };
 
 /**
@@ -157,9 +199,14 @@ exports.registerTenant = async (req, res, next) => {
  */
 exports.registerStaff = async (req, res, next) => {
   try {
-    const { name, email, password, role, userPhone, userPhoneCountryCode } =
-      req.body;
-    const passwordHash = await bcrypt.hash(password, 12);
+    const { name, email, role, userPhone, userPhoneCountryCode } = req.body;
+
+    if (!name || !email) {
+      return res.status(400).json({ message: "Name and email are required" });
+    }
+
+    const generatedPassword = crypto.randomBytes(24).toString("hex");
+    const passwordHash = await bcrypt.hash(generatedPassword, 12);
 
     const user = await User.create({
       tenantId: req.tenantId,
@@ -170,6 +217,8 @@ exports.registerStaff = async (req, res, next) => {
       passwordHash,
       role,
     });
+
+    const setupUrl = await createPasswordSetupLink(req, user);
 
     // Notify the staff member about account creation (best-effort)
     try {
@@ -184,7 +233,8 @@ exports.registerStaff = async (req, res, next) => {
             <li><strong>Login email:</strong> ${user.email}</li>
             <li><strong>Role:</strong> ${user.role}</li>
           </ul>
-          <p>You can now sign in with the password you were given.</p>
+          <p>Set your password using the secure link below (valid for 30 minutes):</p>
+          <p><a href="${setupUrl}">${setupUrl}</a></p>
         `;
 
         const result = await sendEmail(user.email, subject, html);
@@ -199,7 +249,7 @@ exports.registerStaff = async (req, res, next) => {
 
         const to = buildE164Number(user.userPhoneCountryCode, user.userPhone);
         if (to) {
-          const smsBody = `Your staff account is ready at ${tenantName}. Role: ${user.role}.`;
+          const smsBody = `Your staff account is ready at ${tenantName}. Check your email to set your password.`;
           const smsResult = await sendSMS(to, smsBody);
           if (smsResult && smsResult.success) {
             console.log(`Staff welcome SMS sent to ${to}`);
@@ -219,6 +269,182 @@ exports.registerStaff = async (req, res, next) => {
     }
 
     res.status(201).json({ message: "Staff created successfully", user });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * BULK STAFF SIGNUP (ADMIN ONLY)
+ * ------------------------------
+ * Supports:
+ *  - req.body.csv: CSV string with headers
+ */
+exports.bulkRegisterStaff = async (req, res, next) => {
+  try {
+    const rows = getBulkRows(req.body);
+    const allowedRoles = User.schema.path("role").enumValues || [];
+    const maxRows = 500;
+
+    if (!rows.length) {
+      return res.status(400).json({
+        message: "Provide csv payload for bulk registration.",
+      });
+    }
+
+    if (rows.length > maxRows) {
+      return res
+        .status(400)
+        .json({ message: `Maximum ${maxRows} rows allowed per bulk request.` });
+    }
+
+    const duplicateInFile = new Set();
+    const normalizedEmails = rows
+      .map((row) => normalizeEmail(row.email))
+      .filter(Boolean);
+
+    const existingUsers = normalizedEmails.length
+      ? await User.find({ email: { $in: normalizedEmails } }).select("email")
+      : [];
+    const existingEmailSet = new Set(
+      existingUsers.map((item) => normalizeEmail(item.email)),
+    );
+
+    const result = {
+      total: rows.length,
+      created: 0,
+      skipped: 0,
+      failed: 0,
+      rows: [],
+    };
+
+    for (const row of rows) {
+      const name = String(row.name || "").trim();
+      const email = normalizeEmail(row.email);
+      const role = resolveRole(row.role);
+      const userPhone = row.userPhone ? String(row.userPhone).trim() : null;
+      const userPhoneCountryCode = row.userPhoneCountryCode
+        ? String(row.userPhoneCountryCode).trim()
+        : null;
+
+      if (!name || !email) {
+        result.failed += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email: row.email || null,
+          status: "failed_validation",
+          reason: "name and email are required",
+        });
+        continue;
+      }
+
+      if (!allowedRoles.includes(role)) {
+        result.failed += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "failed_validation",
+          reason: `invalid role '${row.role || ""}'`,
+        });
+        continue;
+      }
+
+      if (duplicateInFile.has(email)) {
+        result.skipped += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "skipped_duplicate",
+          reason: "duplicate email in import file",
+        });
+        continue;
+      }
+
+      if (existingEmailSet.has(email)) {
+        result.skipped += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "skipped_duplicate",
+          reason: "email already exists",
+        });
+        duplicateInFile.add(email);
+        continue;
+      }
+
+      try {
+        const generatedPassword = crypto.randomBytes(24).toString("hex");
+        const passwordHash = await bcrypt.hash(generatedPassword, 12);
+        const user = await User.create({
+          tenantId: req.tenantId,
+          name,
+          email,
+          userPhone,
+          userPhoneCountryCode,
+          passwordHash,
+          role,
+        });
+
+        const setupUrl = await createPasswordSetupLink(req, user);
+
+        let inviteWarning = null;
+        if (user.email) {
+          const subject = "Your staff account is ready";
+          const html = `
+            <p>Hi ${user.name || "there"},</p>
+            <p>Your account has been added.</p>
+            <ul>
+              <li><strong>Login email:</strong> ${user.email}</li>
+              <li><strong>Role:</strong> ${user.role}</li>
+            </ul>
+            <p>Set your password using the secure link below (valid for 30 minutes):</p>
+            <p><a href="${setupUrl}">${setupUrl}</a></p>
+          `;
+
+          const emailResult = await sendEmail(user.email, subject, html);
+          if (!emailResult || !emailResult.success) {
+            inviteWarning = "account created but setup email failed";
+          }
+        }
+
+        result.created += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "created",
+          userId: user._id,
+          warning: inviteWarning,
+        });
+        duplicateInFile.add(email);
+        existingEmailSet.add(email);
+      } catch (err) {
+        if (err && err.code === 11000) {
+          result.skipped += 1;
+          result.rows.push({
+            rowNumber: row.rowNumber,
+            email,
+            status: "skipped_duplicate",
+            reason: "email already exists",
+          });
+          duplicateInFile.add(email);
+          existingEmailSet.add(email);
+          continue;
+        }
+
+        result.failed += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "failed",
+          reason: err && err.message ? err.message : "unknown error",
+        });
+      }
+    }
+
+    return res.status(200).json({
+      message: "Bulk staff import completed",
+      ...result,
+    });
   } catch (err) {
     next(err);
   }

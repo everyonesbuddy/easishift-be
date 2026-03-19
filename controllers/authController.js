@@ -58,21 +58,29 @@ const resolveRole = (role) =>
     .trim()
     .toLowerCase();
 
-const getBulkRows = (body) => {
-  if (typeof body.csv === "string" && body.csv.trim()) {
-    const records = parse(body.csv, {
-      columns: true,
-      skip_empty_lines: true,
-      trim: true,
-    });
+const getBulkRows = (req) => {
+  let csvText = null;
 
-    return records.map((row, index) => ({
-      rowNumber: index + 2,
-      ...row,
-    }));
+  // 1. Uploaded CSV file (multipart/form-data, field name "file")
+  if (req.file && req.file.buffer) {
+    csvText = req.file.buffer.toString("utf8");
+    // 2. Pasted CSV string in JSON body
+  } else if (typeof req.body.csv === "string" && req.body.csv.trim()) {
+    csvText = req.body.csv;
   }
 
-  return [];
+  if (!csvText) return [];
+
+  const records = parse(csvText, {
+    columns: true,
+    skip_empty_lines: true,
+    trim: true,
+  });
+
+  return records.map((row, index) => ({
+    rowNumber: index + 2,
+    ...row,
+  }));
 };
 
 const createPasswordSetupLink = async (req, user) => {
@@ -282,7 +290,7 @@ exports.registerStaff = async (req, res, next) => {
  */
 exports.bulkRegisterStaff = async (req, res, next) => {
   try {
-    const rows = getBulkRows(req.body);
+    const rows = getBulkRows(req);
     const allowedRoles = User.schema.path("role").enumValues || [];
     const maxRows = 500;
 

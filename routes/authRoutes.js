@@ -8,7 +8,22 @@
  */
 
 const express = require("express");
+const multer = require("multer");
 const router = express.Router();
+
+// Accept CSV uploads in memory only; reject non-CSV MIME types
+const csvUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
+  fileFilter(_req, file, cb) {
+    const allowed = ["text/csv", "application/vnd.ms-excel", "text/plain"];
+    if (allowed.includes(file.mimetype) || file.originalname.endsWith(".csv")) {
+      cb(null, true);
+    } else {
+      cb(new Error("Only .csv files are accepted"));
+    }
+  },
+}).single("file");
 
 const {
   registerTenant,
@@ -38,6 +53,7 @@ router.post(
   auth,
   tenant,
   restrictTo("admin"),
+  csvUpload,
   bulkRegisterStaff,
 );
 

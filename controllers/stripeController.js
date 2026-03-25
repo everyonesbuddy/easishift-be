@@ -53,20 +53,10 @@ const intervalFromPlanKey = (planKey) =>
 /**
  * Create a Checkout Session for a tenant to purchase a subscription.
  * Expects { tenantId, planKey } in body.
- * Optional body fields:
- * - allowPromotionCodes?: boolean (default true)
- * - couponId?: string (Stripe coupon id, e.g. "25OFF")
- * - promotionCode?: string (human code, e.g. "SPRING25")
  */
 exports.createCheckoutSession = async (req, res, next) => {
   try {
-    const {
-      tenantId,
-      planKey,
-      allowPromotionCodes = true,
-      couponId,
-      promotionCode,
-    } = req.body;
+    const { tenantId, planKey } = req.body;
 
     if (!tenantId || !planKey) {
       return res
@@ -80,13 +70,7 @@ exports.createCheckoutSession = async (req, res, next) => {
     const plan = PLANS[planKey];
     if (!plan) return res.status(400).json({ message: "Invalid planKey" });
 
-    if (couponId && promotionCode) {
-      return res.status(400).json({
-        message: "Provide either couponId or promotionCode, not both",
-      });
-    }
-
-    const sessionPayload = {
+    const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
       line_items: [
@@ -113,41 +97,7 @@ exports.createCheckoutSession = async (req, res, next) => {
       cancel_url: `${
         process.env.FRONTEND_URL || "http://localhost:5173"
       }/billing/cancel`,
-    };
-
-    // Lets Stripe-hosted Checkout show "Add promotion code" with no frontend changes.
-    if (allowPromotionCodes) {
-      sessionPayload.allow_promotion_codes = true;
-    }
-
-    // Optional server-side pre-application of discounts.
-    // If provided, this takes precedence over user-entered code at checkout.
-    if (couponId) {
-      const coupon = await stripe.coupons.retrieve(couponId);
-      if (!coupon || coupon.valid !== true) {
-        return res.status(400).json({ message: "Invalid or expired couponId" });
-      }
-      sessionPayload.discounts = [{ coupon: coupon.id }];
-      delete sessionPayload.allow_promotion_codes;
-    }
-
-    if (promotionCode) {
-      const promoList = await stripe.promotionCodes.list({
-        code: promotionCode,
-        active: true,
-        limit: 1,
-      });
-      const promo = promoList.data && promoList.data[0];
-      if (!promo) {
-        return res
-          .status(400)
-          .json({ message: "Invalid or inactive promotionCode" });
-      }
-      sessionPayload.discounts = [{ promotion_code: promo.id }];
-      delete sessionPayload.allow_promotion_codes;
-    }
-
-    const session = await stripe.checkout.sessions.create(sessionPayload);
+    });
 
     res.status(200).json({ url: session.url, id: session.id });
   } catch (err) {

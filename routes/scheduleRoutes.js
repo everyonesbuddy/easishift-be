@@ -8,6 +8,9 @@ const {
   updateSchedule,
   deleteSchedule,
   autoGenerateSchedule,
+  requestShiftSwap,
+  getShiftSwapRequests,
+  respondToShiftSwapRequest,
 } = require("../controllers/scheduleController");
 
 const auth = require("../middleware/authMiddleware");
@@ -24,6 +27,11 @@ router.post("/", createSchedule);
 
 // AUTO GENERATE (admin only)
 router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
+
+// SHIFT SWAP REQUESTS
+router.get("/swap-requests", getShiftSwapRequests);
+router.post("/swap-requests/:swapRequestId/respond", respondToShiftSwapRequest);
+router.post("/:id/swap-requests", requestShiftSwap);
 
 router.get("/:id", getScheduleById);
 

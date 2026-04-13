@@ -4,6 +4,7 @@ const Coverage = require("../models/coverageModel");
 const Preferences = require("../models/preferencesModel");
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
+const ShiftSwap = require("../models/shiftSwapModel");
 const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
@@ -128,6 +129,73 @@ const formatCoverageForMessage = (coverage) => ({
   endTime: new Date(coverage.endTime).toISOString(),
   requiredCount: coverage.requiredCount,
 });
+
+const toUtcString = (value) => new Date(value).toUTCString();
+
+const notifyUsersBestEffort = async ({
+  tenantId,
+  users,
+  emailSubject,
+  emailHtml,
+  smsBody,
+}) => {
+  const uniqueUsers = [];
+  const seen = new Set();
+
+  for (const user of users || []) {
+    if (!user || !user._id) continue;
+    const key = user._id.toString();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    uniqueUsers.push(user);
+  }
+
+  if (!uniqueUsers.length) return;
+
+  const preferenceDocs = await Preferences.find({
+    tenantId,
+    staffId: { $in: uniqueUsers.map((user) => user._id) },
+  }).select(
+    "staffId scheduleEmailNotificationsEnabled scheduleSmsNotificationsEnabled",
+  );
+
+  const preferenceMap = {};
+  preferenceDocs.forEach((pref) => {
+    preferenceMap[pref.staffId.toString()] = pref;
+  });
+
+  for (const user of uniqueUsers) {
+    const pref = preferenceMap[user._id.toString()];
+
+    try {
+      if (user.email && isScheduleEmailNotificationEnabled(pref)) {
+        await sendEmail(user.email, emailSubject, emailHtml(user));
+      }
+
+      const to = isScheduleSmsNotificationEnabled(pref)
+        ? buildE164Number(user.userPhoneCountryCode, user.userPhone)
+        : null;
+
+      if (to) {
+        await sendSMS(to, smsBody(user));
+      }
+    } catch (err) {
+      console.error(
+        `Failed swap notification for user ${user._id}:`,
+        err && err.message ? err.message : err,
+      );
+    }
+  }
+};
+
+const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
+  const excluded = excludeUserIds.map((id) => id.toString());
+  return User.find({
+    tenantId,
+    role: "admin",
+    _id: { $nin: excluded },
+  });
+};
 
 // AUTO-GENERATE SCHEDULE FOR SELECTED COVERAGES
 exports.autoGenerateSchedule = async (req, res, next) => {
@@ -581,6 +649,335 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         "Auto-scheduling failed. Please try again, and contact support if the issue persists.",
       details: err && err.message ? err.message : "Unknown error",
     });
+  }
+};
+
+// REQUEST SHIFT SWAP (same role only)
+exports.requestShiftSwap = async (req, res, next) => {
+  try {
+    const scheduleId = req.params.id;
+    const { receiverStaffId, note } = req.body;
+
+    if (!receiverStaffId) {
+      return res.status(400).json({ message: "receiverStaffId is required" });
+    }
+
+    const schedule = await Schedule.findOne({
+      _id: scheduleId,
+      tenantId: req.tenantId,
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    if (schedule.status !== "scheduled") {
+      return res.status(400).json({
+        message: "Only scheduled shifts can be swapped",
+      });
+    }
+
+    const requesterId = schedule.staffId.toString();
+    const actorId = req.user._id.toString();
+
+    if (req.user.role !== "admin" && actorId !== requesterId) {
+      return res.status(403).json({
+        message: "Only the assigned staff member (or admin) can request a swap",
+      });
+    }
+
+    if (requesterId === String(receiverStaffId)) {
+      return res.status(400).json({
+        message: "receiverStaffId must be different from current staffId",
+      });
+    }
+
+    const [requester, receiver] = await Promise.all([
+      User.findOne({ _id: schedule.staffId, tenantId: req.tenantId }),
+      User.findOne({ _id: receiverStaffId, tenantId: req.tenantId }),
+    ]);
+
+    if (!requester || !receiver) {
+      return res
+        .status(404)
+        .json({ message: "Requester or receiver staff not found" });
+    }
+
+    if (receiver.role !== schedule.role) {
+      return res.status(400).json({
+        message: "Shift swap is allowed only between staff in the same role",
+      });
+    }
+
+    const conflict = await hasConflict({
+      tenantId: req.tenantId,
+      staffId: receiver._id,
+      startTime: schedule.startTime,
+      endTime: schedule.endTime,
+    });
+
+    if (conflict) {
+      return res.status(409).json({
+        message: "Receiver has a conflicting schedule in this time slot",
+        conflict,
+      });
+    }
+
+    const pendingExisting = await ShiftSwap.findOne({
+      tenantId: req.tenantId,
+      scheduleId: schedule._id,
+      receiverStaffId: receiver._id,
+      status: "pending",
+    });
+
+    if (pendingExisting) {
+      return res.status(409).json({
+        message: "A pending swap request already exists for this receiver",
+      });
+    }
+
+    const swapRequest = await ShiftSwap.create({
+      tenantId: req.tenantId,
+      scheduleId: schedule._id,
+      requesterStaffId: requester._id,
+      receiverStaffId: receiver._id,
+      role: schedule.role,
+      shiftStartTime: schedule.startTime,
+      shiftEndTime: schedule.endTime,
+      requestNote: note || "",
+      status: "pending",
+    });
+
+    const admins = await getTenantAdmins(req.tenantId, [
+      requester._id,
+      receiver._id,
+    ]);
+    const recipients = [receiver, requester, ...admins];
+    const shiftWindow = `${toUtcString(schedule.startTime)} - ${toUtcString(schedule.endTime)}`;
+
+    await notifyUsersBestEffort({
+      tenantId: req.tenantId,
+      users: recipients,
+      emailSubject: "Shift swap request",
+      emailHtml: (user) => `
+        <p>Hi ${user.name || "team member"},</p>
+        <p>${requester.name || "A staff member"} requested a shift swap.</p>
+        <ul>
+          <li><strong>Role:</strong> ${schedule.role}</li>
+          <li><strong>Current staff:</strong> ${requester.name || requester.email || requester._id}</li>
+          <li><strong>Requested receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
+          <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+          <li><strong>Status:</strong> pending</li>
+        </ul>
+        ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
+      `,
+      smsBody: () =>
+        `Shift swap requested: ${schedule.role}, ${shiftWindow}. Receiver must accept or deny.`,
+    });
+
+    const populated = await ShiftSwap.findById(swapRequest._id)
+      .populate("requesterStaffId", "name email role")
+      .populate("receiverStaffId", "name email role")
+      .populate("scheduleId", "role startTime endTime status");
+
+    res.status(201).json({
+      message: "Shift swap request submitted",
+      swapRequest: populated,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// LIST SHIFT SWAP REQUESTS
+exports.getShiftSwapRequests = async (req, res, next) => {
+  try {
+    const { status, view = "all" } = req.query;
+    const filter = { tenantId: req.tenantId };
+
+    if (status) {
+      filter.status = status;
+    }
+
+    if (req.user.role !== "admin") {
+      filter.$or = [
+        { requesterStaffId: req.user._id },
+        { receiverStaffId: req.user._id },
+      ];
+
+      if (view === "inbox") {
+        delete filter.$or;
+        filter.receiverStaffId = req.user._id;
+      }
+
+      if (view === "outbox") {
+        delete filter.$or;
+        filter.requesterStaffId = req.user._id;
+      }
+    }
+
+    const requests = await ShiftSwap.find(filter)
+      .populate("requesterStaffId", "name email role")
+      .populate("receiverStaffId", "name email role")
+      .populate("scheduleId", "role startTime endTime status staffId")
+      .sort({ createdAt: -1 });
+
+    res.json(requests);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// ACCEPT OR DENY SHIFT SWAP REQUEST
+exports.respondToShiftSwapRequest = async (req, res, next) => {
+  try {
+    const { decision, responseNote } = req.body;
+    const normalizedDecision = String(decision || "").toLowerCase();
+
+    if (!["accept", "deny"].includes(normalizedDecision)) {
+      return res
+        .status(400)
+        .json({ message: "decision must be either 'accept' or 'deny'" });
+    }
+
+    const swapRequest = await ShiftSwap.findOne({
+      _id: req.params.swapRequestId,
+      tenantId: req.tenantId,
+    });
+
+    if (!swapRequest) {
+      return res.status(404).json({ message: "Swap request not found" });
+    }
+
+    if (swapRequest.status !== "pending") {
+      return res
+        .status(400)
+        .json({ message: `Swap request is already ${swapRequest.status}` });
+    }
+
+    const canRespond =
+      req.user.role === "admin" ||
+      swapRequest.receiverStaffId.toString() === req.user._id.toString();
+
+    if (!canRespond) {
+      return res.status(403).json({
+        message: "Only the receiving staff member (or admin) can respond",
+      });
+    }
+
+    const schedule = await Schedule.findOne({
+      _id: swapRequest.scheduleId,
+      tenantId: req.tenantId,
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: "Original schedule not found" });
+    }
+
+    const [requester, receiver] = await Promise.all([
+      User.findOne({
+        _id: swapRequest.requesterStaffId,
+        tenantId: req.tenantId,
+      }),
+      User.findOne({
+        _id: swapRequest.receiverStaffId,
+        tenantId: req.tenantId,
+      }),
+    ]);
+
+    if (!requester || !receiver) {
+      return res
+        .status(404)
+        .json({ message: "Requester or receiver staff not found" });
+    }
+
+    if (normalizedDecision === "accept") {
+      if (schedule.staffId.toString() !== requester._id.toString()) {
+        return res.status(409).json({
+          message:
+            "This shift is no longer assigned to the original requester; swap cannot be completed",
+        });
+      }
+
+      if (receiver.role !== schedule.role) {
+        return res.status(400).json({
+          message:
+            "Swap cannot be accepted because receiver role no longer matches shift role",
+        });
+      }
+
+      const conflict = await hasConflict({
+        tenantId: req.tenantId,
+        staffId: receiver._id,
+        startTime: schedule.startTime,
+        endTime: schedule.endTime,
+      });
+
+      if (conflict) {
+        return res.status(409).json({
+          message: "Receiver now has a conflicting schedule in this time slot",
+          conflict,
+        });
+      }
+
+      schedule.staffId = receiver._id;
+      const swapAudit = `Shift swapped from ${requester.name || requester._id} to ${receiver.name || receiver._id} on ${new Date().toUTCString()}`;
+      schedule.notes = schedule.notes
+        ? `${schedule.notes}\n${swapAudit}`
+        : swapAudit;
+      await schedule.save();
+
+      swapRequest.status = "accepted";
+    } else {
+      swapRequest.status = "denied";
+    }
+
+    swapRequest.responseNote = responseNote || "";
+    swapRequest.respondedAt = new Date();
+    swapRequest.resolvedBy = req.user._id;
+    await swapRequest.save();
+
+    const admins = await getTenantAdmins(req.tenantId, [
+      requester._id,
+      receiver._id,
+    ]);
+    const recipients = [requester, receiver, ...admins];
+    const shiftWindow = `${toUtcString(swapRequest.shiftStartTime)} - ${toUtcString(swapRequest.shiftEndTime)}`;
+    const decisionWord =
+      normalizedDecision === "accept" ? "accepted" : "denied";
+
+    await notifyUsersBestEffort({
+      tenantId: req.tenantId,
+      users: recipients,
+      emailSubject: `Shift swap ${decisionWord}`,
+      emailHtml: (user) => `
+        <p>Hi ${user.name || "team member"},</p>
+        <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
+        <ul>
+          <li><strong>Role:</strong> ${swapRequest.role}</li>
+          <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
+          <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
+          <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+          <li><strong>Decision:</strong> ${decisionWord}</li>
+        </ul>
+        ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+      `,
+      smsBody: () =>
+        `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
+    });
+
+    const populated = await ShiftSwap.findById(swapRequest._id)
+      .populate("requesterStaffId", "name email role")
+      .populate("receiverStaffId", "name email role")
+      .populate("scheduleId", "role startTime endTime status staffId notes");
+
+    res.json({
+      message: `Shift swap ${decisionWord}`,
+      swapRequest: populated,
+      scheduleUpdated: normalizedDecision === "accept",
+    });
+  } catch (err) {
+    next(err);
   }
 };
 

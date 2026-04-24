@@ -18,6 +18,7 @@ const timeOffRoutes = require("./routes/timeOffRoutes");
 const coverageRoutes = require("./routes/coverageRoutes");
 const preferencesRoutes = require("./routes/preferencesRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
+const marketingRoutes = require("./routes/marketingRoutes");
 
 const app = express();
 
@@ -39,7 +40,7 @@ app.use(
         req.rawBody = buf.toString();
       }
     },
-  })
+  }),
 );
 
 app.use(cookieParser());
@@ -61,7 +62,7 @@ app.use(
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
     credentials: true,
     allowedHeaders: ["Content-Type", "Authorization", "X-Requested-With"],
-  })
+  }),
 );
 
 // Note: no explicit app.options('*') call because some path parsers reject '*'.
@@ -101,6 +102,7 @@ app.use("/api/v1/timeoff", timeOffRoutes);
 app.use("/api/v1/coverage", coverageRoutes);
 app.use("/api/v1/preferences", preferencesRoutes);
 app.use("/api/v1/stripe", stripeRoutes);
+app.use("/api/v1/marketing", marketingRoutes);
 
 // ✅ Global Error Handler
 app.use(errorHandler);

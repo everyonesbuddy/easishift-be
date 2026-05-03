@@ -45,16 +45,32 @@ app.use(
 
 app.use(cookieParser());
 
-// CORS: allow production site and local dev. Use a whitelist and echo origin
-// back when credentials are required. Stripe webhooks and other server-to-
-// server calls will have no Origin and are allowed.
-const whitelist = ["https://easishift.com", "http://localhost:5173"];
+// CORS: allow production site and local dev. Use a whitelist plus pattern
+// matching for dynamic Expo Go and LAN dev origins. Stripe webhooks and other
+// server-to-server calls will have no Origin and are allowed.
+const allowedOrigins = new Set([
+  "https://easishift.com",
+  "http://localhost:5173",
+  "http://localhost:8081",
+]);
+
+const localDevOriginPattern =
+  /^(https?:\/\/(localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?)\/?$/;
+
+const expoOriginPattern = /^(exp|exps):\/\/[^\s/]+(?::\d{2,5})?\/?$/;
+
+function isAllowedOrigin(origin) {
+  if (allowedOrigins.has(origin)) return true;
+  if (localDevOriginPattern.test(origin)) return true;
+  if (expoOriginPattern.test(origin)) return true;
+  return false;
+}
 
 app.use(
   cors({
     origin: function (origin, callback) {
       if (!origin) return callback(null, true); // allow server-to-server (Stripe, etc.)
-      if (whitelist.indexOf(origin) !== -1) {
+      if (isAllowedOrigin(origin)) {
         return callback(null, true);
       }
       return callback(new Error("CORS not allowed"));

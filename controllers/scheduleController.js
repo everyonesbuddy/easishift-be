@@ -727,7 +727,7 @@ exports.requestShiftSwap = async (req, res, next) => {
       tenantId: req.tenantId,
       scheduleId: schedule._id,
       receiverStaffId: receiver._id,
-      status: "pending",
+      status: { $in: ["pending_admin", "pending_receiver"] },
     });
 
     if (pendingExisting) {
@@ -745,7 +745,7 @@ exports.requestShiftSwap = async (req, res, next) => {
       shiftStartTime: schedule.startTime,
       shiftEndTime: schedule.endTime,
       requestNote: note || "",
-      status: "pending",
+      status: "pending_admin",
     });
 
     const admins = await getTenantAdmins(req.tenantId, [
@@ -767,12 +767,12 @@ exports.requestShiftSwap = async (req, res, next) => {
           <li><strong>Current staff:</strong> ${requester.name || requester.email || requester._id}</li>
           <li><strong>Requested receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
           <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
-          <li><strong>Status:</strong> pending</li>
+          <li><strong>Status:</strong> pending admin approval</li>
         </ul>
         ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
       `,
       smsBody: () =>
-        `Shift swap requested: ${schedule.role}, ${shiftWindow}. Receiver must accept or deny.`,
+        `Shift swap requested: ${schedule.role}, ${shiftWindow}. Awaiting admin approval before receiver response.`,
     });
 
     const populated = await ShiftSwap.findById(swapRequest._id)
@@ -781,7 +781,7 @@ exports.requestShiftSwap = async (req, res, next) => {
       .populate("scheduleId", "role startTime endTime status");
 
     res.status(201).json({
-      message: "Shift swap request submitted",
+      message: "Shift swap request submitted and sent for admin approval",
       swapRequest: populated,
     });
   } catch (err) {
@@ -834,12 +834,6 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
     const { decision, responseNote } = req.body;
     const normalizedDecision = String(decision || "").toLowerCase();
 
-    if (!["accept", "deny"].includes(normalizedDecision)) {
-      return res
-        .status(400)
-        .json({ message: "decision must be either 'accept' or 'deny'" });
-    }
-
     const swapRequest = await ShiftSwap.findOne({
       _id: req.params.swapRequestId,
       tenantId: req.tenantId,
@@ -847,22 +841,6 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
 
     if (!swapRequest) {
       return res.status(404).json({ message: "Swap request not found" });
-    }
-
-    if (swapRequest.status !== "pending") {
-      return res
-        .status(400)
-        .json({ message: `Swap request is already ${swapRequest.status}` });
-    }
-
-    const canRespond =
-      req.user.role === "admin" ||
-      swapRequest.receiverStaffId.toString() === req.user._id.toString();
-
-    if (!canRespond) {
-      return res.status(403).json({
-        message: "Only the receiving staff member (or admin) can respond",
-      });
     }
 
     const schedule = await Schedule.findOne({
@@ -891,80 +869,151 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
         .json({ message: "Requester or receiver staff not found" });
     }
 
-    if (normalizedDecision === "accept") {
-      if (schedule.staffId.toString() !== requester._id.toString()) {
-        return res.status(409).json({
-          message:
-            "This shift is no longer assigned to the original requester; swap cannot be completed",
-        });
-      }
-
-      if (receiver.role !== schedule.role) {
-        return res.status(400).json({
-          message:
-            "Swap cannot be accepted because receiver role no longer matches shift role",
-        });
-      }
-
-      const conflict = await hasConflict({
-        tenantId: req.tenantId,
-        staffId: receiver._id,
-        startTime: schedule.startTime,
-        endTime: schedule.endTime,
-      });
-
-      if (conflict) {
-        return res.status(409).json({
-          message: "Receiver now has a conflicting schedule in this time slot",
-          conflict,
-        });
-      }
-
-      schedule.staffId = receiver._id;
-      const swapAudit = `Shift swapped from ${requester.name || requester._id} to ${receiver.name || receiver._id} on ${new Date().toUTCString()}`;
-      schedule.notes = schedule.notes
-        ? `${schedule.notes}\n${swapAudit}`
-        : swapAudit;
-      await schedule.save();
-
-      swapRequest.status = "accepted";
-    } else {
-      swapRequest.status = "denied";
-    }
-
-    swapRequest.responseNote = responseNote || "";
-    swapRequest.respondedAt = new Date();
-    swapRequest.resolvedBy = req.user._id;
-    await swapRequest.save();
-
     const admins = await getTenantAdmins(req.tenantId, [
       requester._id,
       receiver._id,
     ]);
-    const recipients = [requester, receiver, ...admins];
     const shiftWindow = `${toUtcString(swapRequest.shiftStartTime)} - ${toUtcString(swapRequest.shiftEndTime)}`;
-    const decisionWord =
-      normalizedDecision === "accept" ? "accepted" : "denied";
+    let decisionWord = "";
+    let scheduleUpdated = false;
 
-    await notifyUsersBestEffort({
-      tenantId: req.tenantId,
-      users: recipients,
-      emailSubject: `Shift swap ${decisionWord}`,
-      emailHtml: (user) => `
-        <p>Hi ${user.name || "team member"},</p>
-        <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
-        <ul>
-          <li><strong>Role:</strong> ${swapRequest.role}</li>
-          <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
-          <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
-          <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
-          <li><strong>Decision:</strong> ${decisionWord}</li>
-        </ul>
-        ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
-      `,
-      smsBody: () =>
-        `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
-    });
+    if (swapRequest.status === "pending_admin") {
+      if (req.user.role !== "admin") {
+        return res.status(403).json({
+          message:
+            "Only admins can approve or deny swap requests at this stage",
+        });
+      }
+
+      if (!["approve", "deny"].includes(normalizedDecision)) {
+        return res
+          .status(400)
+          .json({ message: "decision must be either 'approve' or 'deny'" });
+      }
+
+      if (normalizedDecision === "approve") {
+        swapRequest.status = "pending_receiver";
+        decisionWord = "approved by admin";
+      } else {
+        swapRequest.status = "admin_denied";
+        decisionWord = "denied by admin";
+      }
+
+      swapRequest.responseNote = responseNote || "";
+      swapRequest.respondedAt = new Date();
+      swapRequest.resolvedBy = req.user._id;
+      await swapRequest.save();
+
+      const recipients = [requester, receiver, ...admins];
+      await notifyUsersBestEffort({
+        tenantId: req.tenantId,
+        users: recipients,
+        emailSubject: `Shift swap ${decisionWord}`,
+        emailHtml: (user) => `
+          <p>Hi ${user.name || "team member"},</p>
+          <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
+          <ul>
+            <li><strong>Role:</strong> ${swapRequest.role}</li>
+            <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
+            <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
+            <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+            <li><strong>Status:</strong> ${swapRequest.status}</li>
+          </ul>
+          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+        `,
+        smsBody: () =>
+          `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
+      });
+    } else if (swapRequest.status === "pending_receiver") {
+      const isReceiver =
+        swapRequest.receiverStaffId.toString() === req.user._id.toString();
+      if (!isReceiver && req.user.role !== "admin") {
+        return res.status(403).json({
+          message:
+            "Only the receiving staff member (or admin) can accept or deny at this stage",
+        });
+      }
+
+      if (!["accept", "deny"].includes(normalizedDecision)) {
+        return res
+          .status(400)
+          .json({ message: "decision must be either 'accept' or 'deny'" });
+      }
+
+      if (normalizedDecision === "accept") {
+        if (schedule.staffId.toString() !== requester._id.toString()) {
+          return res.status(409).json({
+            message:
+              "This shift is no longer assigned to the original requester; swap cannot be completed",
+          });
+        }
+
+        if (receiver.role !== schedule.role) {
+          return res.status(400).json({
+            message:
+              "Swap cannot be accepted because receiver role no longer matches shift role",
+          });
+        }
+
+        const conflict = await hasConflict({
+          tenantId: req.tenantId,
+          staffId: receiver._id,
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+        });
+
+        if (conflict) {
+          return res.status(409).json({
+            message:
+              "Receiver now has a conflicting schedule in this time slot",
+            conflict,
+          });
+        }
+
+        schedule.staffId = receiver._id;
+        const swapAudit = `Shift swapped from ${requester.name || requester._id} to ${receiver.name || receiver._id} on ${new Date().toUTCString()}`;
+        schedule.notes = schedule.notes
+          ? `${schedule.notes}\n${swapAudit}`
+          : swapAudit;
+        await schedule.save();
+
+        swapRequest.status = "accepted";
+        scheduleUpdated = true;
+      } else {
+        swapRequest.status = "denied";
+      }
+
+      swapRequest.responseNote = responseNote || "";
+      swapRequest.respondedAt = new Date();
+      swapRequest.resolvedBy = req.user._id;
+      await swapRequest.save();
+
+      decisionWord = normalizedDecision === "accept" ? "accepted" : "denied";
+      const recipients = [requester, receiver, ...admins];
+      await notifyUsersBestEffort({
+        tenantId: req.tenantId,
+        users: recipients,
+        emailSubject: `Shift swap ${decisionWord}`,
+        emailHtml: (user) => `
+          <p>Hi ${user.name || "team member"},</p>
+          <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
+          <ul>
+            <li><strong>Role:</strong> ${swapRequest.role}</li>
+            <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
+            <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
+            <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+            <li><strong>Decision:</strong> ${decisionWord}</li>
+          </ul>
+          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+        `,
+        smsBody: () =>
+          `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
+      });
+    } else {
+      return res
+        .status(400)
+        .json({ message: `Swap request is already ${swapRequest.status}` });
+    }
 
     const populated = await ShiftSwap.findById(swapRequest._id)
       .populate("requesterStaffId", "name email role")
@@ -974,7 +1023,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
     res.json({
       message: `Shift swap ${decisionWord}`,
       swapRequest: populated,
-      scheduleUpdated: normalizedDecision === "accept",
+      scheduleUpdated,
     });
   } catch (err) {
     next(err);

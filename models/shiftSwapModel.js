@@ -49,8 +49,16 @@ const shiftSwapSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["pending", "accepted", "denied", "cancelled", "expired"],
-      default: "pending",
+      enum: [
+        "pending_admin",
+        "pending_receiver",
+        "accepted",
+        "denied",
+        "admin_denied",
+        "cancelled",
+        "expired",
+      ],
+      default: "pending_admin",
       index: true,
     },
     respondedAt: {
@@ -68,7 +76,11 @@ const shiftSwapSchema = new mongoose.Schema(
 
 shiftSwapSchema.index(
   { tenantId: 1, scheduleId: 1, receiverStaffId: 1, status: 1 },
-  { partialFilterExpression: { status: "pending" } },
+  {
+    partialFilterExpression: {
+      status: { $in: ["pending_admin", "pending_receiver"] },
+    },
+  },
 );
 
 module.exports = mongoose.model("ShiftSwap", shiftSwapSchema);

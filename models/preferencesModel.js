@@ -21,11 +21,6 @@ const preferencesSchema = new mongoose.Schema(
       default: [],
     },
 
-    unavailableDaysOfWeek: {
-      type: [Number],
-      default: [],
-    },
-
     preferredShiftStart: {
       type: String, // "08:00"
       default: null,
@@ -74,11 +69,6 @@ const preferencesSchema = new mongoose.Schema(
     timeOffSmsNotificationsEnabled: {
       type: Boolean,
       default: true,
-    },
-
-    timezone: {
-      type: String,
-      default: "UTC",
     },
   },
   { timestamps: true },

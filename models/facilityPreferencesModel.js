@@ -18,19 +18,21 @@ const facilityPreferencesSchema = new mongoose.Schema(
 
     // ─── SCHEDULING PATTERN ─────────────────────────────────────────────────
     /**
-     * The rotation pattern the facility uses.
+     * Scheduling style used as ranking guidance during auto-generate.
      *
      * Supported values:
-     *   "4_on_4_off"   — 4 consecutive working days, 4 days off (default)
-     *   "2_2_3"        — rotating 2-on/2-off/3-on (Pitman variant)
-     *   "panama"       — 2-on/2-off/3-on/2-on/2-off/3-on (28-day cycle)
-     *   "fixed_5_2"    — standard Mon-Fri, fixed weekends off
-     *   "rotating_3"   — 3 shifts per week, rotating days
-     *   "custom"       — no enforced pattern; purely coverage-driven
+     *   "balance"      — default fully fairness-based mode
+     *   "4_on_4_off"   — prefers building 4-day work blocks
+     *   "2_2_3"        — prefers short 2-3 day blocks
+     *   "panama"       — prefers short 2-3 day blocks across a 2-week rhythm
+     *   "fixed_5_2"    — prefers weekday-heavy 5-on/2-off scheduling
+     *   "rotating_3"   — prefers 3 assigned days per week with spacing
+     *   "custom"       — no extra pattern steering beyond fairness
      */
     schedulingPattern: {
       type: String,
       enum: [
+        "balance",
         "4_on_4_off",
         "2_2_3",
         "panama",
@@ -38,60 +40,21 @@ const facilityPreferencesSchema = new mongoose.Schema(
         "rotating_3",
         "custom",
       ],
-      default: "4_on_4_off",
+      default: "balance",
     },
 
-    // ─── WORKLOAD LIMITS ─────────────────────────────────────────────────────
+    // ─── WORKLOAD SIGNALS ────────────────────────────────────────────────────
     /**
-     * Maximum consecutive working days before a staff member must have a day off.
-     * Auto-generate will skip staff who would exceed this if assigned.
+     * Weekly hour threshold used to start flagging projected overtime
+     * in ranking metrics (not a hard assignment blocker).
      */
-    maxConsecutiveWorkDays: {
-      type: Number,
-      default: 4,
-      min: 1,
-      max: 14,
-    },
-
-    /**
-     * Facility-level default weekly hour cap (overridden by staff's own
-     * maxHoursPerWeek if set and lower).
-     */
-    defaultMaxHoursPerWeek: {
+    weeklyOvertimeThresholdHours: {
       type: Number,
       default: 40,
       min: 1,
     },
 
-    /**
-     * Minimum rest hours required between the end of one shift and the
-     * start of the next for the same staff member.
-     */
-    minRestHoursBetweenShifts: {
-      type: Number,
-      default: 8,
-      min: 0,
-    },
-
     // ─── FAIRNESS & DISTRIBUTION ─────────────────────────────────────────────
-    /**
-     * Whether auto-generate should try to distribute weekend shifts
-     * evenly across staff rather than purely by workload score.
-     */
-    evenWeekendDistribution: {
-      type: Boolean,
-      default: true,
-    },
-
-    /**
-     * Whether auto-generate should try to distribute night shifts
-     * evenly across staff.
-     */
-    evenNightDistribution: {
-      type: Boolean,
-      default: true,
-    },
-
     /**
      * How many days back to look when calculating recent workload fairness.
      * Higher = more historical context; lower = more responsive to recent changes.
@@ -101,21 +64,6 @@ const facilityPreferencesSchema = new mongoose.Schema(
       default: 28,
       min: 7,
       max: 90,
-    },
-
-    // ─── STAFF PREFERENCE WEIGHT ─────────────────────────────────────────────
-    /**
-     * How strongly staff scheduling preferences (preferred days, shift times,
-     * dislikes nights) influence auto-generate assignment ranking.
-     *
-     *   "strict"   — preference mismatches are near-disqualifying
-     *   "balanced" — preferences are a meaningful but not dominant factor (default)
-     *   "loose"    — preferences are a tiebreaker only; workload fairness dominates
-     */
-    staffPreferenceWeight: {
-      type: String,
-      enum: ["strict", "balanced", "loose"],
-      default: "balanced",
     },
 
     // ─── NOTIFICATIONS ───────────────────────────────────────────────────────

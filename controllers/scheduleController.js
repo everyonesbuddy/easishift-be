@@ -1,6 +1,7 @@
 // controllers/scheduleController.js
 const Schedule = require("../models/scheduleModel");
 const Coverage = require("../models/coverageModel");
+const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
@@ -9,11 +10,33 @@ const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
-const MINUTES_IN_WEEK = 40 * 60;
-const FAIRNESS_LOOKBACK_DAYS = 28;
+const HOURS_TO_MINUTES = 60;
+
+const DEFAULT_FACILITY_POLICY = Object.freeze({
+  schedulingPattern: "balance",
+  weeklyOvertimeThresholdHours: 40,
+  fairnessLookbackDays: 28,
+  shiftReminderLeadHours: 24,
+  notifyStaffOnCoveragePost: false,
+});
 
 const minutesBetween = (start, end) =>
   (new Date(end) - new Date(start)) / 60000;
+
+const addUtcDays = (dateLike, days) => {
+  const date = new Date(dateLike);
+  date.setUTCHours(0, 0, 0, 0);
+  date.setUTCDate(date.getUTCDate() + days);
+  return date;
+};
+
+const getUtcDayKey = (dateLike) => {
+  const date = new Date(dateLike);
+  const year = date.getUTCFullYear();
+  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(date.getUTCDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+};
 
 const getUtcWeekStart = (dateLike) => {
   const date = new Date(dateLike);
@@ -34,24 +57,311 @@ const stableHash = (value) => {
   return hash;
 };
 
+const getEffectiveFacilityPolicy = (facilityPreferences) => {
+  const merged = {
+    ...DEFAULT_FACILITY_POLICY,
+    ...(facilityPreferences || {}),
+  };
+
+  return {
+    ...merged,
+    weeklyOvertimeThresholdMinutes:
+      Number(merged.weeklyOvertimeThresholdHours) * HOURS_TO_MINUTES,
+  };
+};
+
+const isWeekendDate = (dateLike) => {
+  const weekday = new Date(dateLike).getUTCDay();
+  return weekday === 0 || weekday === 6;
+};
+
+const isNightShift = (startTime, endTime) => {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+  return (
+    end.getUTCDate() !== start.getUTCDate() ||
+    start.getUTCHours() >= 19 ||
+    start.getUTCHours() < 6
+  );
+};
+
+const parseTimeToMinutes = (value) => {
+  if (!value || typeof value !== "string") return null;
+  const [hoursText, minutesText] = value.split(":");
+  const hours = Number(hoursText);
+  const minutes = Number(minutesText);
+
+  if (
+    !Number.isInteger(hours) ||
+    !Number.isInteger(minutes) ||
+    hours < 0 ||
+    hours > 23 ||
+    minutes < 0 ||
+    minutes > 59
+  ) {
+    return null;
+  }
+
+  return hours * HOURS_TO_MINUTES + minutes;
+};
+
+const getUtcMinutesOfDay = (dateLike) => {
+  const date = new Date(dateLike);
+  return date.getUTCHours() * HOURS_TO_MINUTES + date.getUTCMinutes();
+};
+
+const getEffectiveOvertimeThresholdMinutes = ({
+  staffPreferences,
+  facilityPolicy,
+}) => {
+  const facilityThreshold = facilityPolicy.weeklyOvertimeThresholdMinutes;
+  const staffCapHours = Number(staffPreferences?.maxHoursPerWeek);
+
+  if (Number.isFinite(staffCapHours) && staffCapHours > 0) {
+    return Math.min(facilityThreshold, staffCapHours * HOURS_TO_MINUTES);
+  }
+
+  return facilityThreshold;
+};
+
+const getConsecutiveDaysIfAssigned = (assignedDaySet, dateLike) => {
+  const dayKeys = new Set(assignedDaySet || []);
+  const targetDate = addUtcDays(dateLike, 0);
+  dayKeys.add(getUtcDayKey(targetDate));
+
+  let total = 1;
+  let cursor = addUtcDays(targetDate, -1);
+  while (dayKeys.has(getUtcDayKey(cursor))) {
+    total += 1;
+    cursor = addUtcDays(cursor, -1);
+  }
+
+  cursor = addUtcDays(targetDate, 1);
+  while (dayKeys.has(getUtcDayKey(cursor))) {
+    total += 1;
+    cursor = addUtcDays(cursor, 1);
+  }
+
+  return total;
+};
+
+const countAssignedDaysInWeekIfAssigned = (assignedDaySet, dateLike) => {
+  const dayKeys = new Set(assignedDaySet || []);
+  dayKeys.add(getUtcDayKey(dateLike));
+
+  let total = 0;
+  const weekStart = getUtcWeekStart(dateLike);
+  for (let offset = 0; offset < 7; offset += 1) {
+    if (dayKeys.has(getUtcDayKey(addUtcDays(weekStart, offset)))) {
+      total += 1;
+    }
+  }
+
+  return total;
+};
+
+const getPatternPenalty = ({
+  schedulingPattern,
+  coverageStart,
+  assignedDaySet,
+  consecutiveDaysIfAssigned,
+  projectedAssignedDaysThisWeek,
+}) => {
+  const previousDayAssigned = assignedDaySet?.has(
+    getUtcDayKey(addUtcDays(coverageStart, -1)),
+  );
+  const nextDayAssigned = assignedDaySet?.has(
+    getUtcDayKey(addUtcDays(coverageStart, 1)),
+  );
+  const isWeekend = isWeekendDate(coverageStart);
+
+  switch (schedulingPattern) {
+    case "balance":
+    case "custom":
+      return 0;
+    case "4_on_4_off":
+      if (consecutiveDaysIfAssigned > 4) return 4;
+      return previousDayAssigned || nextDayAssigned ? 0 : 2;
+    case "2_2_3":
+      if (consecutiveDaysIfAssigned > 3) return 3;
+      if (consecutiveDaysIfAssigned === 1) return 2;
+      return 0;
+    case "panama":
+      if (consecutiveDaysIfAssigned > 3) return 3;
+      if (projectedAssignedDaysThisWeek > 4) return 2;
+      if (consecutiveDaysIfAssigned === 1) return 2;
+      return 0;
+    case "fixed_5_2":
+      if (isWeekend) return 4;
+      if (projectedAssignedDaysThisWeek > 5) return 3;
+      return 0;
+    case "rotating_3":
+      if (projectedAssignedDaysThisWeek > 3) return 4;
+      if (previousDayAssigned || nextDayAssigned) return 2;
+      return 0;
+    default:
+      return 0;
+  }
+};
+
+const addTrackedSchedule = ({
+  schedule,
+  trackedKeys,
+  staffAssignedDaySets,
+  weekendShiftCounts,
+  nightShiftCounts,
+}) => {
+  if (!schedule || schedule.status === "call_out") return;
+
+  const staffId = schedule.staffId.toString();
+  const key = `${staffId}|${new Date(schedule.startTime).toISOString()}|${new Date(schedule.endTime).toISOString()}`;
+
+  if (trackedKeys.has(key)) return;
+  trackedKeys.add(key);
+
+  if (!staffAssignedDaySets[staffId]) {
+    staffAssignedDaySets[staffId] = new Set();
+  }
+  staffAssignedDaySets[staffId].add(getUtcDayKey(schedule.startTime));
+
+  if (isWeekendDate(schedule.startTime)) {
+    weekendShiftCounts[staffId] = (weekendShiftCounts[staffId] || 0) + 1;
+  }
+
+  if (isNightShift(schedule.startTime, schedule.endTime)) {
+    nightShiftCounts[staffId] = (nightShiftCounts[staffId] || 0) + 1;
+  }
+};
+
+const getPreferencePenalty = ({
+  staffPreferences,
+  coverage,
+  assignedDaySet,
+}) => {
+  if (!staffPreferences) return 0;
+
+  let penalty = 0;
+  const weekday = new Date(coverage.date).getUTCDay();
+
+  if (
+    Array.isArray(staffPreferences.preferredDaysOfWeek) &&
+    staffPreferences.preferredDaysOfWeek.length > 0 &&
+    !staffPreferences.preferredDaysOfWeek.includes(weekday)
+  ) {
+    penalty += 1;
+  }
+
+  const preferredStartMinutes = parseTimeToMinutes(
+    staffPreferences.preferredShiftStart,
+  );
+  if (preferredStartMinutes !== null) {
+    const startDifference = Math.abs(
+      preferredStartMinutes - getUtcMinutesOfDay(coverage.startTime),
+    );
+    if (startDifference > 60) {
+      penalty += 1;
+    }
+  }
+
+  const preferredEndMinutes = parseTimeToMinutes(
+    staffPreferences.preferredShiftEnd,
+  );
+  if (preferredEndMinutes !== null) {
+    const endDifference = Math.abs(
+      preferredEndMinutes - getUtcMinutesOfDay(coverage.endTime),
+    );
+    if (endDifference > 60) {
+      penalty += 1;
+    }
+  }
+
+  if (
+    staffPreferences.dislikesNights &&
+    isNightShift(coverage.startTime, coverage.endTime)
+  ) {
+    penalty += 2;
+  }
+
+  if (staffPreferences.prefersBlockScheduling) {
+    const previousDayAssigned = assignedDaySet?.has(
+      getUtcDayKey(addUtcDays(coverage.startTime, -1)),
+    );
+    const nextDayAssigned = assignedDaySet?.has(
+      getUtcDayKey(addUtcDays(coverage.startTime, 1)),
+    );
+
+    if (!previousDayAssigned && !nextDayAssigned) {
+      penalty += 1;
+    }
+  }
+
+  return penalty;
+};
+
 const buildRankingMetrics = ({
   staffId,
-  coverageStart,
+  coverage,
   coverageMinutes,
   coverageId,
+  facilityPolicy,
+  staffPreferences,
   weeklyWorkload,
   recentWorkload,
+  weekendShiftCounts,
+  nightShiftCounts,
+  staffAssignedDaySets,
 }) => {
-  const weekKey = buildWeekKey(staffId, coverageStart);
+  const weekKey = buildWeekKey(staffId, coverage.startTime);
   const projectedWeekMinutes = (weeklyWorkload[weekKey] || 0) + coverageMinutes;
-  const overtimeMinutes = Math.max(0, projectedWeekMinutes - MINUTES_IN_WEEK);
+  const projectedAssignedDaysThisWeek = countAssignedDaysInWeekIfAssigned(
+    staffAssignedDaySets[staffId],
+    coverage.startTime,
+  );
+  const effectiveOvertimeThresholdMinutes =
+    getEffectiveOvertimeThresholdMinutes({
+      staffPreferences,
+      facilityPolicy,
+    });
+  const overtimeMinutes = Math.max(
+    0,
+    projectedWeekMinutes - effectiveOvertimeThresholdMinutes,
+  );
   const recentMinutes = recentWorkload[staffId] || 0;
   const tieBreaker = stableHash(`${coverageId.toString()}|${staffId}`);
+  const consecutiveDaysIfAssigned = getConsecutiveDaysIfAssigned(
+    staffAssignedDaySets[staffId],
+    coverage.startTime,
+  );
+  const preferencePenalty = getPreferencePenalty({
+    staffPreferences,
+    coverage,
+    assignedDaySet: staffAssignedDaySets[staffId],
+  });
+  const patternPenalty = getPatternPenalty({
+    schedulingPattern: facilityPolicy.schedulingPattern,
+    coverageStart: coverage.startTime,
+    assignedDaySet: staffAssignedDaySets[staffId],
+    consecutiveDaysIfAssigned,
+    projectedAssignedDaysThisWeek,
+  });
+  const weekendShiftCount = isWeekendDate(coverage.startTime)
+    ? weekendShiftCounts[staffId] || 0
+    : 0;
+  const nightShiftCount = isNightShift(coverage.startTime, coverage.endTime)
+    ? nightShiftCounts[staffId] || 0
+    : 0;
 
   return {
     weekKey,
     projectedWeekMinutes,
+    effectiveOvertimeThresholdMinutes,
     overtimeMinutes,
+    projectedAssignedDaysThisWeek,
+    consecutiveDaysIfAssigned,
+    patternPenalty,
+    preferencePenalty,
+    weekendShiftCount,
+    nightShiftCount,
     recentMinutes,
     tieBreaker,
   };
@@ -62,12 +372,32 @@ const compareRankingMetrics = (a, b) => {
     return a.overtimeMinutes - b.overtimeMinutes;
   }
 
+  if (a.consecutiveDaysIfAssigned !== b.consecutiveDaysIfAssigned) {
+    return a.consecutiveDaysIfAssigned - b.consecutiveDaysIfAssigned;
+  }
+
+  if (a.patternPenalty !== b.patternPenalty) {
+    return a.patternPenalty - b.patternPenalty;
+  }
+
+  if (a.weekendShiftCount !== b.weekendShiftCount) {
+    return a.weekendShiftCount - b.weekendShiftCount;
+  }
+
+  if (a.nightShiftCount !== b.nightShiftCount) {
+    return a.nightShiftCount - b.nightShiftCount;
+  }
+
   if (a.projectedWeekMinutes !== b.projectedWeekMinutes) {
     return a.projectedWeekMinutes - b.projectedWeekMinutes;
   }
 
   if (a.recentMinutes !== b.recentMinutes) {
     return a.recentMinutes - b.recentMinutes;
+  }
+
+  if (a.preferencePenalty !== b.preferencePenalty) {
+    return a.preferencePenalty - b.preferencePenalty;
   }
 
   return a.tieBreaker - b.tieBreaker;
@@ -81,6 +411,25 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
   }
 
   if (
+    candidateMetrics.consecutiveDaysIfAssigned >
+    cutoffMetrics.consecutiveDaysIfAssigned
+  ) {
+    return `less favorable consecutive-day fit (${candidateMetrics.consecutiveDaysIfAssigned} > ${cutoffMetrics.consecutiveDaysIfAssigned})`;
+  }
+
+  if (candidateMetrics.patternPenalty > cutoffMetrics.patternPenalty) {
+    return `less favorable ${candidateMetrics.patternPenalty > 0 ? "pattern" : "rotation"} fit (${candidateMetrics.patternPenalty} > ${cutoffMetrics.patternPenalty})`;
+  }
+
+  if (candidateMetrics.weekendShiftCount > cutoffMetrics.weekendShiftCount) {
+    return `higher weekend assignment count (${candidateMetrics.weekendShiftCount} > ${cutoffMetrics.weekendShiftCount})`;
+  }
+
+  if (candidateMetrics.nightShiftCount > cutoffMetrics.nightShiftCount) {
+    return `higher night assignment count (${candidateMetrics.nightShiftCount} > ${cutoffMetrics.nightShiftCount})`;
+  }
+
+  if (
     candidateMetrics.projectedWeekMinutes > cutoffMetrics.projectedWeekMinutes
   ) {
     return `higher projected weekly load (${candidateMetrics.projectedWeekMinutes}m > ${cutoffMetrics.projectedWeekMinutes}m)`;
@@ -88,6 +437,10 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
 
   if (candidateMetrics.recentMinutes > cutoffMetrics.recentMinutes) {
     return `higher recent workload (${candidateMetrics.recentMinutes}m > ${cutoffMetrics.recentMinutes}m)`;
+  }
+
+  if (candidateMetrics.preferencePenalty > cutoffMetrics.preferencePenalty) {
+    return `higher preference mismatch score (${candidateMetrics.preferencePenalty} > ${cutoffMetrics.preferencePenalty})`;
   }
 
   if (candidateMetrics.tieBreaker > cutoffMetrics.tieBreaker) {
@@ -213,6 +566,10 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     }
 
     const tenantId = req.tenantId;
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId,
+    }).lean();
+    const facilityPolicy = getEffectiveFacilityPolicy(facilityPreferences);
 
     // 1) GET COVERAGE DETAILS
     const coverageList = await Coverage.find({
@@ -237,7 +594,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     const start = new Date(Math.min(...coverageList.map((c) => c.startTime)));
     const fairnessWindowStart = new Date(start);
     fairnessWindowStart.setUTCDate(
-      fairnessWindowStart.getUTCDate() - FAIRNESS_LOOKBACK_DAYS,
+      fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
     );
     const firstCoverageWeekStart = getUtcWeekStart(start);
     const lastCoverageWeekStart = getUtcWeekStart(end);
@@ -285,6 +642,10 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     const recentWorkload = {};
     const weeklyWorkload = {};
+    const weekendShiftCounts = {};
+    const nightShiftCounts = {};
+    const staffAssignedDaySets = {};
+    const trackedScheduleKeys = new Set();
 
     fairnessSchedules.forEach((schedule) => {
       const staffId = schedule.staffId.toString();
@@ -300,6 +661,24 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         const key = buildWeekKey(staffId, schedule.startTime);
         weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
       }
+
+      addTrackedSchedule({
+        schedule,
+        trackedKeys: trackedScheduleKeys,
+        staffAssignedDaySets,
+        weekendShiftCounts,
+        nightShiftCounts,
+      });
+    });
+
+    existingSchedules.forEach((schedule) => {
+      addTrackedSchedule({
+        schedule,
+        trackedKeys: trackedScheduleKeys,
+        staffAssignedDaySets,
+        weekendShiftCounts,
+        nightShiftCounts,
+      });
     });
 
     console.log(
@@ -321,7 +700,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       const coverageMeta = formatCoverageForMessage(cov);
 
-      const weekday = cov.date.getUTCDay();
+      const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
 
       const roleStaff = await User.find({ tenantId, role: cov.role });
       if (!roleStaff.length) {
@@ -351,13 +730,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       const skippedByReason = {};
       for (const staff of roleStaff) {
         const id = staff._id.toString();
-        const pref = prefMap[id];
+        const currentStaffSchedules = existingByStaff[id] || [];
         let skipReason = null;
 
-        if (pref?.unavailableDaysOfWeek?.includes(weekday)) {
-          skipReason = `unavailable on weekday ${weekday}`;
-        } else if (
-          existingByStaff[id]?.some(
+        if (
+          currentStaffSchedules.some(
             (s) =>
               s.status === "call_out" &&
               s.role === cov.role &&
@@ -375,17 +752,13 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         ) {
           skipReason = `has approved time off overlapping coverage`;
         } else if (
-          existingByStaff[id]?.some(
-            (s) => !(s.endTime <= cov.startTime || s.startTime >= cov.endTime),
+          currentStaffSchedules.some(
+            (s) =>
+              s.status !== "call_out" &&
+              !(s.endTime <= cov.startTime || s.startTime >= cov.endTime),
           )
         ) {
           skipReason = `already scheduled for overlapping shift`;
-        } else if (
-          existingByStaff[id]?.some(
-            (s) => Math.abs(s.endTime - cov.startTime) < 30 * 60 * 1000,
-          )
-        ) {
-          skipReason = `less than 30 min break from previous shift`;
         }
 
         if (skipReason) {
@@ -435,7 +808,6 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         continue;
       }
 
-      const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
       const rankedCandidates = available
         .map((staff) => {
           const staffId = staff._id.toString();
@@ -443,11 +815,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
             staff,
             metrics: buildRankingMetrics({
               staffId,
-              coverageStart: cov.startTime,
+              coverage: cov,
               coverageMinutes,
               coverageId: cov._id,
+              facilityPolicy,
+              staffPreferences: prefMap[staffId],
               weeklyWorkload,
               recentWorkload,
+              weekendShiftCounts,
+              nightShiftCounts,
+              staffAssignedDaySets,
             }),
           };
         })
@@ -459,7 +836,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       rankedCandidates.forEach((entry, rankIndex) => {
         const { staff, metrics } = entry;
         console.log(
-          `[Ranking] #${rankIndex + 1} ${staff.name || "Unknown"} (${staff._id}) -> overtime=${metrics.overtimeMinutes}m, projectedWeek=${metrics.projectedWeekMinutes}m, recent28d=${metrics.recentMinutes}m, tie=${metrics.tieBreaker}`,
+          `[Ranking] #${rankIndex + 1} ${staff.name || "Unknown"} (${staff._id}) -> overtime=${metrics.overtimeMinutes}m, streak=${metrics.consecutiveDaysIfAssigned}, pattern=${metrics.patternPenalty}, weekend=${metrics.weekendShiftCount}, night=${metrics.nightShiftCount}, projectedDaysWeek=${metrics.projectedAssignedDaysThisWeek}, projectedWeek=${metrics.projectedWeekMinutes}m, recent${facilityPolicy.fairnessLookbackDays}d=${metrics.recentMinutes}m, pref=${metrics.preferencePenalty}, tie=${metrics.tieBreaker}`,
         );
       });
 
@@ -515,6 +892,13 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         existingSchedules.push(newShift);
         if (!existingByStaff[staff._id]) existingByStaff[staff._id] = [];
         existingByStaff[staff._id].push(newShift);
+        addTrackedSchedule({
+          schedule: newShift,
+          trackedKeys: trackedScheduleKeys,
+          staffAssignedDaySets,
+          weekendShiftCounts,
+          nightShiftCounts,
+        });
 
         // Notify staff by email about the new assignment (best-effort)
         try {
@@ -620,6 +1004,13 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       alreadyFilledCoverageCount: coverageResults.filter(
         (r) => r.status === "already_filled",
       ).length,
+      policySource: facilityPreferences ? "facility_preferences" : "defaults",
+      facilityPolicy: {
+        schedulingPattern: facilityPolicy.schedulingPattern,
+        weeklyOvertimeThresholdHours:
+          facilityPolicy.weeklyOvertimeThresholdHours,
+        fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
+      },
       notifications,
     };
 

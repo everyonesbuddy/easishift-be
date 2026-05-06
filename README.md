@@ -32,7 +32,8 @@ This service powers:
 - **User**: staff user under tenant (admin, rn, lpn, cna, caregiver, etc.)
 - **Coverage**: required staffing slots by role/date/time and required headcount
 - **Schedule**: assigned shifts per staff member
-- **Preferences**: staff scheduling preferences and notification toggles
+- **Preferences**: staff soft scheduling preferences, weekly hour caps, and notification toggles
+- **FacilityPreferences**: tenant-level auto-scheduling policy defaults and pattern guidance
 - **TimeOff**: staff PTO/leave requests with admin approval flow
 - **Message**: internal staff-to-staff tenant-scoped messages
 
@@ -89,20 +90,93 @@ The auto-scheduler is a rule-based engine (not a black-box model). It processes 
    - `needed = requiredCount - alreadyAssignedCount`
 5. If `needed <= 0`, that coverage is marked already full.
 6. If `needed > 0`, it moves to filtering + choosing staff:
-   - filter out ineligible staff (day unavailable, call-out, overlapping time-off, overlapping shifts, short break)
-   - rank eligible staff with fairness/overtime rules
+   - filter out ineligible staff (call-out on that shift, approved overlapping time-off, overlapping shifts)
+   - rank eligible staff with fairness-first rules plus optional facility pattern guidance
    - assign the top `needed` staff
+
+The scheduler is strictly demand-driven:
+
+- It never creates shifts where there is no coverage demand.
+- It never assigns more than `requiredCount` for a coverage item.
+- If demand needs 8 people and 10 are eligible, it assigns 8 and leaves 2 unassigned based on the ranking results.
+
+#### Demand-Driven Pattern Guidance
+
+Facility scheduling patterns influence ranking only. They do not force assignments when there is no coverage requirement.
+
+Pattern guidance is best understood as a tie-shaping preference layered on top of demand and fairness. The engine still prioritizes coverage fulfillment, conflict avoidance, and workload balance.
+
+`balance` (default)
+
+- Behavior: no additional pattern penalty.
+- Example: if Monday has 5 open RN slots, the top 5 are selected by overtime, fairness, weekend/night balance, and soft preferences.
+- Edge case: if all metrics are equal, stable tie-break decides.
+- Recommendation: use this for most facilities unless you are intentionally trying to nudge toward a recurring cadence.
+
+`4_on_4_off`
+
+- Behavior: prefers assignments that continue or build contiguous multi-day blocks and penalizes isolated single-day placements.
+- Example: if a staff member is already assigned Sun-Mon-Tue, assigning Wed is preferred over assigning someone with no adjacent days.
+- Edge case: if demand exists only on scattered days (for example Mon/Wed/Fri), true 4-on blocks are impossible, so fairness wins and pattern influence is limited.
+- Recommendation: use when your demand usually appears in multi-day runs and you want the schedule to feel block-oriented.
+
+`2_2_3`
+
+- Behavior: prefers short 2-3 day clusters and avoids over-fragmented single-day assignments.
+- Example: assigning Tue to someone already working Mon is favored over assigning Tue to someone with no nearby days.
+- Edge case: if coverage is mostly one-off days, this behaves close to balance mode.
+- Recommendation: use when you want moderate block continuity without pushing long runs.
+
+`panama`
+
+- Behavior: similar to `2_2_3`, but with stronger pressure against stacking too many assigned days in the same week.
+- Example: between two equal candidates, one projected to 4 assigned days in the week is favored over one projected to 5.
+- Edge case: when shortages are high, you may still see uneven week totals because demand coverage and overlap constraints come first.
+- Recommendation: use when you want rotating rhythm with controlled weekly concentration.
+
+`fixed_5_2`
+
+- Behavior: discourages weekend assignments and discourages projecting beyond 5 assigned days in the week.
+- Example: for a Saturday shift, candidates with better weekend distribution and lower fixed-5-2 penalty rise in ranking only if still eligible.
+- Edge case: if weekend coverage is mandatory and limited staff are available, weekend assignments still happen.
+- Recommendation: use in weekday-primary operations where weekend work should be minimized, not eliminated.
+
+`rotating_3`
+
+- Behavior: prefers around 3 assigned days per week and prefers spacing instead of back-to-back days.
+- Example: if a candidate is projected from 3 to 4 assigned days this week, they receive a higher pattern penalty than one projected from 1 to 2.
+- Edge case: if demand is heavily concentrated on consecutive days, spacing cannot be preserved consistently.
+- Recommendation: use for part-time pools or facilities targeting lower weekly day density per person.
+
+`custom`
+
+- Behavior: no extra pattern steering (same practical behavior as balance in current logic).
+- Example: ranking proceeds by fairness stack and preferences only.
+- Edge case: none specific; this is effectively an explicit opt-out of pattern nudging.
+- Recommendation: use when you want full manual control of philosophy without implicit cadence assumptions.
+
+General suggestions and edge cases
+
+- Patterns do not create shifts. No demand means no schedule entry.
+- Patterns do not guarantee perfect cycle compliance. If demand shape conflicts with pattern shape, fairness and eligibility dominate.
+- Surplus staffing is expected: if demand needs 8 and 10 are eligible, 2 remain unassigned and are rotated in future runs via fairness metrics.
+- Night and weekend balancing are always part of the fairness stack.
 
 #### Fairness + Overtime Scoring
 
 When choosing who gets assigned, candidates are ranked by:
 
 1. **Lowest projected overtime minutes** after this assignment (above 40h/week).
-2. **Lowest projected weekly minutes** in that same week.
-3. **Lowest recent workload** over the last 28 days.
-4. **Stable tie-breaker** to avoid always picking the same people when all metrics are equal.
+2. **Best consecutive-day fit** under facility rules.
+3. **Best scheduling-pattern fit** for the facility's selected pattern.
+4. **Fairer weekend distribution** when the coverage is on a weekend.
+5. **Fairer night distribution** when the coverage is a night shift.
+6. **Lowest projected weekly minutes** in that same week.
+7. **Lowest recent workload** over the last `fairnessLookbackDays`.
+8. **Lowest preference mismatch score** from staff soft preferences.
+9. **Stable tie-breaker** to avoid always picking the same people when all metrics are equal.
 
-This keeps assignments equitable, reduces repeatedly skipping the same person in near-tie scenarios, and avoids pushing one person close to overtime when alternatives are available.
+Overtime is treated as a ranking signal (using a configurable weekly threshold), not a hard eligibility blocker. This keeps assignments equitable and treats staff preferences as a later soft factor rather than a dominant one.
 
 #### Output Summary
 
@@ -111,6 +185,7 @@ The endpoint returns per-coverage results and an overall summary, including:
 - `filled`, `partially_filled`, `skipped`, `already_filled` counts
 - `alreadyAssignedCount`, `neededCount`, `unfilledCount`
 - skip reasons for transparency
+- `policySource` and the effective facility policy used for the run
 - notification delivery counts (email/SMS sent/failed)
 
 ### Coverage
@@ -133,6 +208,38 @@ The endpoint returns per-coverage results and an overall summary, including:
 - `GET /api/v1/preferences/me` - get current user preferences
 - `POST /api/v1/preferences/me` - create/update current user preferences
 - `GET /api/v1/preferences/:staffId` - get staff preferences (admin)
+
+Current staff preference fields include:
+
+- `preferredDaysOfWeek`
+- `preferredShiftStart`
+- `preferredShiftEnd`
+- `maxHoursPerWeek`
+- `minHoursPerWeek`
+- `dislikesNights`
+- `prefersBlockScheduling`
+- `scheduleEmailNotificationsEnabled`
+- `scheduleSmsNotificationsEnabled`
+- `timeOffEmailNotificationsEnabled`
+- `timeOffSmsNotificationsEnabled`
+
+Recurring hard day-of-week unavailability is not stored in preferences. Hard availability blocking is handled through approved time-off requests.
+
+Timezone behavior for scheduling is standardized to UTC in the backend. Any local timezone display/conversion should be handled in the frontend.
+
+### Facility Preferences
+
+- `GET /api/v1/facility-preferences` - get current facility scheduling policy (admin)
+- `POST /api/v1/facility-preferences` - create/update facility scheduling policy (admin)
+- `DELETE /api/v1/facility-preferences/reset` - reset facility scheduling policy to defaults (admin)
+
+Current facility preference fields include:
+
+- `schedulingPattern` (`balance` default)
+- `weeklyOvertimeThresholdHours`
+- `fairnessLookbackDays`
+- `shiftReminderLeadHours`
+- `notifyStaffOnCoveragePost`
 
 ### Messaging
 

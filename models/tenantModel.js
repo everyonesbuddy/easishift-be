@@ -34,16 +34,6 @@ const tenantSchema = new mongoose.Schema(
       trim: true,
     },
 
-    // optional: domain for clinic portal login, if you plan multi-hospital web domains
-    domain: {
-      type: String,
-      unique: true,
-      sparse: true,
-      default: null,
-      lowercase: true,
-      trim: true,
-    },
-
     /**
      * PLAN / LIMITS
      * Seat = a user with a login (admin/staff).

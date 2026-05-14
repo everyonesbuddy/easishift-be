@@ -106,7 +106,6 @@ exports.registerTenant = async (req, res, next) => {
   try {
     const {
       name,
-      domain,
       email,
       password,
       tenantPhone,
@@ -120,7 +119,6 @@ exports.registerTenant = async (req, res, next) => {
     // Create tenant
     const tenant = await Tenant.create({
       name,
-      domain,
       email,
       tenantPhone,
       tenantPhoneCountryCode,

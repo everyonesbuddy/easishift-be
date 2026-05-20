@@ -35,6 +35,29 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
+     * INDUSTRY
+     * Type of business the tenant operates
+     */
+    industry: {
+      type: String,
+      enum: [
+        "Healthcare",
+        "Senior Living",
+        "Retail",
+        "Hospitality",
+        "Manufacturing",
+        "Education",
+        "Transportation",
+        "Finance",
+        "Police",
+        "Warehouse and Logistics",
+        "Security Service",
+        "Other",
+      ],
+      default: null,
+    },
+
+    /**
      * PLAN / LIMITS
      * Seat = a user with a login (admin/staff).
      * Default 1 because signup creates an admin user.

@@ -113,6 +113,7 @@ exports.registerTenant = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       address,
+      industry,
       adminName,
     } = req.body;
 
@@ -123,6 +124,7 @@ exports.registerTenant = async (req, res, next) => {
       tenantPhone,
       tenantPhoneCountryCode,
       address,
+      industry,
     });
 
     // Create admin user

@@ -51,7 +51,7 @@ app.use(cookieParser());
 // server-to-server calls will have no Origin and are allowed.
 const allowedOrigins = new Set([
   "https://easishift.com",
-  "https://www.wisershifts.com",
+  "https://wisershifts.com",
   "http://localhost:5173",
   "http://localhost:8081",
 ]);

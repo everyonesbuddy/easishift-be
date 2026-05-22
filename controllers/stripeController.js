@@ -77,7 +77,7 @@ exports.createCheckoutSession = async (req, res, next) => {
         {
           price_data: {
             currency: "usd",
-            product_data: { name: `${plan.name} plan (EasiShift)` },
+            product_data: { name: `${plan.name} plan (WiserShifts)` },
             recurring: { interval: intervalFromPlanKey(planKey) },
             unit_amount: plan.priceCents,
           },

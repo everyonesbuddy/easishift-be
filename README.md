@@ -1,6 +1,6 @@
-# EasiShift Backend
+# WiserShifts Backend
 
-Multi-tenant workforce scheduling backend for care facilities and healthcare operations teams.
+Multi-tenant workforce scheduling backend for your business.
 
 This service powers:
 
@@ -345,7 +345,7 @@ http://localhost:5000/api/v1
 
 Current allowed origins in `app.js`:
 
-- `https://easishift.com`
+- `https://wisershifts.com`
 - `http://localhost:5173`
 
 If your frontend runs on a different origin, update the whitelist in `app.js`.
@@ -378,6 +378,6 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 
 ## Notes
 
-- This backend is now focused on workforce operations (EasiShift), not patient portal workflows.
+- This backend is now focused on workforce operations (Wisershifts), not patient portal workflows.
 - Use tenant-scoped queries for all protected resources.
 - Keep secrets in `config.env` and never commit real credentials.

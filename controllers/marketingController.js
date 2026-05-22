@@ -77,7 +77,7 @@ exports.sendTurnoverRoiEmailSummary = async (req, res, next) => {
     const html = `
       <div style="font-family:Arial,sans-serif;line-height:1.5;color:#0f172a;max-width:680px;margin:0 auto;">
         <h2 style="margin:0 0 8px 0;">LTC Turnover ROI Summary</h2>
-        <p style="margin:0 0 16px 0;color:#334155;">Thanks for using the Easishift turnover ROI calculator. Here is a copy of your results.</p>
+        <p style="margin:0 0 16px 0;color:#334155;">Thanks for using the WiserShifts turnover ROI calculator. Here is a copy of your results.</p>
 
         <h3 style="margin:20px 0 8px 0;">Facility Inputs</h3>
         <table style="width:100%;border-collapse:collapse;">

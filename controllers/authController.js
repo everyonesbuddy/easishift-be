@@ -112,6 +112,7 @@ exports.registerTenant = async (req, res, next) => {
       tenantPhoneCountryCode,
       userPhone,
       userPhoneCountryCode,
+      profilePicture,
       address,
       industry,
       adminName,
@@ -135,6 +136,7 @@ exports.registerTenant = async (req, res, next) => {
       email,
       userPhone,
       userPhoneCountryCode,
+      profilePicture,
       passwordHash,
       role: "admin",
     });
@@ -209,7 +211,14 @@ exports.registerTenant = async (req, res, next) => {
  */
 exports.registerStaff = async (req, res, next) => {
   try {
-    const { name, email, role, userPhone, userPhoneCountryCode } = req.body;
+    const {
+      name,
+      email,
+      role,
+      userPhone,
+      userPhoneCountryCode,
+      profilePicture,
+    } = req.body;
 
     if (!name || !email) {
       return res.status(400).json({ message: "Name and email are required" });
@@ -224,6 +233,7 @@ exports.registerStaff = async (req, res, next) => {
       email,
       userPhone,
       userPhoneCountryCode,
+      profilePicture,
       passwordHash,
       role,
     });
@@ -336,6 +346,9 @@ exports.bulkRegisterStaff = async (req, res, next) => {
       const userPhoneCountryCode = row.userPhoneCountryCode
         ? String(row.userPhoneCountryCode).trim()
         : null;
+      const profilePicture = row.profilePicture
+        ? String(row.profilePicture).trim()
+        : null;
 
       if (!name || !email) {
         result.failed += 1;
@@ -391,6 +404,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
           email,
           userPhone,
           userPhoneCountryCode,
+          profilePicture,
           passwordHash,
           role,
         });
@@ -736,11 +750,18 @@ exports.getUserById = async (req, res, next) => {
  */
 exports.updateUser = async (req, res, next) => {
   try {
-    const { name, email, role, userPhone, userPhoneCountryCode } = req.body;
+    const {
+      name,
+      email,
+      role,
+      userPhone,
+      userPhoneCountryCode,
+      profilePicture,
+    } = req.body;
 
     const updated = await User.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
-      { name, email, role, userPhone, userPhoneCountryCode },
+      { name, email, role, userPhone, userPhoneCountryCode, profilePicture },
       { new: true },
     ).select("-passwordHash");
 

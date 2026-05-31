@@ -9,6 +9,56 @@ function normalizeToUTC(date) {
   );
 }
 
+function normalizeShiftWindow(startTime, endTime) {
+  const parsedStart = new Date(startTime);
+  const parsedEnd = new Date(endTime);
+
+  if (
+    Number.isNaN(parsedStart.getTime()) ||
+    Number.isNaN(parsedEnd.getTime())
+  ) {
+    return { error: "invalid_start_or_end" };
+  }
+
+  let normalizedEnd = parsedEnd;
+  // Treat end <= start as an overnight shift that ends the following day.
+  if (normalizedEnd <= parsedStart) {
+    normalizedEnd = new Date(normalizedEnd.getTime() + 24 * 60 * 60 * 1000);
+  }
+
+  return {
+    startTime: parsedStart,
+    endTime: normalizedEnd,
+  };
+}
+
+function isOvernightShift(startTime, endTime) {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return false;
+  }
+
+  return (
+    start.getUTCFullYear() !== end.getUTCFullYear() ||
+    start.getUTCMonth() !== end.getUTCMonth() ||
+    start.getUTCDate() !== end.getUTCDate()
+  );
+}
+
+function withOvernightFlag(coverage) {
+  const plain =
+    coverage && typeof coverage.toObject === "function"
+      ? coverage.toObject()
+      : { ...coverage };
+
+  return {
+    ...plain,
+    spansOvernight: isOvernightShift(plain.startTime, plain.endTime),
+  };
+}
+
 function formatDuplicateSchedule({ date, role, startTime, endTime }) {
   return {
     date: new Date(date).toISOString(),
@@ -59,6 +109,7 @@ exports.createCoverage = async (req, res, next) => {
       });
     }
 
+    const normalizedShifts = [];
     for (const [index, shift] of shifts.entries()) {
       if (!shift || typeof shift !== "object") {
         return res.status(400).json({
@@ -74,21 +125,10 @@ exports.createCoverage = async (req, res, next) => {
         });
       }
 
-      const parsedStart = new Date(startTime);
-      const parsedEnd = new Date(endTime);
-
-      if (
-        Number.isNaN(parsedStart.getTime()) ||
-        Number.isNaN(parsedEnd.getTime())
-      ) {
+      const normalizedWindow = normalizeShiftWindow(startTime, endTime);
+      if (normalizedWindow.error) {
         return res.status(400).json({
           message: `Shift at index ${index} has invalid startTime or endTime`,
-        });
-      }
-
-      if (parsedStart >= parsedEnd) {
-        return res.status(400).json({
-          message: `Shift at index ${index} must have endTime after startTime`,
         });
       }
 
@@ -97,15 +137,22 @@ exports.createCoverage = async (req, res, next) => {
           message: `Shift at index ${index} has invalid requiredCount`,
         });
       }
+
+      normalizedShifts.push({
+        role,
+        requiredCount,
+        note: shift.note,
+        startTime: normalizedWindow.startTime,
+        endTime: normalizedWindow.endTime,
+      });
     }
 
     const docs = [];
     const requestKeys = new Set();
     const duplicateRequestMap = new Map();
     for (const date of normalizedDates) {
-      for (const shift of shifts) {
-        const startTime = new Date(shift.startTime);
-        const endTime = new Date(shift.endTime);
+      for (const shift of normalizedShifts) {
+        const { startTime, endTime } = shift;
         const uniqueKey = `${date.toISOString()}-${shift.role}-${startTime.toISOString()}-${endTime.toISOString()}`;
         const duplicateItem = formatDuplicateSchedule({
           date,
@@ -166,7 +213,7 @@ exports.createCoverage = async (req, res, next) => {
     }
 
     const created = await Coverage.insertMany(docs, { ordered: true });
-    res.status(201).json(created);
+    res.status(201).json(created.map(withOvernightFlag));
   } catch (err) {
     if (err?.code === 11000) {
       return res.status(409).json({
@@ -200,7 +247,7 @@ exports.getCoverage = async (req, res, next) => {
     if (req.query.role) filter.role = req.query.role;
 
     const list = await Coverage.find(filter).sort({ date: 1, startTime: 1 });
-    res.json(list);
+    res.json(list.map(withOvernightFlag));
   } catch (err) {
     next(err);
   }
@@ -217,16 +264,40 @@ exports.updateCoverage = async (req, res, next) => {
 
     if (update.date) update.date = normalizeToUTC(update.date);
 
+    const existing = await Coverage.findOne({
+      _id: id,
+      tenantId: req.tenantId,
+    });
+    if (!existing)
+      return res.status(404).json({ message: "Coverage not found" });
+
+    if (update.startTime !== undefined || update.endTime !== undefined) {
+      const startTimeInput =
+        update.startTime !== undefined ? update.startTime : existing.startTime;
+      const endTimeInput =
+        update.endTime !== undefined ? update.endTime : existing.endTime;
+
+      const normalizedWindow = normalizeShiftWindow(
+        startTimeInput,
+        endTimeInput,
+      );
+      if (normalizedWindow.error) {
+        return res.status(400).json({
+          message: "Invalid startTime or endTime",
+        });
+      }
+
+      update.startTime = normalizedWindow.startTime;
+      update.endTime = normalizedWindow.endTime;
+    }
+
     const updated = await Coverage.findOneAndUpdate(
       { _id: id, tenantId: req.tenantId },
       update,
       { new: true },
     );
 
-    if (!updated)
-      return res.status(404).json({ message: "Coverage not found" });
-
-    res.json(updated);
+    res.json(withOvernightFlag(updated));
   } catch (err) {
     next(err);
   }
@@ -296,7 +367,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
       const assigned = scheduleCountMap[key] || 0;
 
       return {
-        ...cov.toObject(),
+        ...withOvernightFlag(cov),
         assignedCount: assigned,
         remaining: Math.max(0, cov.requiredCount - assigned),
       };
@@ -359,7 +430,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
       }-${cov.startTime.toISOString()}-${cov.endTime.toISOString()}`;
       const assigned = scheduleCountMap[key] || 0;
       return {
-        ...cov.toObject(),
+        ...withOvernightFlag(cov),
         assignedCount: assigned,
         remaining: Math.max(0, cov.requiredCount - assigned),
       };

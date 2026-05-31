@@ -7,6 +7,7 @@ const {
   getCoverage,
   updateCoverage,
   deleteCoverage,
+  deleteCoveragesByIds,
   getUnfilledCoverage,
   getUnfilledCoverageForAuto,
 } = require("../controllers/coverageController");
@@ -38,6 +39,7 @@ router.get("/unfilled-auto", restrictTo("admin"), getUnfilledCoverageForAuto);
 
 // Admin only
 router.post("/", restrictTo("admin"), createCoverage);
+router.delete("/bulk", restrictTo("admin"), deleteCoveragesByIds);
 router.put("/:id", restrictTo("admin"), updateCoverage);
 router.delete("/:id", restrictTo("admin"), deleteCoverage);
 

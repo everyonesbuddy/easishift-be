@@ -1,5 +1,6 @@
 const Coverage = require("../models/coverageModel");
 const Schedule = require("../models/scheduleModel");
+const mongoose = require("mongoose");
 
 // Normalize to UTC midnight
 function normalizeToUTC(date) {
@@ -318,6 +319,60 @@ exports.deleteCoverage = async (req, res, next) => {
       return res.status(404).json({ message: "Coverage not found" });
 
     res.json({ message: "Coverage deleted" });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// DELETE multiple coverages by ids
+exports.deleteCoveragesByIds = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin")
+      return res.status(403).json({ message: "Admins only" });
+
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : null;
+    if (!ids || !ids.length) {
+      return res.status(400).json({
+        message: "ids is required and must be a non-empty array",
+      });
+    }
+
+    const uniqueIds = [...new Set(ids.map((id) => String(id).trim()))];
+    const invalidIds = uniqueIds.filter((id) => !mongoose.isValidObjectId(id));
+
+    if (invalidIds.length) {
+      return res.status(400).json({
+        message: "One or more ids are invalid",
+        invalidIds,
+      });
+    }
+
+    const existing = await Coverage.find({
+      tenantId: req.tenantId,
+      _id: { $in: uniqueIds },
+    })
+      .select("_id")
+      .lean();
+
+    const existingIdSet = new Set(existing.map((item) => String(item._id)));
+    const notFoundIds = uniqueIds.filter((id) => !existingIdSet.has(id));
+
+    let deletedCount = 0;
+    if (existing.length) {
+      const deleteResult = await Coverage.deleteMany({
+        tenantId: req.tenantId,
+        _id: { $in: existing.map((item) => item._id) },
+      });
+      deletedCount = deleteResult.deletedCount || 0;
+    }
+
+    return res.status(200).json({
+      message: "Bulk delete completed",
+      requestedCount: uniqueIds.length,
+      deletedCount,
+      notFoundCount: notFoundIds.length,
+      notFoundIds,
+    });
   } catch (err) {
     next(err);
   }

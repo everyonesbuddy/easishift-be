@@ -300,6 +300,7 @@ exports.registerStaff = async (req, res, next) => {
     });
 
     const setupUrl = await createPasswordSetupLink(req, user);
+    console.log(`Staff password setup link for ${user.email}: ${setupUrl}`);
 
     // Notify the staff member about account creation (best-effort)
     try {
@@ -477,6 +478,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
         });
 
         const setupUrl = await createPasswordSetupLink(req, user);
+        console.log(`Staff password setup link for ${user.email}: ${setupUrl}`);
 
         let inviteWarning = null;
         if (user.email) {

@@ -36,6 +36,12 @@ const coverageSchema = new mongoose.Schema(
       index: true,
     },
 
+    shiftTag: {
+      type: String,
+      default: null,
+      index: true,
+    },
+
     startTime: {
       type: Date,
       required: true,
@@ -70,6 +76,7 @@ coverageSchema.index(
     role: 1,
     unitArea: 1,
     shiftType: 1,
+    shiftTag: 1,
     startTime: 1,
     endTime: 1,
   },

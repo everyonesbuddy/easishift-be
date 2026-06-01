@@ -8,6 +8,19 @@ const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
+const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
+
+const getPasswordResetTtlMs = () => {
+  const raw = process.env.PASSWORD_RESET_TTL_MINUTES;
+  const parsed = Number(raw);
+  const minutes =
+    Number.isFinite(parsed) && parsed > 0
+      ? Math.floor(parsed)
+      : DEFAULT_PASSWORD_RESET_TTL_MINUTES;
+
+  return minutes * 60 * 1000;
+};
+
 // Helper: Create JWT
 const signToken = (id, role, tenantId) =>
   jwt.sign({ id, role, tenantId }, process.env.JWT_SECRET, { expiresIn: "7d" });
@@ -119,7 +132,7 @@ const createPasswordSetupLink = async (req, user) => {
     .digest("hex");
 
   user.passwordResetToken = setupTokenHash;
-  user.passwordResetExpires = new Date(Date.now() + 30 * 60 * 1000);
+  user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
   await user.save({ validateBeforeSave: false });
 
   return buildResetUrl(req, setupToken);
@@ -641,7 +654,7 @@ exports.forgotPassword = async (req, res, next) => {
       .digest("hex");
 
     user.passwordResetToken = resetTokenHash;
-    user.passwordResetExpires = new Date(Date.now() + 30 * 60 * 1000);
+    user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
     await user.save({ validateBeforeSave: false });
 
     const resetUrl = buildResetUrl(req, resetToken);

@@ -34,6 +34,8 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 - Coverage and schedule compatibility is enforced using role + unit area + shift type + certification tags.
 - Overnight coverage is supported by normalizing `endTime <= startTime` to next-day end time.
 - Coverage responses include a computed `spansOvernight` boolean.
+- Coverage now enforces strict shift slot pairing: `shiftType` and `shiftTag` must be provided together (or both omitted).
+- Manual coverage windows do not auto-infer `shiftType`; when using manual `startTime`/`endTime`, keep `shiftType` and `shiftTag` unset.
 - Staff preferences were simplified to preferred days + notification toggles only.
 
 ---
@@ -89,6 +91,7 @@ All tenant data is isolated using `tenantId`.
 - `POST /api/v1/schedules/auto-generate` - auto-generate shifts from coverage (admin)
 - `GET /api/v1/schedules/:id` - get schedule by id
 - `PUT /api/v1/schedules/:id` - update schedule
+- `DELETE /api/v1/schedules/bulk` - bulk delete schedules by ids (admin)
 - `DELETE /api/v1/schedules/:id` - delete schedule (admin)
 
 ### Auto-Generate Scheduling Logic (`POST /api/v1/schedules/auto-generate`)
@@ -213,7 +216,13 @@ The endpoint returns per-coverage results and an overall summary, including:
 Coverage behavior notes:
 
 - `role` is tenant-scoped and must exist in facility `roleFamilies`.
-- `unitArea`, `shiftType`, and `requiredCertificationTags` are supported for compatibility filtering.
+- `unitArea`, `shiftType`, `shiftTag`, and `requiredCertificationTags` are supported for compatibility filtering.
+- Coverage can be created in two ways:
+  - manual window: provide `startTime` + `endTime`
+  - slot-driven window: provide `shiftType` + `shiftTag` and backend resolves UTC times from facility-local slot definitions
+- `shiftType` and `shiftTag` are a strict pair. Send both together for slot-driven coverage, or omit both for manual window coverage.
+- If `shiftType` + `shiftTag` are provided, slot configuration is the source of truth for `startTime`/`endTime`.
+- If `shiftType` + `shiftTag` are omitted, manual `startTime`/`endTime` are used as provided.
 - Overnight windows are normalized automatically when `endTime <= startTime`.
 - Duplicate batch-create requests are rejected with detailed duplicate summaries.
 
@@ -254,9 +263,11 @@ Current facility preference fields include:
 - `fairnessLookbackDays`
 - `shiftReminderLeadHours`
 - `notifyStaffOnCoveragePost`
+- `facilityTimezone` (IANA timezone; used for local slot conversion)
 - `roleFamilies`
 - `unitAreas`
 - `shiftTypes`
+- `shiftTypeDefinitions` (multiple local-time slots per shift type, each with a `tag`)
 - `certificationTags`
 
 ### Messaging
@@ -306,6 +317,7 @@ Create `config.env` in the project root.
 - `FRONTEND_URL` (used for Stripe success/cancel redirects)
 - `FRONTEND_BASE_URL` (optional base URL for password reset links)
 - `FRONTEND_RESET_PATH` (optional, default `/reset-password`)
+- `PASSWORD_RESET_TTL_MINUTES` (optional, defaults to `20160` = 14 days)
 
 ### Stripe
 
@@ -375,6 +387,13 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 - `node scripts/migrate-tenant-defaults.js` - backfills tenant billing/default fields
 - `node scripts/fixMessages.js` - legacy helper for message/schedule role cleanup
 - `node scripts/migrate-facility-taxonomy.js` - migrates legacy role prefixes, backfills facility taxonomy, and removes deprecated preference fields
+- `node scripts/extend-expired-password-resets.js` - extends currently expired password reset windows by 14 days (supports `DRY_RUN=true` and optional `TENANT_ID=<id>`)
+- `node scripts/normalize-coverage-shift-pairs.js` - normalizes legacy coverage rows where only one of `shiftType`/`shiftTag` is set by clearing both to manual mode (supports `DRY_RUN=true` and optional `TENANT_ID=<id>`)
+
+NPM shortcuts:
+
+- `npm run migrate:extend-expired-password-resets`
+- `npm run migrate:normalize-coverage-shift-pairs`
 
 ---
 

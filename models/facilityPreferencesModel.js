@@ -85,6 +85,16 @@ const facilityPreferencesSchema = new mongoose.Schema(
       default: false,
     },
 
+    /**
+     * IANA timezone for local facility scheduling definitions.
+     * Examples: "America/Chicago", "Europe/London".
+     */
+    facilityTimezone: {
+      type: String,
+      default: "UTC",
+      trim: true,
+    },
+
     // ─── FACILITY TAXONOMY ──────────────────────────────────────────────────
     /**
      * Role families the facility uses. Keep these as base roles only
@@ -110,6 +120,71 @@ const facilityPreferencesSchema = new mongoose.Schema(
     shiftTypes: {
       type: [String],
       default: ["day", "evening", "night"],
+    },
+
+    /**
+     * Shift type definitions with one or more local-time slots per type.
+     *
+     * Example:
+     * [
+     *   {
+     *     key: "day",
+     *     label: "Day",
+     *     timeSlots: [
+     *       { tag: "day_am", label: "Day AM", startLocalTime: "07:00", endLocalTime: "11:00" }
+     *     ]
+     *   }
+     * ]
+     */
+    shiftTypeDefinitions: {
+      type: [
+        {
+          key: {
+            type: String,
+            required: true,
+            lowercase: true,
+            trim: true,
+          },
+          label: {
+            type: String,
+            default: null,
+            trim: true,
+          },
+          timeSlots: {
+            type: [
+              {
+                tag: {
+                  type: String,
+                  required: true,
+                  lowercase: true,
+                  trim: true,
+                },
+                label: {
+                  type: String,
+                  default: null,
+                  trim: true,
+                },
+                startLocalTime: {
+                  type: String,
+                  required: true,
+                  match: /^([01]\d|2[0-3]):[0-5]\d$/,
+                },
+                endLocalTime: {
+                  type: String,
+                  required: true,
+                  match: /^([01]\d|2[0-3]):[0-5]\d$/,
+                },
+                spansOvernight: {
+                  type: Boolean,
+                  default: false,
+                },
+              },
+            ],
+            default: [],
+          },
+        },
+      ],
+      default: [],
     },
 
     /**

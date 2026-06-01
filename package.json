@@ -4,7 +4,9 @@
   "description": "WiserShifts Backend: AI Workforce Scheduling Made For Your Business - Built with Node.js, Express, and MongoDB",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate:extend-expired-password-resets": "node scripts/extend-expired-password-resets.js",
+    "migrate:normalize-coverage-shift-pairs": "node scripts/normalize-coverage-shift-pairs.js"
   },
   "author": "",
   "license": "ISC",

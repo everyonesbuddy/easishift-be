@@ -32,6 +32,11 @@ const scheduleSchema = new mongoose.Schema(
       default: null,
       index: true,
     },
+    shiftTag: {
+      type: String,
+      default: null,
+      index: true,
+    },
     startTime: {
       type: Date,
       required: true,

@@ -2,6 +2,7 @@ const Coverage = require("../models/coverageModel");
 const Schedule = require("../models/scheduleModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const mongoose = require("mongoose");
+const { DateTime } = require("luxon");
 
 // Normalize to UTC midnight
 function normalizeToUTC(date) {
@@ -46,26 +47,26 @@ function normalizeShiftType(value) {
     .toLowerCase();
 }
 
-function inferShiftTypeFromWindow(startTime, endTime) {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
+function normalizeShiftTag(value) {
+  return String(value || "")
+    .trim()
+    .toLowerCase();
+}
 
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return null;
-  }
+function normalizeFacilityTimezone(value) {
+  const timezone = String(value || "UTC").trim();
+  return DateTime.local().setZone(timezone).isValid ? timezone : "UTC";
+}
 
-  const startHour = start.getUTCHours();
-  const crossesMidnight = end.getUTCDate() !== start.getUTCDate();
+function parseClockTime(value) {
+  const text = String(value || "").trim();
+  const match = text.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
+  if (!match) return null;
 
-  if (crossesMidnight || startHour >= 23 || startHour < 7) {
-    return "night";
-  }
-
-  if (startHour >= 15 && startHour < 23) {
-    return "evening";
-  }
-
-  return "day";
+  return {
+    hour: Number(match[1]),
+    minute: Number(match[2]),
+  };
 }
 
 function getLegacyAreaFromRole(role) {
@@ -86,6 +87,116 @@ function dedupeStrings(values) {
         .filter(Boolean),
     ),
   );
+}
+
+function getConfiguredShiftTypes(facilityPrefs) {
+  const fromLegacyList = dedupeStrings(facilityPrefs?.shiftTypes || []).map(
+    normalizeShiftType,
+  );
+  const fromDefinitions = dedupeStrings(
+    (facilityPrefs?.shiftTypeDefinitions || []).map((item) => item?.key),
+  ).map(normalizeShiftType);
+
+  const merged = dedupeStrings([...fromLegacyList, ...fromDefinitions]);
+  if (merged.length) return merged;
+  return ["day", "evening", "night"];
+}
+
+function buildShiftSlotLookup(facilityPrefs) {
+  const lookup = new Map();
+
+  for (const definition of facilityPrefs?.shiftTypeDefinitions || []) {
+    const shiftType = normalizeShiftType(definition?.key);
+    if (!shiftType) continue;
+
+    for (const slot of definition?.timeSlots || []) {
+      const shiftTag = normalizeShiftTag(slot?.tag);
+      if (!shiftTag) continue;
+
+      const startLocal = String(slot?.startLocalTime || "").trim();
+      const endLocal = String(slot?.endLocalTime || "").trim();
+      if (!startLocal || !endLocal) continue;
+
+      lookup.set(`${shiftType}:${shiftTag}`, {
+        shiftType,
+        shiftTag,
+        startLocalTime: startLocal,
+        endLocalTime: endLocal,
+        spansOvernight: Boolean(slot?.spansOvernight),
+      });
+    }
+  }
+
+  return lookup;
+}
+
+function buildWindowFromShiftSlot({
+  date,
+  shiftType,
+  shiftTag,
+  slotLookup,
+  facilityTimezone,
+}) {
+  const slot = slotLookup.get(`${shiftType}:${shiftTag}`);
+  if (!slot) {
+    return {
+      error: `No shift slot configuration found for shiftType '${shiftType}' and shiftTag '${shiftTag}'`,
+    };
+  }
+
+  const startClock = parseClockTime(slot.startLocalTime);
+  const endClock = parseClockTime(slot.endLocalTime);
+  if (!startClock || !endClock) {
+    return {
+      error: `Invalid local slot time configuration for shiftType '${shiftType}' and shiftTag '${shiftTag}'`,
+    };
+  }
+
+  const anchorDate = new Date(date);
+  const year = anchorDate.getUTCFullYear();
+  const month = anchorDate.getUTCMonth() + 1;
+  const day = anchorDate.getUTCDate();
+
+  const localStart = DateTime.fromObject(
+    {
+      year,
+      month,
+      day,
+      hour: startClock.hour,
+      minute: startClock.minute,
+      second: 0,
+      millisecond: 0,
+    },
+    { zone: facilityTimezone },
+  );
+
+  let localEnd = DateTime.fromObject(
+    {
+      year,
+      month,
+      day,
+      hour: endClock.hour,
+      minute: endClock.minute,
+      second: 0,
+      millisecond: 0,
+    },
+    { zone: facilityTimezone },
+  );
+
+  if (!localStart.isValid || !localEnd.isValid) {
+    return {
+      error: `Failed to parse local slot window for shiftType '${shiftType}' and shiftTag '${shiftTag}' in timezone '${facilityTimezone}'`,
+    };
+  }
+
+  if (slot.spansOvernight || localEnd <= localStart) {
+    localEnd = localEnd.plus({ days: 1 });
+  }
+
+  return {
+    startTime: localStart.toUTC().toJSDate(),
+    endTime: localEnd.toUTC().toJSDate(),
+  };
 }
 
 function getCoverageArea(coverage) {
@@ -112,6 +223,27 @@ async function getAllowedCoverageRoles(tenantId) {
       )
       .filter(Boolean),
   );
+}
+
+async function getCoverageConfig(tenantId) {
+  const prefs = await FacilityPreferences.findOne({ tenantId })
+    .select("roleFamilies shiftTypes shiftTypeDefinitions facilityTimezone")
+    .lean();
+
+  return {
+    allowedRoles: new Set(
+      (prefs?.roleFamilies || [])
+        .map((value) =>
+          String(value || "")
+            .trim()
+            .toLowerCase(),
+        )
+        .filter(Boolean),
+    ),
+    allowedShiftTypes: new Set(getConfiguredShiftTypes(prefs)),
+    slotLookup: buildShiftSlotLookup(prefs),
+    facilityTimezone: normalizeFacilityTimezone(prefs?.facilityTimezone),
+  };
 }
 
 function isOvernightShift(startTime, endTime) {
@@ -146,6 +278,7 @@ function formatDuplicateSchedule({
   role,
   unitArea,
   shiftType,
+  shiftTag,
   startTime,
   endTime,
 }) {
@@ -154,6 +287,7 @@ function formatDuplicateSchedule({
     role,
     unitArea: unitArea || null,
     shiftType: shiftType || null,
+    shiftTag: shiftTag || null,
     startTime: new Date(startTime).toISOString(),
     endTime: new Date(endTime).toISOString(),
   };
@@ -163,13 +297,25 @@ function buildDuplicateSummary(duplicates) {
   const preview = duplicates.slice(0, 3).map((item) => {
     const areaLabel = item.unitArea ? ` | ${item.unitArea}` : "";
     const shiftLabel = item.shiftType ? ` | ${item.shiftType}` : "";
-    return `${item.role}${areaLabel}${shiftLabel} (${item.date} | ${item.startTime} - ${item.endTime})`;
+    const shiftTagLabel = item.shiftTag ? ` | ${item.shiftTag}` : "";
+    return `${item.role}${areaLabel}${shiftLabel}${shiftTagLabel} (${item.date} | ${item.startTime} - ${item.endTime})`;
   });
 
   const remaining = duplicates.length - preview.length;
   return remaining > 0
     ? `${preview.join(", ")}, and ${remaining} more`
     : preview.join(", ");
+}
+
+function buildCoverageMatchKey(item) {
+  return [
+    item.role || "",
+    item.unitArea || "",
+    item.shiftType || "",
+    item.shiftTag || "",
+    new Date(item.startTime).toISOString(),
+    new Date(item.endTime).toISOString(),
+  ].join("-");
 }
 
 // CREATE
@@ -179,7 +325,8 @@ exports.createCoverage = async (req, res, next) => {
       return res.status(403).json({ message: "Admins only" });
 
     const { dates, shifts } = req.body;
-    const allowedRoles = await getAllowedCoverageRoles(req.tenantId);
+    const { allowedRoles, allowedShiftTypes, slotLookup, facilityTimezone } =
+      await getCoverageConfig(req.tenantId);
 
     if (!Array.isArray(dates) || !dates.length) {
       return res
@@ -215,6 +362,7 @@ exports.createCoverage = async (req, res, next) => {
         role,
         unitArea,
         shiftType,
+        shiftTag,
         requiredCount,
         requiredCertificationTags,
         startTime,
@@ -224,9 +372,9 @@ exports.createCoverage = async (req, res, next) => {
         .trim()
         .toLowerCase();
 
-      if (!role || !startTime || !endTime) {
+      if (!role) {
         return res.status(400).json({
-          message: `Shift at index ${index} must include role, startTime, and endTime`,
+          message: `Shift at index ${index} must include role`,
         });
       }
 
@@ -236,11 +384,40 @@ exports.createCoverage = async (req, res, next) => {
         });
       }
 
-      const normalizedWindow = normalizeShiftWindow(startTime, endTime);
-      if (normalizedWindow.error) {
+      const normalizedShiftType = normalizeShiftType(shiftType);
+      const normalizedShiftTag = normalizeShiftTag(shiftTag);
+
+      if (
+        normalizedShiftType &&
+        allowedShiftTypes.size &&
+        !allowedShiftTypes.has(normalizedShiftType)
+      ) {
         return res.status(400).json({
-          message: `Shift at index ${index} has invalid startTime or endTime`,
+          message: `Shift at index ${index} has invalid shiftType '${shiftType || ""}'`,
         });
+      }
+
+      if (Boolean(normalizedShiftType) !== Boolean(normalizedShiftTag)) {
+        return res.status(400).json({
+          message: `Shift at index ${index} must include both shiftType and shiftTag together`,
+        });
+      }
+
+      if (!normalizedShiftType && (!startTime || !endTime)) {
+        return res.status(400).json({
+          message: `Shift at index ${index} must include startTime/endTime when shiftType is not selected`,
+        });
+      }
+
+      if (normalizedShiftType && normalizedShiftTag) {
+        const slot = slotLookup.get(
+          `${normalizedShiftType}:${normalizedShiftTag}`,
+        );
+        if (!slot) {
+          return res.status(400).json({
+            message: `Shift at index ${index} has unknown shiftTag '${shiftTag || ""}' for shiftType '${shiftType || ""}'`,
+          });
+        }
       }
 
       if (requiredCount !== undefined && Number(requiredCount) < 0) {
@@ -252,14 +429,13 @@ exports.createCoverage = async (req, res, next) => {
       normalizedShifts.push({
         role: normalizedRole,
         unitArea: normalizeAreaTag(unitArea || getLegacyAreaFromRole(role)),
-        shiftType: normalizeShiftType(
-          shiftType || inferShiftTypeFromWindow(startTime, endTime),
-        ),
+        shiftType: normalizedShiftType || null,
+        shiftTag: normalizedShiftTag || null,
         requiredCertificationTags: dedupeStrings(requiredCertificationTags),
         requiredCount,
         note: shift.note,
-        startTime: normalizedWindow.startTime,
-        endTime: normalizedWindow.endTime,
+        startTime,
+        endTime,
       });
     }
 
@@ -268,13 +444,31 @@ exports.createCoverage = async (req, res, next) => {
     const duplicateRequestMap = new Map();
     for (const date of normalizedDates) {
       for (const shift of normalizedShifts) {
-        const { startTime, endTime } = shift;
-        const uniqueKey = `${date.toISOString()}-${shift.role}-${shift.unitArea || ""}-${shift.shiftType || ""}-${startTime.toISOString()}-${endTime.toISOString()}`;
+        const normalizedWindow =
+          shift.shiftType && shift.shiftTag
+            ? buildWindowFromShiftSlot({
+                date,
+                shiftType: shift.shiftType,
+                shiftTag: shift.shiftTag,
+                slotLookup,
+                facilityTimezone,
+              })
+            : normalizeShiftWindow(shift.startTime, shift.endTime);
+
+        if (normalizedWindow.error) {
+          return res.status(400).json({
+            message: normalizedWindow.error,
+          });
+        }
+
+        const { startTime, endTime } = normalizedWindow;
+        const uniqueKey = `${date.toISOString()}-${shift.role}-${shift.unitArea || ""}-${shift.shiftType || ""}-${shift.shiftTag || ""}-${startTime.toISOString()}-${endTime.toISOString()}`;
         const duplicateItem = formatDuplicateSchedule({
           date,
           role: shift.role,
           unitArea: shift.unitArea,
           shiftType: shift.shiftType,
+          shiftTag: shift.shiftTag,
           startTime,
           endTime,
         });
@@ -291,6 +485,7 @@ exports.createCoverage = async (req, res, next) => {
           role: shift.role,
           unitArea: shift.unitArea || null,
           shiftType: shift.shiftType || null,
+          shiftTag: shift.shiftTag || null,
           startTime,
           endTime,
           requiredCount:
@@ -318,11 +513,12 @@ exports.createCoverage = async (req, res, next) => {
         role: doc.role,
         unitArea: doc.unitArea,
         shiftType: doc.shiftType,
+        shiftTag: doc.shiftTag,
         startTime: doc.startTime,
         endTime: doc.endTime,
       })),
     })
-      .select("date role unitArea shiftType startTime endTime")
+      .select("date role unitArea shiftType shiftTag startTime endTime")
       .lean();
 
     if (conflicts.length) {
@@ -372,6 +568,8 @@ exports.getCoverage = async (req, res, next) => {
       filter.unitArea = normalizeAreaTag(req.query.unitArea);
     if (req.query.shiftType)
       filter.shiftType = normalizeShiftType(req.query.shiftType);
+    if (req.query.shiftTag)
+      filter.shiftTag = normalizeShiftTag(req.query.shiftTag);
 
     const list = await Coverage.find(filter).sort({ date: 1, startTime: 1 });
     res.json(list.map(withOvernightFlag));
@@ -388,7 +586,8 @@ exports.updateCoverage = async (req, res, next) => {
 
     const id = req.params.id;
     const update = { ...req.body };
-    const allowedRoles = await getAllowedCoverageRoles(req.tenantId);
+    const { allowedRoles, allowedShiftTypes, slotLookup, facilityTimezone } =
+      await getCoverageConfig(req.tenantId);
 
     if (update.date) update.date = normalizeToUTC(update.date);
 
@@ -404,6 +603,23 @@ exports.updateCoverage = async (req, res, next) => {
       update.role = normalizedRole;
     }
 
+    if (update.shiftType !== undefined) {
+      update.shiftType = normalizeShiftType(update.shiftType);
+      if (
+        update.shiftType &&
+        allowedShiftTypes.size &&
+        !allowedShiftTypes.has(update.shiftType)
+      ) {
+        return res.status(400).json({
+          message: `invalid shiftType '${update.shiftType || ""}'`,
+        });
+      }
+    }
+
+    if (update.shiftTag !== undefined) {
+      update.shiftTag = normalizeShiftTag(update.shiftTag) || null;
+    }
+
     const existing = await Coverage.findOne({
       _id: id,
       tenantId: req.tenantId,
@@ -411,7 +627,42 @@ exports.updateCoverage = async (req, res, next) => {
     if (!existing)
       return res.status(404).json({ message: "Coverage not found" });
 
-    if (update.startTime !== undefined || update.endTime !== undefined) {
+    const effectiveDate = update.date || existing.date;
+    const effectiveShiftType =
+      update.shiftType !== undefined
+        ? normalizeShiftType(update.shiftType)
+        : normalizeShiftType(existing.shiftType);
+    const effectiveShiftTag =
+      update.shiftTag !== undefined
+        ? normalizeShiftTag(update.shiftTag)
+        : normalizeShiftTag(existing.shiftTag);
+
+    if (Boolean(effectiveShiftType) !== Boolean(effectiveShiftTag)) {
+      return res.status(400).json({
+        message: "shiftType and shiftTag must be provided together",
+      });
+    }
+
+    if (effectiveShiftType && effectiveShiftTag) {
+      const slotWindow = buildWindowFromShiftSlot({
+        date: effectiveDate,
+        shiftType: effectiveShiftType,
+        shiftTag: effectiveShiftTag,
+        slotLookup,
+        facilityTimezone,
+      });
+
+      if (slotWindow.error) {
+        return res.status(400).json({
+          message: slotWindow.error,
+        });
+      }
+
+      update.shiftType = effectiveShiftType;
+      update.shiftTag = effectiveShiftTag;
+      update.startTime = slotWindow.startTime;
+      update.endTime = slotWindow.endTime;
+    } else if (update.startTime !== undefined || update.endTime !== undefined) {
       const startTimeInput =
         update.startTime !== undefined ? update.startTime : existing.startTime;
       const endTimeInput =
@@ -429,6 +680,9 @@ exports.updateCoverage = async (req, res, next) => {
 
       update.startTime = normalizedWindow.startTime;
       update.endTime = normalizedWindow.endTime;
+      if (update.shiftType === null || update.shiftType === "") {
+        update.shiftTag = null;
+      }
     }
 
     const updated = await Coverage.findOneAndUpdate(
@@ -520,7 +774,7 @@ exports.deleteCoveragesByIds = async (req, res, next) => {
 // GET unfilled coverage
 exports.getUnfilledCoverage = async (req, res, next) => {
   try {
-    const { role, unitArea, shiftType } = req.query;
+    const { role, unitArea, shiftType, shiftTag } = req.query;
     const tenantId = req.tenantId;
 
     if (!role) return res.status(400).json({ message: "role is required" });
@@ -532,6 +786,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
     };
     if (unitArea) coveragesFilter.unitArea = normalizeAreaTag(unitArea);
     if (shiftType) coveragesFilter.shiftType = normalizeShiftType(shiftType);
+    if (shiftTag) coveragesFilter.shiftTag = normalizeShiftTag(shiftTag);
 
     const coverages = await Coverage.find(coveragesFilter).sort({
       date: 1,
@@ -548,6 +803,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
       role,
       ...(unitArea ? { unitArea: normalizeAreaTag(unitArea) } : {}),
       ...(shiftType ? { shiftType: normalizeShiftType(shiftType) } : {}),
+      ...(shiftTag ? { shiftTag: normalizeShiftTag(shiftTag) } : {}),
       status: { $nin: ["completed", "call_out", "cancelled"] },
       $or: coverages.map((c) => ({
         startTime: c.startTime,
@@ -559,14 +815,14 @@ exports.getUnfilledCoverage = async (req, res, next) => {
     const scheduleCountMap = {};
 
     schedules.forEach((s) => {
-      const key = `${s.startTime.toISOString()}-${s.endTime.toISOString()}`;
+      const key = buildCoverageMatchKey(s);
       if (!scheduleCountMap[key]) scheduleCountMap[key] = 0;
       scheduleCountMap[key]++;
     });
 
     // 4. Build response
     const result = coverages.map((cov) => {
-      const key = `${cov.startTime.toISOString()}-${cov.endTime.toISOString()}`;
+      const key = buildCoverageMatchKey(cov);
       const assigned = scheduleCountMap[key] || 0;
 
       return {
@@ -585,7 +841,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
 // GET unfilled coverages for auto-generation
 exports.getUnfilledCoverageForAuto = async (req, res, next) => {
   try {
-    const { role, unitArea, shiftType } = req.query; // optional
+    const { role, unitArea, shiftType, shiftTag } = req.query; // optional
     const tenantId = req.tenantId;
 
     // 1. Get all coverages, optionally filtered by role
@@ -593,6 +849,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     if (role) filter.role = role;
     if (unitArea) filter.unitArea = normalizeAreaTag(unitArea);
     if (shiftType) filter.shiftType = normalizeShiftType(shiftType);
+    if (shiftTag) filter.shiftTag = normalizeShiftTag(shiftTag);
 
     const coverages = await Coverage.find(filter).sort({
       date: 1,
@@ -615,6 +872,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     if (role) scheduleQuery.role = role;
     if (unitArea) scheduleQuery.unitArea = normalizeAreaTag(unitArea);
     if (shiftType) scheduleQuery.shiftType = normalizeShiftType(shiftType);
+    if (shiftTag) scheduleQuery.shiftTag = normalizeShiftTag(shiftTag);
 
     const schedules = await Schedule.find(scheduleQuery);
 
@@ -623,18 +881,14 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     // but the same times don't get mixed together when `role` query is absent.
     const scheduleCountMap = {};
     schedules.forEach((s) => {
-      const key = `${
-        s.role || ""
-      }-${s.startTime.toISOString()}-${s.endTime.toISOString()}`;
+      const key = buildCoverageMatchKey(s);
       if (!scheduleCountMap[key]) scheduleCountMap[key] = 0;
       scheduleCountMap[key]++;
     });
 
     // 4. Build response
     const result = coverages.map((cov) => {
-      const key = `${
-        cov.role || ""
-      }-${cov.startTime.toISOString()}-${cov.endTime.toISOString()}`;
+      const key = buildCoverageMatchKey(cov);
       const assigned = scheduleCountMap[key] || 0;
       return {
         ...withOvernightFlag(cov),

@@ -9,6 +9,7 @@ const ShiftSwap = require("../models/shiftSwapModel");
 const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
+const mongoose = require("mongoose");
 
 const HOURS_TO_MINUTES = 60;
 const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
@@ -88,6 +89,11 @@ const normalizeShiftType = (value) =>
     .trim()
     .toLowerCase();
 
+const normalizeShiftTag = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
 const inferShiftTypeFromWindow = (startTime, endTime) => {
   const start = new Date(startTime);
   const end = new Date(endTime);
@@ -137,6 +143,9 @@ const getCoverageArea = (coverage) =>
 const getCoverageShiftType = (coverage) =>
   normalizeShiftType(coverage?.shiftType || coverage?.meta?.shiftType || "");
 
+const getCoverageShiftTag = (coverage) =>
+  normalizeShiftTag(coverage?.shiftTag || coverage?.meta?.shiftTag || "");
+
 const getCoverageCertificationTags = (coverage) =>
   dedupeStrings(coverage?.requiredCertificationTags || []);
 
@@ -176,10 +185,43 @@ const isAreaCompatible = (staffAreas, coverageArea) => {
   return staffAreas.includes(coverageArea);
 };
 
-const isShiftTypeCompatible = (staffShiftTypes, coverageShiftType) => {
-  if (!coverageShiftType) return true;
+const isShiftTypeCompatible = (
+  staffShiftTypes,
+  coverageShiftType,
+  coverageShiftTag,
+) => {
+  const normalizedCoverageShiftType = normalizeShiftType(coverageShiftType);
+  const normalizedCoverageShiftTag = normalizeShiftTag(coverageShiftTag);
+
+  if (!normalizedCoverageShiftType) return true;
   if (!staffShiftTypes || !staffShiftTypes.length) return true;
-  return staffShiftTypes.includes(coverageShiftType);
+
+  const compositeCoverageKey = normalizedCoverageShiftTag
+    ? `${normalizedCoverageShiftType}:${normalizedCoverageShiftTag}`
+    : null;
+
+  return staffShiftTypes.some((value) => {
+    const normalizedValue = normalizeShiftType(value);
+    if (!normalizedValue) return false;
+
+    // Supports both plain type allow-list (e.g. "day") and slot-level
+    // allow-list (e.g. "day:day_1") stored in allowedShiftTypes.
+    return (
+      normalizedValue === normalizedCoverageShiftType ||
+      (compositeCoverageKey && normalizedValue === compositeCoverageKey)
+    );
+  });
+};
+
+const getFacilityShiftTypes = (facilityPreferences) => {
+  const configured = dedupeStrings(facilityPreferences?.shiftTypes).map(
+    normalizeShiftType,
+  );
+  const defined = dedupeStrings(
+    (facilityPreferences?.shiftTypeDefinitions || []).map((item) => item?.key),
+  ).map(normalizeShiftType);
+  const merged = dedupeStrings([...configured, ...defined]);
+  return merged.length ? merged : ["day", "evening", "night"];
 };
 
 const getCompatibleFacilityConfig = (facilityPreferences) => ({
@@ -189,9 +231,7 @@ const getCompatibleFacilityConfig = (facilityPreferences) => ({
   areas: (facilityPreferences?.unitAreas || ["AL", "IL", "MC"]).map(
     normalizeAreaTag,
   ),
-  shiftTypes: (
-    facilityPreferences?.shiftTypes || ["day", "evening", "night"]
-  ).map(normalizeShiftType),
+  shiftTypes: getFacilityShiftTypes(facilityPreferences),
   certificationTags: dedupeStrings(facilityPreferences?.certificationTags),
 });
 
@@ -211,12 +251,17 @@ const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
   const staffCerts = getStaffCertificationTags(staff);
   const coverageArea = getCoverageArea(coverage);
   const coverageShiftType = getCoverageShiftType(coverage);
+  const coverageShiftTag = getCoverageShiftTag(coverage);
   const coverageCerts = getCoverageCertificationTags(coverage);
 
   return (
     isRoleCompatible(staff.role, coverage.role) &&
     isAreaCompatible(staffAreas, coverageArea) &&
-    isShiftTypeCompatible(staffShiftTypes, coverageShiftType) &&
+    isShiftTypeCompatible(
+      staffShiftTypes,
+      coverageShiftType,
+      coverageShiftTag,
+    ) &&
     isCertificationCompatible(coverageCerts, staffCerts)
   );
 };
@@ -588,6 +633,7 @@ const formatCoverageForMessage = (coverage) => ({
   role: coverage.role,
   unitArea: coverage.unitArea || null,
   shiftType: coverage.shiftType || null,
+  shiftTag: coverage.shiftTag || null,
   date: new Date(coverage.date).toISOString(),
   startTime: new Date(coverage.startTime).toISOString(),
   endTime: new Date(coverage.endTime).toISOString(),
@@ -997,6 +1043,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           role: cov.role,
           unitArea: cov.unitArea || null,
           shiftType: cov.shiftType || null,
+          shiftTag: cov.shiftTag || null,
           certificationTags: cov.requiredCertificationTags || [],
           startTime: cov.startTime,
           endTime: cov.endTime,
@@ -1587,6 +1634,7 @@ exports.createSchedule = async (req, res, next) => {
       role,
       unitArea,
       shiftType,
+      shiftTag,
       certificationTags,
       startTime,
       endTime,
@@ -1618,6 +1666,7 @@ exports.createSchedule = async (req, res, next) => {
       shiftType: normalizeShiftType(
         shiftType || inferShiftTypeFromWindow(startTime, endTime),
       ),
+      shiftTag: normalizeShiftTag(shiftTag) || null,
       certificationTags: Array.isArray(certificationTags)
         ? certificationTags
         : [],
@@ -1650,6 +1699,7 @@ exports.createSchedule = async (req, res, next) => {
       !isShiftTypeCompatible(
         getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
         normalizeShiftType(schedulePayload.shiftType),
+        normalizeShiftTag(schedulePayload.shiftTag),
       )
     ) {
       return res.status(400).json({
@@ -1684,6 +1734,7 @@ exports.createSchedule = async (req, res, next) => {
       role: schedulePayload.role,
       unitArea: schedulePayload.unitArea,
       shiftType: schedulePayload.shiftType,
+      shiftTag: schedulePayload.shiftTag,
       certificationTags: schedulePayload.certificationTags,
       startTime,
       endTime,
@@ -1838,6 +1889,10 @@ exports.updateSchedule = async (req, res, next) => {
               ? updates.endTime
               : currentSchedule.endTime,
           );
+    const nextShiftTag =
+      updates.shiftTag !== undefined
+        ? updates.shiftTag
+        : currentSchedule.shiftTag;
     const nextCertificationTags = Array.isArray(updates.certificationTags)
       ? updates.certificationTags
       : currentSchedule.certificationTags || [];
@@ -1882,6 +1937,7 @@ exports.updateSchedule = async (req, res, next) => {
       !isShiftTypeCompatible(
         getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
         normalizeShiftType(nextShiftType),
+        normalizeShiftTag(nextShiftTag),
       )
     ) {
       return res.status(400).json({
@@ -1933,6 +1989,7 @@ exports.updateSchedule = async (req, res, next) => {
         role: normalizedNextRole,
         unitArea: normalizeAreaTag(nextUnitArea) || null,
         shiftType: normalizeShiftType(nextShiftType) || null,
+        shiftTag: normalizeShiftTag(nextShiftTag) || null,
         certificationTags: dedupeStrings(nextCertificationTags),
       },
       { new: true },
@@ -1959,6 +2016,61 @@ exports.deleteSchedule = async (req, res, next) => {
       return res.status(404).json({ message: "Schedule not found" });
 
     res.json({ message: "Schedule deleted" });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// DELETE multiple schedules by ids
+exports.deleteSchedulesByIds = async (req, res, next) => {
+  try {
+    if (req.user.role !== "admin") {
+      return res.status(403).json({ message: "Admins only" });
+    }
+
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : null;
+    if (!ids || !ids.length) {
+      return res.status(400).json({
+        message: "ids is required and must be a non-empty array",
+      });
+    }
+
+    const uniqueIds = [...new Set(ids.map((id) => String(id).trim()))];
+    const invalidIds = uniqueIds.filter((id) => !mongoose.isValidObjectId(id));
+
+    if (invalidIds.length) {
+      return res.status(400).json({
+        message: "One or more ids are invalid",
+        invalidIds,
+      });
+    }
+
+    const existing = await Schedule.find({
+      tenantId: req.tenantId,
+      _id: { $in: uniqueIds },
+    })
+      .select("_id")
+      .lean();
+
+    const existingIdSet = new Set(existing.map((item) => String(item._id)));
+    const notFoundIds = uniqueIds.filter((id) => !existingIdSet.has(id));
+
+    let deletedCount = 0;
+    if (existing.length) {
+      const deleteResult = await Schedule.deleteMany({
+        tenantId: req.tenantId,
+        _id: { $in: existing.map((item) => item._id) },
+      });
+      deletedCount = deleteResult.deletedCount || 0;
+    }
+
+    return res.status(200).json({
+      message: "Bulk delete completed",
+      requestedCount: uniqueIds.length,
+      deletedCount,
+      notFoundCount: notFoundIds.length,
+      notFoundIds,
+    });
   } catch (err) {
     next(err);
   }

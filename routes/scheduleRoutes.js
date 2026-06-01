@@ -7,6 +7,7 @@ const {
   getScheduleById,
   updateSchedule,
   deleteSchedule,
+  deleteSchedulesByIds,
   autoGenerateSchedule,
   requestShiftSwap,
   getShiftSwapRequests,
@@ -37,6 +38,9 @@ router.get("/:id", getScheduleById);
 
 // PUT /api/v1/schedules/:id  (admin or schedule owner -> allow update)
 router.put("/:id", updateSchedule);
+
+// DELETE /api/v1/schedules/bulk
+router.delete("/bulk", restrictTo("admin"), deleteSchedulesByIds);
 
 // DELETE /api/v1/schedules/:id
 router.delete("/:id", restrictTo("admin"), deleteSchedule);

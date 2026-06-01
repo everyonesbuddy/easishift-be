@@ -11,6 +11,8 @@ const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
 const HOURS_TO_MINUTES = 60;
+const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
+const SCHEDULE_SYSTEM_ROLES = new Set(["user", "staff", "other"]);
 
 const DEFAULT_FACILITY_POLICY = Object.freeze({
   schedulingPattern: "balance",
@@ -55,6 +57,168 @@ const stableHash = (value) => {
     hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
   }
   return hash;
+};
+
+const normalizeRoleFamily = (role) => {
+  const value = String(role || "")
+    .trim()
+    .toLowerCase();
+
+  if (!value) return "";
+
+  for (const prefix of LEGACY_AREA_PREFIXES) {
+    if (value.startsWith(prefix)) {
+      return value.slice(prefix.length);
+    }
+  }
+
+  return value;
+};
+
+const isRoleCompatible = (staffRole, coverageRole) =>
+  normalizeRoleFamily(staffRole) === normalizeRoleFamily(coverageRole);
+
+const normalizeAreaTag = (value) =>
+  String(value || "")
+    .trim()
+    .toUpperCase();
+
+const normalizeShiftType = (value) =>
+  String(value || "")
+    .trim()
+    .toLowerCase();
+
+const inferShiftTypeFromWindow = (startTime, endTime) => {
+  const start = new Date(startTime);
+  const end = new Date(endTime);
+
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
+    return null;
+  }
+
+  const startHour = start.getUTCHours();
+  const crossesMidnight = end.getUTCDate() !== start.getUTCDate();
+
+  if (crossesMidnight || startHour >= 23 || startHour < 7) {
+    return "night";
+  }
+
+  if (startHour >= 15 && startHour < 23) {
+    return "evening";
+  }
+
+  return "day";
+};
+
+const dedupeStrings = (values) =>
+  Array.from(
+    new Set(
+      (Array.isArray(values) ? values : [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
+
+const getLegacyAreaFromRole = (role) => {
+  const value = String(role || "")
+    .trim()
+    .toLowerCase();
+  if (value.startsWith("al_")) return "AL";
+  if (value.startsWith("il_")) return "IL";
+  if (value.startsWith("mc_")) return "MC";
+  return null;
+};
+
+const getCoverageArea = (coverage) =>
+  normalizeAreaTag(
+    coverage?.unitArea || getLegacyAreaFromRole(coverage?.role) || "",
+  );
+
+const getCoverageShiftType = (coverage) =>
+  normalizeShiftType(coverage?.shiftType || coverage?.meta?.shiftType || "");
+
+const getCoverageCertificationTags = (coverage) =>
+  dedupeStrings(coverage?.requiredCertificationTags || []);
+
+const getStaffAllowedAreas = (staff, facilityAreas) => {
+  const explicit = dedupeStrings(staff?.allowedAreas).map(normalizeAreaTag);
+  if (explicit.length) return explicit;
+
+  const legacyArea = getLegacyAreaFromRole(staff?.role);
+  if (legacyArea) return [legacyArea];
+
+  return dedupeStrings(facilityAreas).map(normalizeAreaTag);
+};
+
+const getStaffAllowedShiftTypes = (staff, facilityShiftTypes) => {
+  const explicit = dedupeStrings(staff?.allowedShiftTypes).map(
+    normalizeShiftType,
+  );
+  if (explicit.length) return explicit;
+
+  return dedupeStrings(facilityShiftTypes).map(normalizeShiftType);
+};
+
+const getStaffCertificationTags = (staff) =>
+  dedupeStrings(staff?.certificationTags);
+
+const isCertificationCompatible = (requiredTags, staffTags) => {
+  if (!requiredTags.length) return true;
+  const staffTagSet = new Set(
+    (staffTags || []).map((tag) => tag.toLowerCase()),
+  );
+  return requiredTags.every((tag) => staffTagSet.has(tag.toLowerCase()));
+};
+
+const isAreaCompatible = (staffAreas, coverageArea) => {
+  if (!coverageArea) return true;
+  if (!staffAreas || !staffAreas.length) return true;
+  return staffAreas.includes(coverageArea);
+};
+
+const isShiftTypeCompatible = (staffShiftTypes, coverageShiftType) => {
+  if (!coverageShiftType) return true;
+  if (!staffShiftTypes || !staffShiftTypes.length) return true;
+  return staffShiftTypes.includes(coverageShiftType);
+};
+
+const getCompatibleFacilityConfig = (facilityPreferences) => ({
+  roleFamilies: dedupeStrings(facilityPreferences?.roleFamilies).map(
+    normalizeRoleFamily,
+  ),
+  areas: (facilityPreferences?.unitAreas || ["AL", "IL", "MC"]).map(
+    normalizeAreaTag,
+  ),
+  shiftTypes: (
+    facilityPreferences?.shiftTypes || ["day", "evening", "night"]
+  ).map(normalizeShiftType),
+  certificationTags: dedupeStrings(facilityPreferences?.certificationTags),
+});
+
+const isEnabledScheduleRole = (role, facilityConfig) => {
+  const normalized = normalizeRoleFamily(role);
+  if (!normalized) return false;
+  if (SCHEDULE_SYSTEM_ROLES.has(normalized)) return true;
+  return (facilityConfig?.roleFamilies || []).includes(normalized);
+};
+
+const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
+  const staffAreas = getStaffAllowedAreas(staff, facilityConfig.areas);
+  const staffShiftTypes = getStaffAllowedShiftTypes(
+    staff,
+    facilityConfig.shiftTypes,
+  );
+  const staffCerts = getStaffCertificationTags(staff);
+  const coverageArea = getCoverageArea(coverage);
+  const coverageShiftType = getCoverageShiftType(coverage);
+  const coverageCerts = getCoverageCertificationTags(coverage);
+
+  return (
+    isRoleCompatible(staff.role, coverage.role) &&
+    isAreaCompatible(staffAreas, coverageArea) &&
+    isShiftTypeCompatible(staffShiftTypes, coverageShiftType) &&
+    isCertificationCompatible(coverageCerts, staffCerts)
+  );
 };
 
 const getEffectiveFacilityPolicy = (facilityPreferences) => {
@@ -110,18 +274,8 @@ const getUtcMinutesOfDay = (dateLike) => {
   return date.getUTCHours() * HOURS_TO_MINUTES + date.getUTCMinutes();
 };
 
-const getEffectiveOvertimeThresholdMinutes = ({
-  staffPreferences,
-  facilityPolicy,
-}) => {
-  const facilityThreshold = facilityPolicy.weeklyOvertimeThresholdMinutes;
-  const staffCapHours = Number(staffPreferences?.maxHoursPerWeek);
-
-  if (Number.isFinite(staffCapHours) && staffCapHours > 0) {
-    return Math.min(facilityThreshold, staffCapHours * HOURS_TO_MINUTES);
-  }
-
-  return facilityThreshold;
+const getEffectiveOvertimeThresholdMinutes = ({ facilityPolicy }) => {
+  return facilityPolicy.weeklyOvertimeThresholdMinutes;
 };
 
 const getConsecutiveDaysIfAssigned = (assignedDaySet, dateLike) => {
@@ -251,50 +405,6 @@ const getPreferencePenalty = ({
     penalty += 1;
   }
 
-  const preferredStartMinutes = parseTimeToMinutes(
-    staffPreferences.preferredShiftStart,
-  );
-  if (preferredStartMinutes !== null) {
-    const startDifference = Math.abs(
-      preferredStartMinutes - getUtcMinutesOfDay(coverage.startTime),
-    );
-    if (startDifference > 60) {
-      penalty += 1;
-    }
-  }
-
-  const preferredEndMinutes = parseTimeToMinutes(
-    staffPreferences.preferredShiftEnd,
-  );
-  if (preferredEndMinutes !== null) {
-    const endDifference = Math.abs(
-      preferredEndMinutes - getUtcMinutesOfDay(coverage.endTime),
-    );
-    if (endDifference > 60) {
-      penalty += 1;
-    }
-  }
-
-  if (
-    staffPreferences.dislikesNights &&
-    isNightShift(coverage.startTime, coverage.endTime)
-  ) {
-    penalty += 2;
-  }
-
-  if (staffPreferences.prefersBlockScheduling) {
-    const previousDayAssigned = assignedDaySet?.has(
-      getUtcDayKey(addUtcDays(coverage.startTime, -1)),
-    );
-    const nextDayAssigned = assignedDaySet?.has(
-      getUtcDayKey(addUtcDays(coverage.startTime, 1)),
-    );
-
-    if (!previousDayAssigned && !nextDayAssigned) {
-      penalty += 1;
-    }
-  }
-
   return penalty;
 };
 
@@ -319,7 +429,6 @@ const buildRankingMetrics = ({
   );
   const effectiveOvertimeThresholdMinutes =
     getEffectiveOvertimeThresholdMinutes({
-      staffPreferences,
       facilityPolicy,
     });
   const overtimeMinutes = Math.max(
@@ -477,10 +586,13 @@ const isScheduleSmsNotificationEnabled = (preferences) =>
 const formatCoverageForMessage = (coverage) => ({
   coverageId: coverage._id,
   role: coverage.role,
+  unitArea: coverage.unitArea || null,
+  shiftType: coverage.shiftType || null,
   date: new Date(coverage.date).toISOString(),
   startTime: new Date(coverage.startTime).toISOString(),
   endTime: new Date(coverage.endTime).toISOString(),
   requiredCount: coverage.requiredCount,
+  requiredCertificationTags: coverage.requiredCertificationTags || [],
 });
 
 const toUtcString = (value) => new Date(value).toUTCString();
@@ -570,6 +682,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       tenantId,
     }).lean();
     const facilityPolicy = getEffectiveFacilityPolicy(facilityPreferences);
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
 
     // 1) GET COVERAGE DETAILS
     const coverageList = await Coverage.find({
@@ -691,6 +804,9 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       email: { sent: 0, failed: 0 },
       sms: { sent: 0, failed: 0 },
     };
+    const tenantUsers = await User.find({ tenantId }).select(
+      "name email role allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
+    );
 
     // 4) LOOP THROUGH COVERAGES
     for (const cov of coverageList) {
@@ -702,14 +818,22 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
 
-      const roleStaff = await User.find({ tenantId, role: cov.role });
+      const roleStaff = tenantUsers.filter((staff) =>
+        isStaffCompatibleWithCoverage({
+          staff,
+          coverage: cov,
+          facilityConfig,
+        }),
+      );
       if (!roleStaff.length) {
-        console.log(`No staff found for role ${cov.role}`);
+        console.log(
+          `No staff found for compatible role/area/shift/certifications for ${cov.role}`,
+        );
         coverageResults.push({
           ...coverageMeta,
           status: "skipped",
           reasonCode: "NO_STAFF_FOR_ROLE",
-          message: `No staff found with role ${cov.role}.`,
+          message: `No staff found with a compatible role, area, shift type, and certification profile for ${cov.role}.`,
           assignedCount: 0,
         });
         continue;
@@ -737,7 +861,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           currentStaffSchedules.some(
             (s) =>
               s.status === "call_out" &&
-              s.role === cov.role &&
+              isStaffCompatibleWithCoverage({
+                staff: s,
+                coverage: cov,
+                facilityConfig,
+              }) &&
               s.startTime.getTime() === cov.startTime.getTime() &&
               s.endTime.getTime() === cov.endTime.getTime(),
           )
@@ -787,7 +915,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       const alreadyAssigned = existingSchedules.filter(
         (s) =>
           s.status !== "call_out" &&
-          s.role === cov.role &&
+          isStaffCompatibleWithCoverage({
+            staff: s,
+            coverage: cov,
+            facilityConfig,
+          }) &&
           s.startTime.getTime() === cov.startTime.getTime() &&
           s.endTime.getTime() === cov.endTime.getTime(),
       );
@@ -863,6 +995,9 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           tenantId,
           staffId: staff._id,
           role: cov.role,
+          unitArea: cov.unitArea || null,
+          shiftType: cov.shiftType || null,
+          certificationTags: cov.requiredCertificationTags || [],
           startTime: cov.startTime,
           endTime: cov.endTime,
           timezone: "UTC",
@@ -1062,6 +1197,11 @@ exports.requestShiftSwap = async (req, res, next) => {
       return res.status(404).json({ message: "Schedule not found" });
     }
 
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    }).lean();
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+
     if (schedule.status !== "scheduled") {
       return res.status(400).json({
         message: "Only scheduled shifts can be swapped",
@@ -1094,9 +1234,16 @@ exports.requestShiftSwap = async (req, res, next) => {
         .json({ message: "Requester or receiver staff not found" });
     }
 
-    if (receiver.role !== schedule.role) {
+    if (
+      !isStaffCompatibleWithCoverage({
+        staff: receiver,
+        coverage: schedule,
+        facilityConfig,
+      })
+    ) {
       return res.status(400).json({
-        message: "Shift swap is allowed only between staff in the same role",
+        message:
+          "Shift swap is allowed only between staff with a compatible role, area, shift type, and certification profile",
       });
     }
 
@@ -1243,6 +1390,11 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
       return res.status(404).json({ message: "Original schedule not found" });
     }
 
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    }).lean();
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+
     const [requester, receiver] = await Promise.all([
       User.findOne({
         _id: swapRequest.requesterStaffId,
@@ -1339,10 +1491,16 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
           });
         }
 
-        if (receiver.role !== schedule.role) {
+        if (
+          !isStaffCompatibleWithCoverage({
+            staff: receiver,
+            coverage: schedule,
+            facilityConfig,
+          })
+        ) {
           return res.status(400).json({
             message:
-              "Swap cannot be accepted because receiver role no longer matches shift role",
+              "Swap cannot be accepted because receiver is no longer compatible with this shift",
           });
         }
 
@@ -1424,12 +1582,91 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
 // CREATE SCHEDULE
 exports.createSchedule = async (req, res, next) => {
   try {
-    const { staffId, role, startTime, endTime, notes, timezone } = req.body;
+    const {
+      staffId,
+      role,
+      unitArea,
+      shiftType,
+      certificationTags,
+      startTime,
+      endTime,
+      notes,
+      timezone,
+    } = req.body;
 
     if (!staffId || !role || !startTime || !endTime)
       return res.status(400).json({
         message: "staffId, role, startTime, endTime are required",
       });
+
+    const staff = await User.findById(staffId).select(
+      "role allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
+    );
+
+    if (!staff) {
+      return res.status(404).json({ message: "Staff not found" });
+    }
+
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    }).lean();
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+
+    const schedulePayload = {
+      role: normalizeRoleFamily(role),
+      unitArea: unitArea || null,
+      shiftType: normalizeShiftType(
+        shiftType || inferShiftTypeFromWindow(startTime, endTime),
+      ),
+      certificationTags: Array.isArray(certificationTags)
+        ? certificationTags
+        : [],
+    };
+
+    if (!isEnabledScheduleRole(schedulePayload.role, facilityConfig)) {
+      return res.status(400).json({
+        message: `invalid role '${role || ""}'`,
+      });
+    }
+
+    if (!isRoleCompatible(staff.role, schedulePayload.role)) {
+      return res.status(400).json({
+        message: "Staff role is not compatible with the scheduled role",
+      });
+    }
+
+    if (
+      !isAreaCompatible(
+        getStaffAllowedAreas(staff, facilityConfig.areas),
+        normalizeAreaTag(schedulePayload.unitArea),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff is not allowed to work this unit/area",
+      });
+    }
+
+    if (
+      !isShiftTypeCompatible(
+        getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
+        normalizeShiftType(schedulePayload.shiftType),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff is not allowed to work this shift type",
+      });
+    }
+
+    if (
+      !isCertificationCompatible(
+        dedupeStrings(schedulePayload.certificationTags),
+        getStaffCertificationTags(staff),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff does not have the required certification tags",
+      });
+    }
 
     // Check conflict
     const conflict = await hasConflict({
@@ -1444,7 +1681,10 @@ exports.createSchedule = async (req, res, next) => {
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
       staffId,
-      role,
+      role: schedulePayload.role,
+      unitArea: schedulePayload.unitArea,
+      shiftType: schedulePayload.shiftType,
+      certificationTags: schedulePayload.certificationTags,
       startTime,
       endTime,
       notes,
@@ -1455,7 +1695,6 @@ exports.createSchedule = async (req, res, next) => {
 
     // Notify assigned staff (best-effort)
     try {
-      const staff = await User.findById(staffId);
       const staffPref = staff
         ? await Preferences.findOne({
             tenantId: req.tenantId,
@@ -1572,23 +1811,108 @@ exports.updateSchedule = async (req, res, next) => {
   try {
     const updates = req.body;
 
+    const currentSchedule = await Schedule.findOne({
+      _id: req.params.id,
+      tenantId: req.tenantId,
+    });
+
+    if (!currentSchedule)
+      return res.status(404).json({ message: "Schedule not found" });
+
+    const nextStaffId = updates.staffId || currentSchedule.staffId;
+    const nextRole = updates.role || currentSchedule.role;
+    const normalizedNextRole = normalizeRoleFamily(nextRole);
+    const nextUnitArea =
+      updates.unitArea !== undefined
+        ? updates.unitArea
+        : currentSchedule.unitArea;
+    const nextShiftType =
+      updates.shiftType !== undefined
+        ? updates.shiftType
+        : currentSchedule.shiftType ||
+          inferShiftTypeFromWindow(
+            updates.startTime !== undefined
+              ? updates.startTime
+              : currentSchedule.startTime,
+            updates.endTime !== undefined
+              ? updates.endTime
+              : currentSchedule.endTime,
+          );
+    const nextCertificationTags = Array.isArray(updates.certificationTags)
+      ? updates.certificationTags
+      : currentSchedule.certificationTags || [];
+
+    const staff = await User.findById(nextStaffId).select(
+      "role allowedAreas allowedShiftTypes certificationTags",
+    );
+
+    if (!staff) {
+      return res.status(404).json({ message: "Staff not found" });
+    }
+
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    }).lean();
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+
+    if (!isEnabledScheduleRole(normalizedNextRole, facilityConfig)) {
+      return res.status(400).json({
+        message: `invalid role '${nextRole || ""}'`,
+      });
+    }
+
+    if (!isRoleCompatible(staff.role, normalizedNextRole)) {
+      return res.status(400).json({
+        message: "Staff role is not compatible with this schedule role",
+      });
+    }
+
+    if (
+      !isAreaCompatible(
+        getStaffAllowedAreas(staff, facilityConfig.areas),
+        normalizeAreaTag(nextUnitArea),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff is not allowed to work this unit/area",
+      });
+    }
+
+    if (
+      !isShiftTypeCompatible(
+        getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
+        normalizeShiftType(nextShiftType),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff is not allowed to work this shift type",
+      });
+    }
+
+    if (
+      !isCertificationCompatible(
+        dedupeStrings(nextCertificationTags),
+        getStaffCertificationTags(staff),
+      )
+    ) {
+      return res.status(400).json({
+        message: "Staff does not have the required certification tags",
+      });
+    }
+
     // If times change, check conflicts
     if (updates.startTime || updates.endTime || updates.staffId) {
-      const sched = await Schedule.findById(req.params.id);
-      if (!sched)
-        return res.status(404).json({ message: "Schedule not found" });
-
       const startTime =
         updates.startTime !== undefined
           ? new Date(updates.startTime)
-          : sched.startTime;
+          : currentSchedule.startTime;
 
       const endTime =
         updates.endTime !== undefined
           ? new Date(updates.endTime)
-          : sched.endTime;
+          : currentSchedule.endTime;
 
-      const staffId = updates.staffId || sched.staffId;
+      const staffId = updates.staffId || currentSchedule.staffId;
 
       const conflict = await hasConflict({
         tenantId: req.tenantId,
@@ -1604,7 +1928,13 @@ exports.updateSchedule = async (req, res, next) => {
 
     const updated = await Schedule.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
-      updates,
+      {
+        ...updates,
+        role: normalizedNextRole,
+        unitArea: normalizeAreaTag(nextUnitArea) || null,
+        shiftType: normalizeShiftType(nextShiftType) || null,
+        certificationTags: dedupeStrings(nextCertificationTags),
+      },
       { new: true },
     ).populate("staffId", "-passwordHash");
 

@@ -84,6 +84,41 @@ const facilityPreferencesSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+
+    // ─── FACILITY TAXONOMY ──────────────────────────────────────────────────
+    /**
+     * Role families the facility uses. Keep these as base roles only
+     * (for example, receptionist instead of al_receptionist).
+     */
+    roleFamilies: {
+      type: [String],
+      default: [],
+    },
+
+    /**
+     * Facility areas / units such as AL, IL, MC, or tenant-defined units.
+     */
+    unitAreas: {
+      type: [String],
+      default: ["AL", "IL", "MC"],
+    },
+
+    /**
+     * Shift types used by the facility. Default day/evening/night, but the
+     * admin can add more custom shift buckets.
+     */
+    shiftTypes: {
+      type: [String],
+      default: ["day", "evening", "night"],
+    },
+
+    /**
+     * Certification / skill tags available in this tenant.
+     */
+    certificationTags: {
+      type: [String],
+      default: [],
+    },
   },
   { timestamps: true },
 );

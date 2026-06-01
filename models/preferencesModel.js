@@ -21,36 +21,6 @@ const preferencesSchema = new mongoose.Schema(
       default: [],
     },
 
-    preferredShiftStart: {
-      type: String, // "08:00"
-      default: null,
-    },
-
-    preferredShiftEnd: {
-      type: String, // "17:00"
-      default: null,
-    },
-
-    maxHoursPerWeek: {
-      type: Number,
-      default: null,
-    },
-
-    minHoursPerWeek: {
-      type: Number,
-      default: null,
-    },
-
-    dislikesNights: {
-      type: Boolean,
-      default: false,
-    },
-
-    prefersBlockScheduling: {
-      type: Boolean,
-      default: false,
-    },
-
     scheduleEmailNotificationsEnabled: {
       type: Boolean,
       default: true,

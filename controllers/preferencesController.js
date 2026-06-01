@@ -1,5 +1,15 @@
 const Preferences = require("../models/preferencesModel");
 
+const pickAllowedPreferenceFields = (payload) => ({
+  preferredDaysOfWeek: Array.isArray(payload.preferredDaysOfWeek)
+    ? payload.preferredDaysOfWeek
+    : undefined,
+  scheduleEmailNotificationsEnabled: payload.scheduleEmailNotificationsEnabled,
+  scheduleSmsNotificationsEnabled: payload.scheduleSmsNotificationsEnabled,
+  timeOffEmailNotificationsEnabled: payload.timeOffEmailNotificationsEnabled,
+  timeOffSmsNotificationsEnabled: payload.timeOffSmsNotificationsEnabled,
+});
+
 // STAFF: Get my preferences
 exports.getMyPreferences = async (req, res, next) => {
   try {
@@ -17,10 +27,12 @@ exports.getMyPreferences = async (req, res, next) => {
 // STAFF: Create or Update my preferences
 exports.upsertMyPreferences = async (req, res, next) => {
   try {
+    const updates = pickAllowedPreferenceFields(req.body || {});
+
     const prefs = await Preferences.findOneAndUpdate(
       { staffId: req.user._id, tenantId: req.tenantId },
-      { ...req.body },
-      { new: true, upsert: true }
+      updates,
+      { new: true, upsert: true },
     );
 
     res.json(prefs);

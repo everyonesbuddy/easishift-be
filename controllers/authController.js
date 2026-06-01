@@ -4,6 +4,7 @@ const crypto = require("crypto");
 const { parse } = require("csv-parse/sync");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
+const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 
@@ -57,6 +58,33 @@ const resolveRole = (role) =>
   String(role || "staff")
     .trim()
     .toLowerCase();
+
+const SYSTEM_ROLES = new Set(["user", "admin", "superadmin", "staff", "other"]);
+
+const getAllowedRolesForTenant = async (tenantId) => {
+  const prefs = await FacilityPreferences.findOne({ tenantId })
+    .select("roleFamilies")
+    .lean();
+
+  const facilityRoles = (prefs?.roleFamilies || [])
+    .map(resolveRole)
+    .filter(Boolean);
+  return new Set([...SYSTEM_ROLES, ...facilityRoles]);
+};
+
+const normalizeStringArray = (values) =>
+  Array.from(
+    new Set(
+      (Array.isArray(values)
+        ? values
+        : typeof values === "string"
+          ? values.split(",")
+          : []
+      )
+        .map((value) => String(value || "").trim())
+        .filter(Boolean),
+    ),
+  );
 
 const getBulkRows = (req) => {
   let csvText = null;
@@ -113,6 +141,9 @@ exports.registerTenant = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       profilePicture,
+      allowedAreas,
+      allowedShiftTypes,
+      certificationTags,
       address,
       industry,
       adminName,
@@ -137,6 +168,9 @@ exports.registerTenant = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       profilePicture,
+      allowedAreas: normalizeStringArray(allowedAreas),
+      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
+      certificationTags: normalizeStringArray(certificationTags),
       passwordHash,
       role: "admin",
     });
@@ -218,10 +252,21 @@ exports.registerStaff = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       profilePicture,
+      allowedAreas,
+      allowedShiftTypes,
+      certificationTags,
     } = req.body;
+    const normalizedRole = resolveRole(role);
 
     if (!name || !email) {
       return res.status(400).json({ message: "Name and email are required" });
+    }
+
+    const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
+    if (!allowedRoles.has(normalizedRole)) {
+      return res.status(400).json({
+        message: `invalid role '${role || ""}'`,
+      });
     }
 
     const generatedPassword = crypto.randomBytes(24).toString("hex");
@@ -234,8 +279,11 @@ exports.registerStaff = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       profilePicture,
+      allowedAreas: normalizeStringArray(allowedAreas),
+      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
+      certificationTags: normalizeStringArray(certificationTags),
       passwordHash,
-      role,
+      role: normalizedRole,
     });
 
     const setupUrl = await createPasswordSetupLink(req, user);
@@ -303,7 +351,7 @@ exports.registerStaff = async (req, res, next) => {
 exports.bulkRegisterStaff = async (req, res, next) => {
   try {
     const rows = getBulkRows(req);
-    const allowedRoles = User.schema.path("role").enumValues || [];
+    const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
     const maxRows = 500;
 
     if (!rows.length) {
@@ -349,6 +397,9 @@ exports.bulkRegisterStaff = async (req, res, next) => {
       const profilePicture = row.profilePicture
         ? String(row.profilePicture).trim()
         : null;
+      const allowedAreas = normalizeStringArray(row.allowedAreas);
+      const allowedShiftTypes = normalizeStringArray(row.allowedShiftTypes);
+      const certificationTags = normalizeStringArray(row.certificationTags);
 
       if (!name || !email) {
         result.failed += 1;
@@ -361,7 +412,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
         continue;
       }
 
-      if (!allowedRoles.includes(role)) {
+      if (!allowedRoles.has(role)) {
         result.failed += 1;
         result.rows.push({
           rowNumber: row.rowNumber,
@@ -405,6 +456,9 @@ exports.bulkRegisterStaff = async (req, res, next) => {
           userPhone,
           userPhoneCountryCode,
           profilePicture,
+          allowedAreas,
+          allowedShiftTypes,
+          certificationTags,
           passwordHash,
           role,
         });
@@ -757,11 +811,39 @@ exports.updateUser = async (req, res, next) => {
       userPhone,
       userPhoneCountryCode,
       profilePicture,
+      allowedAreas,
+      allowedShiftTypes,
+      certificationTags,
     } = req.body;
+    const normalizedRole = role !== undefined ? resolveRole(role) : undefined;
+
+    if (normalizedRole !== undefined) {
+      const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
+      if (!allowedRoles.has(normalizedRole)) {
+        return res.status(400).json({
+          message: `invalid role '${role || ""}'`,
+        });
+      }
+    }
+
+    const updatePayload = {
+      name,
+      email,
+      userPhone,
+      userPhoneCountryCode,
+      profilePicture,
+      allowedAreas: normalizeStringArray(allowedAreas),
+      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
+      certificationTags: normalizeStringArray(certificationTags),
+    };
+
+    if (normalizedRole !== undefined) {
+      updatePayload.role = normalizedRole;
+    }
 
     const updated = await User.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
-      { name, email, role, userPhone, userPhoneCountryCode, profilePicture },
+      updatePayload,
       { new: true },
     ).select("-passwordHash");
 

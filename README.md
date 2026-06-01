@@ -26,14 +26,26 @@ This service powers:
 
 ---
 
+## 2026 Scheduling Architecture Updates
+
+The scheduling domain now uses tenant-configurable taxonomy instead of hard-coded AL/IL/MC-prefixed role enums.
+
+- Roles are validated against `FacilityPreferences.roleFamilies` (plus system roles like `admin`).
+- Coverage and schedule compatibility is enforced using role + unit area + shift type + certification tags.
+- Overnight coverage is supported by normalizing `endTime <= startTime` to next-day end time.
+- Coverage responses include a computed `spansOvernight` boolean.
+- Staff preferences were simplified to preferred days + notification toggles only.
+
+---
+
 ## Current Domain Model
 
 - **Tenant**: organization account, subscription status, seat limits, billing IDs
-- **User**: staff user under tenant (admin, rn, lpn, cna, caregiver, etc.)
+- **User**: staff user under tenant with dynamic role (`role`) and optional capability arrays (`allowedAreas`, `allowedShiftTypes`, `certificationTags`)
 - **Coverage**: required staffing slots by role/date/time and required headcount
 - **Schedule**: assigned shifts per staff member
-- **Preferences**: staff soft scheduling preferences, weekly hour caps, and notification toggles
-- **FacilityPreferences**: tenant-level auto-scheduling policy defaults and pattern guidance
+- **Preferences**: staff preferred weekdays + notification toggles
+- **FacilityPreferences**: tenant-level scheduling policy and taxonomy (`roleFamilies`, `unitAreas`, `shiftTypes`, `certificationTags`)
 - **TimeOff**: staff PTO/leave requests with admin approval flow
 - **Message**: internal staff-to-staff tenant-scoped messages
 
@@ -194,8 +206,16 @@ The endpoint returns per-coverage results and an overall summary, including:
 - `GET /api/v1/coverage/unfilled` - unfilled coverage by role
 - `GET /api/v1/coverage/unfilled-auto` - auto-generation helper data (admin)
 - `POST /api/v1/coverage` - create coverage batch (admin)
+- `DELETE /api/v1/coverage/bulk` - bulk delete coverage by ids (admin)
 - `PUT /api/v1/coverage/:id` - update coverage (admin)
 - `DELETE /api/v1/coverage/:id` - delete coverage (admin)
+
+Coverage behavior notes:
+
+- `role` is tenant-scoped and must exist in facility `roleFamilies`.
+- `unitArea`, `shiftType`, and `requiredCertificationTags` are supported for compatibility filtering.
+- Overnight windows are normalized automatically when `endTime <= startTime`.
+- Duplicate batch-create requests are rejected with detailed duplicate summaries.
 
 ### Time Off
 
@@ -212,12 +232,6 @@ The endpoint returns per-coverage results and an overall summary, including:
 Current staff preference fields include:
 
 - `preferredDaysOfWeek`
-- `preferredShiftStart`
-- `preferredShiftEnd`
-- `maxHoursPerWeek`
-- `minHoursPerWeek`
-- `dislikesNights`
-- `prefersBlockScheduling`
 - `scheduleEmailNotificationsEnabled`
 - `scheduleSmsNotificationsEnabled`
 - `timeOffEmailNotificationsEnabled`
@@ -240,6 +254,10 @@ Current facility preference fields include:
 - `fairnessLookbackDays`
 - `shiftReminderLeadHours`
 - `notifyStaffOnCoveragePost`
+- `roleFamilies`
+- `unitAreas`
+- `shiftTypes`
+- `certificationTags`
 
 ### Messaging
 
@@ -355,7 +373,8 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 ## Utility Scripts
 
 - `node scripts/migrate-tenant-defaults.js` - backfills tenant billing/default fields
-- `node scripts/fixMessages.js` - schedule role migration helper for existing records
+- `node scripts/fixMessages.js` - legacy helper for message/schedule role cleanup
+- `node scripts/migrate-facility-taxonomy.js` - migrates legacy role prefixes, backfills facility taxonomy, and removes deprecated preference fields
 
 ---
 

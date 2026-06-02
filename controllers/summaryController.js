@@ -116,16 +116,23 @@ exports.getAdminSummary = async (req, res, next) => {
     const todayStart = startOfDayUTC();
     const todayEnd = endOfDayUTC();
 
-    // Fetch today's schedules and coverages in parallel
+    // Fetch today's schedules and coverages in parallel.
+    // Use interval overlap (not exact date match) so overnight windows
+    // crossing midnight are included in today's summary.
     const [schedulesToday, coverageToday, pendingTimeOffCount, staffCount] =
       await Promise.all([
         Schedule.find({
           tenantId,
-          startTime: { $gte: todayStart, $lte: todayEnd },
+          startTime: { $lte: todayEnd },
+          endTime: { $gt: todayStart },
           status: { $nin: ["call_out", "cancelled"] },
         }).populate("staffId", "name role"),
 
-        Coverage.find({ tenantId, date: todayStart }),
+        Coverage.find({
+          tenantId,
+          startTime: { $lte: todayEnd },
+          endTime: { $gt: todayStart },
+        }),
 
         TimeOff.countDocuments({ tenantId, status: "pending" }),
 

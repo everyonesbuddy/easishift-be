@@ -409,6 +409,12 @@ exports.createCoverage = async (req, res, next) => {
         });
       }
 
+      if (Boolean(startTime) !== Boolean(endTime)) {
+        return res.status(400).json({
+          message: `Shift at index ${index} must include both startTime and endTime together`,
+        });
+      }
+
       if (normalizedShiftType && normalizedShiftTag) {
         const slot = slotLookup.get(
           `${normalizedShiftType}:${normalizedShiftTag}`,
@@ -445,15 +451,17 @@ exports.createCoverage = async (req, res, next) => {
     for (const date of normalizedDates) {
       for (const shift of normalizedShifts) {
         const normalizedWindow =
-          shift.shiftType && shift.shiftTag
-            ? buildWindowFromShiftSlot({
-                date,
-                shiftType: shift.shiftType,
-                shiftTag: shift.shiftTag,
-                slotLookup,
-                facilityTimezone,
-              })
-            : normalizeShiftWindow(shift.startTime, shift.endTime);
+          shift.startTime && shift.endTime
+            ? normalizeShiftWindow(shift.startTime, shift.endTime)
+            : shift.shiftType && shift.shiftTag
+              ? buildWindowFromShiftSlot({
+                  date,
+                  shiftType: shift.shiftType,
+                  shiftTag: shift.shiftTag,
+                  slotLookup,
+                  facilityTimezone,
+                })
+              : { error: "startTime and endTime are required" };
 
         if (normalizedWindow.error) {
           return res.status(400).json({
@@ -643,26 +651,7 @@ exports.updateCoverage = async (req, res, next) => {
       });
     }
 
-    if (effectiveShiftType && effectiveShiftTag) {
-      const slotWindow = buildWindowFromShiftSlot({
-        date: effectiveDate,
-        shiftType: effectiveShiftType,
-        shiftTag: effectiveShiftTag,
-        slotLookup,
-        facilityTimezone,
-      });
-
-      if (slotWindow.error) {
-        return res.status(400).json({
-          message: slotWindow.error,
-        });
-      }
-
-      update.shiftType = effectiveShiftType;
-      update.shiftTag = effectiveShiftTag;
-      update.startTime = slotWindow.startTime;
-      update.endTime = slotWindow.endTime;
-    } else if (update.startTime !== undefined || update.endTime !== undefined) {
+    if (update.startTime !== undefined || update.endTime !== undefined) {
       const startTimeInput =
         update.startTime !== undefined ? update.startTime : existing.startTime;
       const endTimeInput =
@@ -683,6 +672,31 @@ exports.updateCoverage = async (req, res, next) => {
       if (update.shiftType === null || update.shiftType === "") {
         update.shiftTag = null;
       }
+    } else if (
+      effectiveShiftType &&
+      effectiveShiftTag &&
+      (update.shiftType !== undefined ||
+        update.shiftTag !== undefined ||
+        update.date !== undefined)
+    ) {
+      const slotWindow = buildWindowFromShiftSlot({
+        date: effectiveDate,
+        shiftType: effectiveShiftType,
+        shiftTag: effectiveShiftTag,
+        slotLookup,
+        facilityTimezone,
+      });
+
+      if (slotWindow.error) {
+        return res.status(400).json({
+          message: slotWindow.error,
+        });
+      }
+
+      update.shiftType = effectiveShiftType;
+      update.shiftTag = effectiveShiftTag;
+      update.startTime = slotWindow.startTime;
+      update.endTime = slotWindow.endTime;
     }
 
     const updated = await Coverage.findOneAndUpdate(

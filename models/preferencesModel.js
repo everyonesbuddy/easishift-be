@@ -21,22 +21,12 @@ const preferencesSchema = new mongoose.Schema(
       default: [],
     },
 
-    scheduleEmailNotificationsEnabled: {
+    emailNotificationsEnabled: {
       type: Boolean,
       default: true,
     },
 
-    scheduleSmsNotificationsEnabled: {
-      type: Boolean,
-      default: true,
-    },
-
-    timeOffEmailNotificationsEnabled: {
-      type: Boolean,
-      default: true,
-    },
-
-    timeOffSmsNotificationsEnabled: {
+    smsNotificationsEnabled: {
       type: Boolean,
       default: true,
     },

@@ -6,7 +6,6 @@ const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
-const { sendSMS } = require("../utils/sendSMS");
 
 const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
 
@@ -42,24 +41,6 @@ const buildResetUrl = (req, token) => {
   if (!baseUrl) return token;
   const normalizedBase = baseUrl.replace(/\/$/, "");
   return `${normalizedBase}${resetPath}?token=${token}`;
-};
-
-const buildE164Number = (countryCode, phone) => {
-  if (!phone) return null;
-
-  const rawPhone = String(phone).trim();
-  if (!rawPhone) return null;
-  if (rawPhone.startsWith("+")) return rawPhone;
-
-  if (!countryCode) return null;
-  const normalizedCountryCode = String(countryCode).trim();
-  if (!normalizedCountryCode) return null;
-
-  const prefix = normalizedCountryCode.startsWith("+")
-    ? normalizedCountryCode
-    : `+${normalizedCountryCode}`;
-
-  return `${prefix}${rawPhone}`;
 };
 
 const normalizeEmail = (email) =>
@@ -213,23 +194,6 @@ exports.registerTenant = async (req, res, next) => {
             result && result.error ? result.error : "unknown error",
           );
         }
-
-        const to = buildE164Number(
-          adminUser.userPhoneCountryCode,
-          adminUser.userPhone,
-        );
-        if (to) {
-          const smsBody = `Your admin account for ${tenant.name} is ready. You can now sign in and set up your team.`;
-          const smsResult = await sendSMS(to, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(`Admin welcome SMS sent to ${to}`);
-          } else {
-            console.error(
-              `Admin welcome SMS failed for user ${adminUser._id}:`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
-        }
       }
     } catch (err) {
       console.error(
@@ -327,20 +291,6 @@ exports.registerStaff = async (req, res, next) => {
             `Staff welcome email failed for ${user._id}:`,
             result && result.error ? result.error : "unknown error",
           );
-        }
-
-        const to = buildE164Number(user.userPhoneCountryCode, user.userPhone);
-        if (to) {
-          const smsBody = `Your staff account is ready at ${tenantName}. Check your email to set your password.`;
-          const smsResult = await sendSMS(to, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(`Staff welcome SMS sent to ${to}`);
-          } else {
-            console.error(
-              `Staff welcome SMS failed for ${user._id}:`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
         }
       }
     } catch (err) {
@@ -603,21 +553,6 @@ exports.changePassword = async (req, res, next) => {
             result && result.error ? result.error : "unknown error",
           );
         }
-
-        const to = buildE164Number(user.userPhoneCountryCode, user.userPhone);
-        if (to) {
-          const smsBody =
-            "Your password was changed. If this was not you, contact your admin immediately.";
-          const smsResult = await sendSMS(to, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(`Password change SMS sent to ${to}`);
-          } else {
-            console.error(
-              `Password change SMS failed for ${user._id}:`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
-        }
       }
     } catch (err) {
       console.error(
@@ -677,21 +612,6 @@ exports.forgotPassword = async (req, res, next) => {
       return res.status(500).json({ message: "Email send failed" });
     }
 
-    const to = buildE164Number(user.userPhoneCountryCode, user.userPhone);
-    if (to) {
-      const smsBody =
-        "A password reset was requested for your account. Check your email for the reset link.";
-      const smsResult = await sendSMS(to, smsBody);
-      if (smsResult && smsResult.success) {
-        console.log(`Password reset request SMS sent to ${to}`);
-      } else {
-        console.error(
-          `Password reset request SMS failed for ${user._id}:`,
-          smsResult && smsResult.error ? smsResult.error : "unknown error",
-        );
-      }
-    }
-
     res
       .status(200)
       .json({ message: "If the email exists, a reset link was sent." });
@@ -749,21 +669,6 @@ exports.resetPassword = async (req, res, next) => {
             `Password reset email failed for ${user._id}:`,
             result && result.error ? result.error : "unknown error",
           );
-        }
-
-        const to = buildE164Number(user.userPhoneCountryCode, user.userPhone);
-        if (to) {
-          const smsBody =
-            "Your password has been reset successfully. If this was not you, contact your admin.";
-          const smsResult = await sendSMS(to, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(`Password reset SMS sent to ${to}`);
-          } else {
-            console.error(
-              `Password reset SMS failed for ${user._id}:`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
         }
       }
     } catch (err) {
@@ -863,56 +768,6 @@ exports.updateUser = async (req, res, next) => {
     ).select("-passwordHash");
 
     if (!updated) return res.status(404).json({ message: "User not found" });
-
-    // Notify the user about profile updates (best-effort)
-    try {
-      if (updated.email) {
-        const subject = "Your account details were updated";
-        const html = `
-          <p>Hi ${updated.name || "there"},</p>
-          <p>Your account details were updated by ${
-            req.user && req.user.name ? req.user.name : "an administrator"
-          }.</p>
-          <ul>
-            <li><strong>Current email:</strong> ${updated.email}</li>
-            <li><strong>Current role:</strong> ${updated.role}</li>
-          </ul>
-          <p>If you did not expect this change, please contact your admin.</p>
-        `;
-
-        const result = await sendEmail(updated.email, subject, html);
-        if (result && result.success) {
-          console.log(`User update email sent to ${updated.email}`);
-        } else {
-          console.error(
-            `User update email failed for ${updated._id}:`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-
-        const to = buildE164Number(
-          updated.userPhoneCountryCode,
-          updated.userPhone,
-        );
-        if (to) {
-          const smsBody = `Your account details were updated. Current role: ${updated.role}.`;
-          const smsResult = await sendSMS(to, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(`User update SMS sent to ${to}`);
-          } else {
-            console.error(
-              `User update SMS failed for ${updated._id}:`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
-        }
-      }
-    } catch (err) {
-      console.error(
-        "Error sending user update email:",
-        err && err.message ? err.message : err,
-      );
-    }
 
     res.status(200).json({ message: "User updated", user: updated });
   } catch (err) {

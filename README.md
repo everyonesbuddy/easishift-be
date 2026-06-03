@@ -241,10 +241,8 @@ Coverage behavior notes:
 Current staff preference fields include:
 
 - `preferredDaysOfWeek`
-- `scheduleEmailNotificationsEnabled`
-- `scheduleSmsNotificationsEnabled`
-- `timeOffEmailNotificationsEnabled`
-- `timeOffSmsNotificationsEnabled`
+- `emailNotificationsEnabled`
+- `smsNotificationsEnabled`
 
 Recurring hard day-of-week unavailability is not stored in preferences. Hard availability blocking is handled through approved time-off requests.
 

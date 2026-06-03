@@ -358,17 +358,15 @@ async function run() {
           if (!Array.isArray(doc.preferredDaysOfWeek)) {
             update.preferredDaysOfWeek = [];
           }
-          if (typeof doc.scheduleEmailNotificationsEnabled !== "boolean") {
-            update.scheduleEmailNotificationsEnabled = true;
+          if (typeof doc.emailNotificationsEnabled !== "boolean") {
+            update.emailNotificationsEnabled =
+              doc.scheduleEmailNotificationsEnabled !== false &&
+              doc.timeOffEmailNotificationsEnabled !== false;
           }
-          if (typeof doc.scheduleSmsNotificationsEnabled !== "boolean") {
-            update.scheduleSmsNotificationsEnabled = true;
-          }
-          if (typeof doc.timeOffEmailNotificationsEnabled !== "boolean") {
-            update.timeOffEmailNotificationsEnabled = true;
-          }
-          if (typeof doc.timeOffSmsNotificationsEnabled !== "boolean") {
-            update.timeOffSmsNotificationsEnabled = true;
+          if (typeof doc.smsNotificationsEnabled !== "boolean") {
+            update.smsNotificationsEnabled =
+              doc.scheduleSmsNotificationsEnabled !== false &&
+              doc.timeOffSmsNotificationsEnabled !== false;
           }
 
           return update;
@@ -385,6 +383,10 @@ async function run() {
             minHoursPerWeek: "",
             dislikesNights: "",
             prefersBlockScheduling: "",
+            scheduleEmailNotificationsEnabled: "",
+            scheduleSmsNotificationsEnabled: "",
+            timeOffEmailNotificationsEnabled: "",
+            timeOffSmsNotificationsEnabled: "",
           },
         },
       );
@@ -411,6 +413,10 @@ async function run() {
           minHoursPerWeek: "",
           dislikesNights: "",
           prefersBlockScheduling: "",
+          scheduleEmailNotificationsEnabled: "",
+          scheduleSmsNotificationsEnabled: "",
+          timeOffEmailNotificationsEnabled: "",
+          timeOffSmsNotificationsEnabled: "",
         },
       },
     );

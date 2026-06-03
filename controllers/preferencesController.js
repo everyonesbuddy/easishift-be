@@ -4,10 +4,8 @@ const pickAllowedPreferenceFields = (payload) => ({
   preferredDaysOfWeek: Array.isArray(payload.preferredDaysOfWeek)
     ? payload.preferredDaysOfWeek
     : undefined,
-  scheduleEmailNotificationsEnabled: payload.scheduleEmailNotificationsEnabled,
-  scheduleSmsNotificationsEnabled: payload.scheduleSmsNotificationsEnabled,
-  timeOffEmailNotificationsEnabled: payload.timeOffEmailNotificationsEnabled,
-  timeOffSmsNotificationsEnabled: payload.timeOffSmsNotificationsEnabled,
+  emailNotificationsEnabled: payload.emailNotificationsEnabled,
+  smsNotificationsEnabled: payload.smsNotificationsEnabled,
 });
 
 // STAFF: Get my preferences

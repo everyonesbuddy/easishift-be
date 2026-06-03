@@ -23,11 +23,11 @@ const buildE164Number = (countryCode, phone) => {
   return `${prefix}${rawPhone}`;
 };
 
-const isTimeOffEmailNotificationEnabled = (preferences) =>
-  preferences?.timeOffEmailNotificationsEnabled !== false;
+const isEmailNotificationEnabled = (preferences) =>
+  preferences?.emailNotificationsEnabled !== false;
 
-const isTimeOffSmsNotificationEnabled = (preferences) =>
-  preferences?.timeOffSmsNotificationsEnabled !== false;
+const isSmsNotificationEnabled = (preferences) =>
+  preferences?.smsNotificationsEnabled !== false;
 
 // Create request (staff)
 exports.requestTimeOff = async (req, res, next) => {
@@ -160,14 +160,10 @@ exports.reviewTimeOff = async (req, res, next) => {
         ? await Preferences.findOne({
             tenantId: req.tenantId,
             staffId: staff._id,
-          })
+          }).lean()
         : null;
 
-      if (
-        staff &&
-        staff.email &&
-        isTimeOffEmailNotificationEnabled(staffPreference)
-      ) {
+      if (staff && staff.email && isEmailNotificationEnabled(staffPreference)) {
         const subject = `Your time-off request has been ${status}`;
         const html = `
           <p>Hi ${staff.name || "team member"},</p>
@@ -194,7 +190,7 @@ exports.reviewTimeOff = async (req, res, next) => {
       }
 
       const to =
-        staff && isTimeOffSmsNotificationEnabled(staffPreference)
+        staff && isSmsNotificationEnabled(staffPreference)
           ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
           : null;
       if (to) {

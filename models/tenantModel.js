@@ -58,6 +58,26 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
+     * TERMS AND CONDITIONS
+     * Captures whether tenant accepted terms and which version.
+     */
+    termsAccepted: {
+      type: Boolean,
+      default: false,
+    },
+
+    termsVersion: {
+      type: String,
+      default: null,
+      trim: true,
+    },
+
+    termsAcceptedAt: {
+      type: Date,
+      default: null,
+    },
+
+    /**
      * PLAN / LIMITS
      * Seat = a user with a login (admin/staff).
      * Default 1 because signup creates an admin user.

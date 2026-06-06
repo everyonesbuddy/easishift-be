@@ -20,6 +20,21 @@ const getPasswordResetTtlMs = () => {
   return minutes * 60 * 1000;
 };
 
+const getPasswordResetTtlLabel = () => {
+  const ttlMinutes = Math.floor(getPasswordResetTtlMs() / (60 * 1000));
+  if (ttlMinutes % (24 * 60) === 0) {
+    const days = ttlMinutes / (24 * 60);
+    return `${days} day${days === 1 ? "" : "s"}`;
+  }
+
+  if (ttlMinutes % 60 === 0) {
+    const hours = ttlMinutes / 60;
+    return `${hours} hour${hours === 1 ? "" : "s"}`;
+  }
+
+  return `${ttlMinutes} minute${ttlMinutes === 1 ? "" : "s"}`;
+};
+
 // Helper: Create JWT
 const signToken = (id, role, tenantId) =>
   jwt.sign({ id, role, tenantId }, process.env.JWT_SECRET, { expiresIn: "7d" });
@@ -80,6 +95,16 @@ const normalizeStringArray = (values) =>
     ),
   );
 
+const parseBoolean = (value) => {
+  if (typeof value === "boolean") return value;
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    return normalized === "true" || normalized === "1";
+  }
+  if (typeof value === "number") return value === 1;
+  return false;
+};
+
 const getBulkRows = (req) => {
   let csvText = null;
 
@@ -119,6 +144,9 @@ const createPasswordSetupLink = async (req, user) => {
   return buildResetUrl(req, setupToken);
 };
 
+const getPasswordResetValidityText = () =>
+  `valid for ${getPasswordResetTtlLabel()}`;
+
 /**
  * TENANT SIGNUP
  * -------------
@@ -141,7 +169,14 @@ exports.registerTenant = async (req, res, next) => {
       address,
       industry,
       adminName,
+      termsAccepted,
+      termsVersion,
+      termsAcceptedAt,
     } = req.body;
+    const hasAcceptedTerms = parseBoolean(termsAccepted);
+    const parsedTermsAcceptedAt = termsAcceptedAt
+      ? new Date(termsAcceptedAt)
+      : new Date();
 
     // Create tenant
     const tenant = await Tenant.create({
@@ -151,6 +186,17 @@ exports.registerTenant = async (req, res, next) => {
       tenantPhoneCountryCode,
       address,
       industry,
+      termsAccepted: hasAcceptedTerms,
+      termsVersion: hasAcceptedTerms
+        ? termsVersion
+          ? String(termsVersion).trim()
+          : "1.0"
+        : null,
+      termsAcceptedAt: hasAcceptedTerms
+        ? Number.isNaN(parsedTermsAcceptedAt.getTime())
+          ? new Date()
+          : parsedTermsAcceptedAt
+        : null,
     });
 
     // Create admin user
@@ -279,7 +325,7 @@ exports.registerStaff = async (req, res, next) => {
             <li><strong>Login email:</strong> ${user.email}</li>
             <li><strong>Role:</strong> ${user.role}</li>
           </ul>
-          <p>Set your password using the secure link below (valid for 30 minutes):</p>
+          <p>Set your password using the secure link below (${getPasswordResetValidityText()}):</p>
           <p><a href="${setupUrl}">${setupUrl}</a></p>
         `;
 
@@ -440,7 +486,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
               <li><strong>Login email:</strong> ${user.email}</li>
               <li><strong>Role:</strong> ${user.role}</li>
             </ul>
-            <p>Set your password using the secure link below (valid for 30 minutes):</p>
+            <p>Set your password using the secure link below (${getPasswordResetValidityText()}):</p>
             <p><a href="${setupUrl}">${setupUrl}</a></p>
           `;
 
@@ -599,7 +645,7 @@ exports.forgotPassword = async (req, res, next) => {
     const html = `
       <p>Hi ${user.name || "there"},</p>
       <p>We received a request to reset your password.</p>
-      <p>Use the link below to reset it (valid for 30 minutes):</p>
+      <p>Use the link below to reset it (${getPasswordResetValidityText()}):</p>
       <p><a href="${resetUrl}">${resetUrl}</a></p>
       <p>If you did not request this, you can ignore this email.</p>
     `;

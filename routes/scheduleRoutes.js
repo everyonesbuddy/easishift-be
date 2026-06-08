@@ -9,6 +9,11 @@ const {
   deleteSchedule,
   deleteSchedulesByIds,
   autoGenerateSchedule,
+  getAutoScheduleDraftRuns,
+  getAutoScheduleDraftRunById,
+  updateAutoScheduleDraftAssignment,
+  publishAutoScheduleDraftRun,
+  discardAutoScheduleDraftRun,
   requestShiftSwap,
   getShiftSwapRequests,
   respondToShiftSwapRequest,
@@ -28,6 +33,29 @@ router.post("/", createSchedule);
 
 // AUTO GENERATE (admin only)
 router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
+
+// AUTO-SCHEDULE DRAFT RUNS (admin only)
+router.get("/draft-runs", restrictTo("admin"), getAutoScheduleDraftRuns);
+router.get(
+  "/draft-runs/:runId",
+  restrictTo("admin"),
+  getAutoScheduleDraftRunById,
+);
+router.patch(
+  "/draft-runs/:runId/assignments/:assignmentId",
+  restrictTo("admin"),
+  updateAutoScheduleDraftAssignment,
+);
+router.post(
+  "/draft-runs/:runId/publish",
+  restrictTo("admin"),
+  publishAutoScheduleDraftRun,
+);
+router.post(
+  "/draft-runs/:runId/discard",
+  restrictTo("admin"),
+  discardAutoScheduleDraftRun,
+);
 
 // SHIFT SWAP REQUESTS
 router.get("/swap-requests", getShiftSwapRequests);

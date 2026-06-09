@@ -5,6 +5,7 @@ const {
   getMyPreferences,
   upsertMyPreferences,
   getPreferencesForStaff,
+  upsertPreferencesForStaff,
 } = require("../controllers/preferencesController");
 
 const auth = require("../middleware/authMiddleware");
@@ -32,5 +33,6 @@ router.post("/me", upsertMyPreferences);
  */
 
 router.get("/:staffId", restrictTo("admin"), getPreferencesForStaff);
+router.post("/:staffId", restrictTo("admin"), upsertPreferencesForStaff);
 
 module.exports = router;

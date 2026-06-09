@@ -39,6 +39,23 @@ exports.upsertMyPreferences = async (req, res, next) => {
   }
 };
 
+// ADMIN: Update preferences for any staff member
+exports.upsertPreferencesForStaff = async (req, res, next) => {
+  try {
+    const updates = pickAllowedPreferenceFields(req.body || {});
+
+    const prefs = await Preferences.findOneAndUpdate(
+      { staffId: req.params.staffId, tenantId: req.tenantId },
+      updates,
+      { new: true, upsert: true },
+    );
+
+    res.json(prefs);
+  } catch (err) {
+    next(err);
+  }
+};
+
 // ADMIN: View preferences for any staff member
 exports.getPreferencesForStaff = async (req, res, next) => {
   try {

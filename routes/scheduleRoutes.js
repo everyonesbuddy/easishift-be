@@ -9,11 +9,11 @@ const {
   deleteSchedule,
   deleteSchedulesByIds,
   autoGenerateSchedule,
-  getAutoScheduleDraftRuns,
-  getAutoScheduleDraftRunById,
+  getAutoScheduleDrafts,
+  getAutoScheduleDraftById,
   updateAutoScheduleDraftAssignment,
-  publishAutoScheduleDraftRun,
-  discardAutoScheduleDraftRun,
+  publishAutoScheduleDraft,
+  discardAutoScheduleDraft,
   requestShiftSwap,
   getShiftSwapRequests,
   respondToShiftSwapRequest,
@@ -34,27 +34,27 @@ router.post("/", createSchedule);
 // AUTO GENERATE (admin only)
 router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
 
-// AUTO-SCHEDULE DRAFT RUNS (admin only)
-router.get("/draft-runs", restrictTo("admin"), getAutoScheduleDraftRuns);
+// AUTO-SCHEDULE DRAFTS (admin only)
+router.get("/draft-schedules", restrictTo("admin"), getAutoScheduleDrafts);
 router.get(
-  "/draft-runs/:runId",
+  "/draft-schedules/:draftId",
   restrictTo("admin"),
-  getAutoScheduleDraftRunById,
+  getAutoScheduleDraftById,
 );
 router.patch(
-  "/draft-runs/:runId/assignments/:assignmentId",
+  "/draft-schedules/:draftId/assignments/:assignmentId",
   restrictTo("admin"),
   updateAutoScheduleDraftAssignment,
 );
 router.post(
-  "/draft-runs/:runId/publish",
+  "/draft-schedules/:draftId/publish",
   restrictTo("admin"),
-  publishAutoScheduleDraftRun,
+  publishAutoScheduleDraft,
 );
 router.post(
-  "/draft-runs/:runId/discard",
+  "/draft-schedules/:draftId/discard",
   restrictTo("admin"),
-  discardAutoScheduleDraftRun,
+  discardAutoScheduleDraft,
 );
 
 // SHIFT SWAP REQUESTS

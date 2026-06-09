@@ -6,8 +6,7 @@ const Preferences = require("../models/preferencesModel");
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const ShiftSwap = require("../models/shiftSwapModel");
-const AutoScheduleRun = require("../models/autoScheduleRunModel");
-const AutoScheduleAssignment = require("../models/autoScheduleAssignmentModel");
+const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
 const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
@@ -713,16 +712,8 @@ const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
 const toObjectId = (value) =>
   mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(value) : null;
 
-const buildDraftAssignmentPayload = ({
-  runId,
-  tenantId,
-  coverage,
-  staff,
-  metrics,
-  createdBy,
-}) => ({
-  runId,
-  tenantId,
+const buildDraftAssignmentPayload = ({ coverage, staff, metrics }) => ({
+  assignmentId: new mongoose.Types.ObjectId(),
   coverageId: coverage._id,
   staffId: staff._id,
   role: coverage.role,
@@ -745,23 +736,18 @@ const buildDraftAssignmentPayload = ({
     projectedWeekMinutes: metrics.projectedWeekMinutes,
     preferencePenalty: metrics.preferencePenalty,
   },
-  meta: {
-    generatedBy: createdBy,
-    lastEditedBy: createdBy,
-  },
 });
 
-const ensureDraftRun = async ({ runId, tenantId }) => {
-  const filter = {
-    _id: runId,
+const ensureDraftSchedule = async ({ draftId, tenantId }) => {
+  const draft = await AutoScheduleDraft.findOne({
+    _id: draftId,
     tenantId,
-  };
+  });
 
-  const run = await AutoScheduleRun.findOne(filter);
-  if (!run) return null;
-  if (run.status !== "draft") return null;
+  if (!draft) return null;
+  if (!["draft", "partially_published"].includes(draft.status)) return null;
 
-  return run;
+  return draft;
 };
 
 // AUTO-GENERATE SCHEDULE FOR SELECTED COVERAGES
@@ -899,20 +885,6 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     console.log(
       `Loaded existing schedules for ${existingSchedules.length} shifts`,
     );
-
-    const run = await AutoScheduleRun.create({
-      tenantId,
-      createdBy: req.user._id,
-      status: "draft",
-      coverageIds: coverageList.map((coverage) => coverage._id),
-      policySource: facilityPreferences ? "facility_preferences" : "defaults",
-      facilityPolicy: {
-        schedulingPattern: facilityPolicy.schedulingPattern,
-        weeklyOvertimeThresholdHours:
-          facilityPolicy.weeklyOvertimeThresholdHours,
-        fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
-      },
-    });
 
     const generated = [];
     const coverageResults = [];
@@ -1105,16 +1077,11 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       for (const entry of selectedRanked) {
         const { staff, metrics } = entry;
-        const draftAssignment = await AutoScheduleAssignment.create(
-          buildDraftAssignmentPayload({
-            runId: run._id,
-            tenantId,
-            coverage: cov,
-            staff,
-            metrics,
-            createdBy: req.user._id,
-          }),
-        );
+        const draftAssignment = buildDraftAssignmentPayload({
+          coverage: cov,
+          staff,
+          metrics,
+        });
 
         console.log(
           `Drafted staff ${staff.name} (${staff._id}) for coverage ${cov._id}`,
@@ -1122,7 +1089,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
         generated.push(draftAssignment);
         assignmentDetails.push({
-          draftAssignmentId: draftAssignment._id,
+          assignmentId: draftAssignment.assignmentId,
           staffId: staff._id,
           staffName: staff.name,
           warnings: draftAssignment.warnings,
@@ -1147,15 +1114,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         });
       }
 
-      const unfilledCount = Math.max(0, needed - selected.length);
+      const assignedCount = selectedRanked.length;
+      const unfilledCount = Math.max(0, needed - assignedCount);
       coverageResults.push({
         ...coverageMeta,
         status: unfilledCount > 0 ? "partially_filled" : "filled",
         message:
           unfilledCount > 0
-            ? `Assigned ${selected.length} of ${needed} needed staff.`
-            : `Assigned ${selected.length} staff successfully.`,
-        assignedCount: selected.length,
+            ? `Assigned ${assignedCount} of ${needed} needed staff.`
+            : `Assigned ${assignedCount} staff successfully.`,
+        assignedCount,
         neededCount: needed,
         availableCount: available.length,
         alreadyAssignedCount: alreadyAssigned.length,
@@ -1194,16 +1162,30 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       notifications,
     };
 
-    run.summary = {
-      requestedCoverageIds: summary.requestedCoverageIds,
-      processedCoverageCount: summary.processedCoverageCount,
-      generatedAssignmentCount: summary.generatedAssignmentCount,
-      filledCoverageCount: summary.filledCoverageCount,
-      partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
-      skippedCoverageCount: summary.skippedCoverageCount,
-      alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
-    };
-    await run.save();
+    const draft = await AutoScheduleDraft.create({
+      tenantId,
+      createdBy: req.user._id,
+      status: "draft",
+      coverageIds: coverageList.map((coverage) => coverage._id),
+      policySource: facilityPreferences ? "facility_preferences" : "defaults",
+      facilityPolicy: {
+        schedulingPattern: facilityPolicy.schedulingPattern,
+        weeklyOvertimeThresholdHours:
+          facilityPolicy.weeklyOvertimeThresholdHours,
+        fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
+      },
+      summary: {
+        requestedCoverageIds: summary.requestedCoverageIds,
+        processedCoverageCount: summary.processedCoverageCount,
+        generatedAssignmentCount: summary.generatedAssignmentCount,
+        filledCoverageCount: summary.filledCoverageCount,
+        partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
+        skippedCoverageCount: summary.skippedCoverageCount,
+        alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
+      },
+      assignments: generated,
+      lastEditedBy: req.user._id,
+    });
 
     const successMessage = generated.length
       ? `Auto-scheduling draft created: ${generated.length} assignment(s) across ${summary.filledCoverageCount + summary.partiallyFilledCoverageCount} coverage item(s).`
@@ -1218,13 +1200,13 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       message: successMessage,
       warning: warningMessage,
       summary,
-      draftRun: {
-        runId: run._id,
-        status: run.status,
+      draftSchedule: {
+        draftId: draft._id,
+        status: draft.status,
       },
       coverageResults,
       generatedCount: generated.length,
-      draftAssignments: generated,
+      draftAssignments: draft.assignments,
     });
   } catch (err) {
     console.error("Error in autoGenerateSchedule:", err);
@@ -1238,7 +1220,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
   }
 };
 
-exports.getAutoScheduleDraftRuns = async (req, res, next) => {
+exports.getAutoScheduleDrafts = async (req, res, next) => {
   try {
     const { status = "draft", limit = 20 } = req.query;
 
@@ -1248,43 +1230,34 @@ exports.getAutoScheduleDraftRuns = async (req, res, next) => {
       filter.status = status;
     }
 
-    const runs = await AutoScheduleRun.find(filter)
+    const drafts = await AutoScheduleDraft.find(filter)
       .sort({ createdAt: -1 })
       .limit(safeLimit)
       .populate("createdBy", "name email")
       .populate("publishedBy", "name email")
       .populate("discardedBy", "name email");
 
-    res.json(runs);
+    res.json(drafts);
   } catch (err) {
     next(err);
   }
 };
 
-exports.getAutoScheduleDraftRunById = async (req, res, next) => {
+exports.getAutoScheduleDraftById = async (req, res, next) => {
   try {
-    const run = await AutoScheduleRun.findOne({
-      _id: req.params.runId,
+    const draft = await AutoScheduleDraft.findOne({
+      _id: req.params.draftId,
       tenantId: req.tenantId,
     })
       .populate("createdBy", "name email")
       .populate("publishedBy", "name email")
       .populate("discardedBy", "name email");
 
-    if (!run) {
-      return res.status(404).json({ message: "Draft run not found" });
+    if (!draft) {
+      return res.status(404).json({ message: "Draft schedule not found" });
     }
 
-    const assignments = await AutoScheduleAssignment.find({
-      runId: run._id,
-      tenantId: req.tenantId,
-    })
-      .sort({ startTime: 1, createdAt: 1 })
-      .populate("staffId", "name email role")
-      .populate("coverageId", "date role startTime endTime requiredCount")
-      .populate("meta.publishedScheduleId", "_id status staffId");
-
-    res.json({ run, assignments });
+    res.json(draft);
   } catch (err) {
     next(err);
   }
@@ -1292,20 +1265,23 @@ exports.getAutoScheduleDraftRunById = async (req, res, next) => {
 
 exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
   try {
-    const run = await ensureDraftRun({
-      runId: req.params.runId,
+    const draft = await ensureDraftSchedule({
+      draftId: req.params.draftId,
       tenantId: req.tenantId,
     });
 
-    if (!run) {
-      return res.status(404).json({ message: "Draft run not found" });
+    if (!draft) {
+      return res.status(404).json({ message: "Draft schedule not found" });
     }
 
-    const assignment = await AutoScheduleAssignment.findOne({
-      _id: req.params.assignmentId,
-      runId: run._id,
-      tenantId: req.tenantId,
-    });
+    const assignmentId = toObjectId(req.params.assignmentId);
+    if (!assignmentId) {
+      return res.status(400).json({ message: "Invalid assignmentId" });
+    }
+
+    const assignment = draft.assignments.find(
+      (item) => item.assignmentId.toString() === assignmentId.toString(),
+    );
 
     if (!assignment) {
       return res.status(404).json({ message: "Draft assignment not found" });
@@ -1414,65 +1390,71 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
         });
       }
 
-      const draftConflict = await AutoScheduleAssignment.findOne({
-        tenantId: req.tenantId,
-        runId: run._id,
-        _id: { $ne: assignment._id },
-        staffId: assignment.staffId,
-        state: { $in: ["proposed", "locked"] },
-        startTime: { $lt: assignment.endTime },
-        endTime: { $gt: assignment.startTime },
-      }).select("_id startTime endTime coverageId");
+      const draftConflict = draft.assignments.find(
+        (item) =>
+          item.assignmentId.toString() !== assignment.assignmentId.toString() &&
+          item.staffId.toString() === assignment.staffId.toString() &&
+          ["proposed", "locked"].includes(item.state) &&
+          item.startTime < assignment.endTime &&
+          item.endTime > assignment.startTime,
+      );
 
       if (draftConflict && !force) {
         return res.status(409).json({
-          message: "Staff has a conflicting assignment in this draft run",
-          conflict: draftConflict,
+          message: "Staff has a conflicting assignment in this draft schedule",
+          conflict: {
+            assignmentId: draftConflict.assignmentId,
+            startTime: draftConflict.startTime,
+            endTime: draftConflict.endTime,
+            coverageId: draftConflict.coverageId,
+          },
         });
       }
     }
 
-    assignment.meta = {
-      ...(assignment.meta || {}),
-      lastEditedBy: req.user._id,
-    };
+    draft.lastEditedBy = req.user._id;
+    await draft.save();
 
-    await assignment.save();
-
-    const populated = await AutoScheduleAssignment.findById(assignment._id)
-      .populate("staffId", "name email role")
-      .populate("coverageId", "date role startTime endTime requiredCount")
-      .populate("meta.publishedScheduleId", "_id status staffId");
+    const updatedAssignment = draft.assignments.find(
+      (item) =>
+        item.assignmentId.toString() === assignment.assignmentId.toString(),
+    );
 
     res.json({
       message: "Draft assignment updated",
-      assignment: populated,
+      assignment: updatedAssignment,
     });
   } catch (err) {
     next(err);
   }
 };
 
-exports.publishAutoScheduleDraftRun = async (req, res, next) => {
+exports.publishAutoScheduleDraft = async (req, res, next) => {
   try {
-    const run = await ensureDraftRun({
-      runId: req.params.runId,
+    const draft = await ensureDraftSchedule({
+      draftId: req.params.draftId,
       tenantId: req.tenantId,
     });
 
-    if (!run) {
-      return res.status(404).json({ message: "Draft run not found" });
+    if (!draft) {
+      return res.status(404).json({ message: "Draft schedule not found" });
     }
 
-    const assignments = await AutoScheduleAssignment.find({
-      runId: run._id,
-      tenantId: req.tenantId,
-      state: { $in: ["proposed", "locked"] },
+    const { assignmentIds } = req.body || {};
+    const selectedIdSet = Array.isArray(assignmentIds)
+      ? new Set(assignmentIds.map((value) => String(value)))
+      : null;
+
+    const assignments = draft.assignments.filter((item) => {
+      if (!["proposed", "locked"].includes(item.state)) return false;
+      if (item.publishedScheduleId) return false;
+      if (!selectedIdSet) return true;
+      return selectedIdSet.has(item.assignmentId.toString());
     });
 
     if (!assignments.length) {
       return res.status(400).json({
-        message: "Draft run has no publishable assignments",
+        message: "Draft schedule has no publishable assignments",
       });
     }
 
@@ -1487,7 +1469,7 @@ exports.publishAutoScheduleDraftRun = async (req, res, next) => {
 
       if (conflict) {
         blocked.push({
-          assignmentId: assignment._id,
+          assignmentId: assignment.assignmentId,
           staffId: assignment.staffId,
           conflict,
         });
@@ -1496,7 +1478,7 @@ exports.publishAutoScheduleDraftRun = async (req, res, next) => {
 
     if (blocked.length) {
       return res.status(409).json({
-        message: "Draft run has conflicts and cannot be published",
+        message: "Draft schedule has conflicts and cannot be published",
         blocked,
       });
     }
@@ -1524,75 +1506,61 @@ exports.publishAutoScheduleDraftRun = async (req, res, next) => {
       ordered: true,
     });
 
-    const createdByKey = {};
-    createdSchedules.forEach((schedule) => {
-      const key = `${schedule.staffId.toString()}|${new Date(schedule.startTime).toISOString()}|${new Date(schedule.endTime).toISOString()}|${schedule.role}`;
-      createdByKey[key] = schedule;
+    assignments.forEach((assignment, index) => {
+      assignment.publishedScheduleId = createdSchedules[index]._id;
+      assignment.state = "published";
     });
 
-    await Promise.all(
-      assignments.map(async (assignment) => {
-        const key = `${assignment.staffId.toString()}|${new Date(assignment.startTime).toISOString()}|${new Date(assignment.endTime).toISOString()}|${assignment.role}`;
-        const createdSchedule = createdByKey[key];
-        assignment.meta = {
-          ...(assignment.meta || {}),
-          publishedScheduleId: createdSchedule ? createdSchedule._id : null,
-          lastEditedBy: req.user._id,
-        };
-        assignment.state = "locked";
-        await assignment.save();
-      }),
-    );
+    const remainingUnpublished = draft.assignments.filter(
+      (item) =>
+        ["proposed", "locked"].includes(item.state) &&
+        !item.publishedScheduleId,
+    ).length;
 
-    run.status = "published";
-    run.publishedAt = new Date();
-    run.publishedBy = req.user._id;
-    await run.save();
+    draft.status = remainingUnpublished ? "partially_published" : "published";
+    draft.publishedAt = new Date();
+    draft.publishedBy = req.user._id;
+    draft.lastEditedBy = req.user._id;
+    await draft.save();
 
     res.json({
-      message: "Draft run published to schedule",
-      runId: run._id,
+      message: "Draft schedule published to schedule",
+      draftId: draft._id,
       publishedCount: createdSchedules.length,
       scheduleIds: createdSchedules.map((schedule) => schedule._id),
+      draftStatus: draft.status,
     });
   } catch (err) {
     next(err);
   }
 };
 
-exports.discardAutoScheduleDraftRun = async (req, res, next) => {
+exports.discardAutoScheduleDraft = async (req, res, next) => {
   try {
-    const run = await ensureDraftRun({
-      runId: req.params.runId,
+    const draft = await ensureDraftSchedule({
+      draftId: req.params.draftId,
       tenantId: req.tenantId,
     });
 
-    if (!run) {
-      return res.status(404).json({ message: "Draft run not found" });
+    if (!draft) {
+      return res.status(404).json({ message: "Draft schedule not found" });
     }
 
-    run.status = "discarded";
-    run.discardedAt = new Date();
-    run.discardedBy = req.user._id;
-    await run.save();
-
-    await AutoScheduleAssignment.updateMany(
-      {
-        runId: run._id,
-        tenantId: req.tenantId,
-      },
-      {
-        $set: {
-          state: "removed",
-          "meta.lastEditedBy": req.user._id,
-        },
-      },
-    );
+    draft.status = "discarded";
+    draft.discardedAt = new Date();
+    draft.discardedBy = req.user._id;
+    draft.lastEditedBy = req.user._id;
+    draft.assignments.forEach((assignment) => {
+      if (!assignment.publishedScheduleId) {
+        assignment.state = "removed";
+      }
+    });
+    await draft.save();
 
     res.json({
-      message: "Draft run discarded",
-      runId: run._id,
-      status: run.status,
+      message: "Draft schedule discarded",
+      draftId: draft._id,
+      status: draft.status,
     });
   } catch (err) {
     next(err);

@@ -1162,37 +1162,60 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       notifications,
     };
 
-    const draft = await AutoScheduleDraft.create({
-      tenantId,
-      createdBy: req.user._id,
-      status: "draft",
-      coverageIds: coverageList.map((coverage) => coverage._id),
-      policySource: facilityPreferences ? "facility_preferences" : "defaults",
-      facilityPolicy: {
-        schedulingPattern: facilityPolicy.schedulingPattern,
-        weeklyOvertimeThresholdHours:
-          facilityPolicy.weeklyOvertimeThresholdHours,
-        fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
-      },
-      summary: {
-        requestedCoverageIds: summary.requestedCoverageIds,
-        processedCoverageCount: summary.processedCoverageCount,
-        generatedAssignmentCount: summary.generatedAssignmentCount,
-        filledCoverageCount: summary.filledCoverageCount,
-        partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
-        skippedCoverageCount: summary.skippedCoverageCount,
-        alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
-      },
-      assignments: generated,
-      lastEditedBy: req.user._id,
-    });
+    let draft = null;
+    if (generated.length > 0) {
+      draft = await AutoScheduleDraft.create({
+        tenantId,
+        createdBy: req.user._id,
+        status: "draft",
+        coverageIds: coverageList.map((coverage) => coverage._id),
+        policySource: facilityPreferences ? "facility_preferences" : "defaults",
+        facilityPolicy: {
+          schedulingPattern: facilityPolicy.schedulingPattern,
+          weeklyOvertimeThresholdHours:
+            facilityPolicy.weeklyOvertimeThresholdHours,
+          fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
+        },
+        summary: {
+          requestedCoverageIds: summary.requestedCoverageIds,
+          processedCoverageCount: summary.processedCoverageCount,
+          generatedAssignmentCount: summary.generatedAssignmentCount,
+          filledCoverageCount: summary.filledCoverageCount,
+          partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
+          skippedCoverageCount: summary.skippedCoverageCount,
+          alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
+        },
+        assignments: generated,
+        lastEditedBy: req.user._id,
+      });
+    }
 
-    const successMessage = generated.length
-      ? `Auto-scheduling draft created: ${generated.length} assignment(s) across ${summary.filledCoverageCount + summary.partiallyFilledCoverageCount} coverage item(s).`
-      : "Auto-scheduling draft created with no assignments.";
+    const coveredItemsCount =
+      summary.filledCoverageCount + summary.partiallyFilledCoverageCount;
 
-    const warningMessage = summary.skippedCoverageCount
-      ? `${summary.skippedCoverageCount} coverage item(s) were skipped. Review coverageResults for details.`
+    let successMessage = "";
+    if (!generated.length) {
+      successMessage =
+        "No assignments were generated from the selected coverage. Draft was not created.";
+    } else if (summary.partiallyFilledCoverageCount > 0) {
+      successMessage = `Auto-scheduling draft created: ${generated.length} assignment(s) across ${coveredItemsCount} coverage item(s), with ${summary.partiallyFilledCoverageCount} partially filled.`;
+    } else {
+      successMessage = `Auto-scheduling draft created: ${generated.length} assignment(s) across ${coveredItemsCount} coverage item(s).`;
+    }
+
+    const warningParts = [];
+    if (summary.skippedCoverageCount) {
+      warningParts.push(
+        `${summary.skippedCoverageCount} coverage item(s) were skipped.`,
+      );
+    }
+    if (summary.alreadyFilledCoverageCount) {
+      warningParts.push(
+        `${summary.alreadyFilledCoverageCount} coverage item(s) were already fully assigned.`,
+      );
+    }
+    const warningMessage = warningParts.length
+      ? `${warningParts.join(" ")} Review coverageResults for details.`
       : null;
 
     res.json({
@@ -1200,13 +1223,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       message: successMessage,
       warning: warningMessage,
       summary,
-      draftSchedule: {
-        draftId: draft._id,
-        status: draft.status,
-      },
+      draftCreated: Boolean(draft),
+      draftSchedule: draft
+        ? {
+            draftId: draft._id,
+            status: draft.status,
+          }
+        : null,
       coverageResults,
       generatedCount: generated.length,
-      draftAssignments: draft.assignments,
+      draftAssignments: draft ? draft.assignments : [],
     });
   } catch (err) {
     console.error("Error in autoGenerateSchedule:", err);

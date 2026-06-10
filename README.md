@@ -32,6 +32,9 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 
 - Roles are validated against `FacilityPreferences.roleFamilies` (plus system roles like `admin`).
 - Coverage and schedule compatibility is enforced using role + unit area + shift type + certification tags.
+- Compatibility semantics now distinguish explicit staff tags from floating staff:
+  - staff with explicit `allowedAreas` / `allowedShiftTypes` are restricted to matching coverage tags
+  - staff without explicit area/shift tags can float within compatible role coverage
 - Overnight coverage is supported by normalizing `endTime <= startTime` to next-day end time.
 - Coverage responses include a computed `spansOvernight` boolean.
 - Coverage now enforces strict shift slot pairing: `shiftType` and `shiftTag` must be provided together (or both omitted).
@@ -88,7 +91,12 @@ All tenant data is isolated using `tenantId`.
 
 - `GET /api/v1/schedules` - list schedules (query by `staffId`, `from`, `to`)
 - `POST /api/v1/schedules` - create shift
-- `POST /api/v1/schedules/auto-generate` - auto-generate shifts from coverage (admin)
+- `POST /api/v1/schedules/auto-generate` - auto-generate draft shifts from coverage (admin)
+- `GET /api/v1/schedules/draft-schedules` - list auto-schedule drafts (admin)
+- `GET /api/v1/schedules/draft-schedules/:draftId` - get one draft with assignments (admin)
+- `PATCH /api/v1/schedules/draft-schedules/:draftId/assignments/:assignmentId` - edit one draft assignment (admin)
+- `POST /api/v1/schedules/draft-schedules/:draftId/publish` - publish draft assignments to schedules (admin)
+- `POST /api/v1/schedules/draft-schedules/:draftId/discard` - discard a draft (admin)
 - `GET /api/v1/schedules/:id` - get schedule by id
 - `PUT /api/v1/schedules/:id` - update schedule
 - `DELETE /api/v1/schedules/bulk` - bulk delete schedules by ids (admin)
@@ -106,7 +114,8 @@ The auto-scheduler is a rule-based engine (not a black-box model). It processes 
 5. If `needed <= 0`, that coverage is marked already full.
 6. If `needed > 0`, it moves to filtering + choosing staff:
    - filter out ineligible staff (call-out on that shift, approved overlapping time-off, overlapping shifts)
-   - rank eligible staff with fairness-first rules plus optional facility pattern guidance
+   - enforce compatibility gates (role, area, shift type/tag, certification)
+   - rank eligible staff with tagged-match precedence, then fairness-first rules plus optional facility pattern guidance
    - assign the top `needed` staff
 
 The scheduler is strictly demand-driven:
@@ -114,6 +123,44 @@ The scheduler is strictly demand-driven:
 - It never creates shifts where there is no coverage demand.
 - It never assigns more than `requiredCount` for a coverage item.
 - If demand needs 8 people and 10 are eligible, it assigns 8 and leaves 2 unassigned based on the ranking results.
+
+#### Draft-First Workflow
+
+Auto-generate writes proposed assignments into `AutoScheduleDraft` first. It does not directly create `Schedule` rows.
+
+High-level lifecycle:
+
+1. Generate from selected `coverageIds` using `POST /api/v1/schedules/auto-generate`.
+2. Receive draft metadata in response (`draftCreated`, `draftSchedule.draftId`, `draftAssignments`, `coverageResults`).
+3. Review draft in UI or API (`GET /draft-schedules` and `GET /draft-schedules/:draftId`).
+4. Edit assignments as needed (`PATCH /draft-schedules/:draftId/assignments/:assignmentId`):
+   - reassign staff (`staffId`)
+   - adjust assignment state (`proposed`, `locked`, `removed`)
+   - adjust notes/window/tags (`notes`, `startTime`, `endTime`, `unitArea`, `shiftType`, `shiftTag`, `certificationTags`)
+   - use `force=true` to override compatibility/conflict safeguards when intentionally needed
+5. Publish when ready (`POST /draft-schedules/:draftId/publish`) to create real `Schedule` rows.
+6. Optionally discard (`POST /draft-schedules/:draftId/discard`) to retire a draft.
+
+Draft statuses:
+
+- `draft`: editable review state
+- `partially_published`: some assignments published, others remain unpublished
+- `published`: all publishable assignments published
+- `discarded`: draft retired
+
+Assignment states inside a draft:
+
+- `proposed`: candidate for publish
+- `locked`: candidate for publish but manually locked in draft
+- `removed`: excluded from publish
+- `published`: already materialized as real schedule
+
+Publish behavior:
+
+- By default, publish includes all unpublished `proposed`/`locked` assignments.
+- You can pass `assignmentIds` to publish only selected assignments.
+- Publish performs conflict checks against existing schedules; conflicts return a `blocked` list.
+- Successful publish links each assignment to `publishedScheduleId` and updates draft status.
 
 #### Demand-Driven Pattern Guidance
 
@@ -181,17 +228,30 @@ General suggestions and edge cases
 
 When choosing who gets assigned, candidates are ranked by:
 
-1. **Lowest projected overtime minutes** after this assignment (above 40h/week).
-2. **Best consecutive-day fit** under facility rules.
-3. **Best scheduling-pattern fit** for the facility's selected pattern.
-4. **Fairer weekend distribution** when the coverage is on a weekend.
-5. **Fairer night distribution** when the coverage is a night shift.
-6. **Lowest projected weekly minutes** in that same week.
-7. **Lowest recent workload** over the last `fairnessLookbackDays`.
-8. **Lowest preference mismatch score** from staff soft preferences.
-9. **Stable tie-breaker** to avoid always picking the same people when all metrics are equal.
+1. **Highest tagged-match specificity** for the current coverage (explicit tag match is preferred over floating match).
+2. **Lowest projected overtime minutes** after this assignment (above 40h/week).
+3. **Best consecutive-day fit** under facility rules.
+4. **Best scheduling-pattern fit** for the facility's selected pattern.
+5. **Fairer weekend distribution** when the coverage is on a weekend.
+6. **Fairer night distribution** when the coverage is a night shift.
+7. **Lowest projected weekly minutes** in that same week.
+8. **Lowest recent workload** over the last `fairnessLookbackDays`.
+9. **Lowest preference mismatch score** from staff soft preferences.
+10. **Stable tie-breaker** to avoid always picking the same people when all metrics are equal.
 
 Overtime is treated as a ranking signal (using a configurable weekly threshold), not a hard eligibility blocker. This keeps assignments equitable and treats staff preferences as a later soft factor rather than a dominant one.
+
+Each draft assignment includes `warnings` to support review before publish, including:
+
+- `overtimeMinutes`
+- `projectedWeekMinutes`
+- `consecutiveDaysIfAssigned`
+- `patternPenalty`
+- `weekendShiftCount`
+- `nightShiftCount`
+- `preferencePenalty`
+
+These warnings are intended to show how close an assignment is to overtime or rule pressure so schedulers can adjust before publishing.
 
 #### Output Summary
 
@@ -217,6 +277,11 @@ Coverage behavior notes:
 
 - `role` is tenant-scoped and must exist in facility `roleFamilies`.
 - `unitArea`, `shiftType`, `shiftTag`, and `requiredCertificationTags` are supported for compatibility filtering.
+- Compatibility rules:
+  - role must match
+  - if coverage is tagged, explicitly tagged staff must match those tags
+  - untagged/floating staff can still match by role when they have no explicit area/shift restrictions
+  - if coverage is untagged, explicitly tagged staff are not treated as floating for those tag dimensions
 - Coverage can be created in two ways:
   - manual window: provide `startTime` + `endTime`
   - slot-driven window: provide `shiftType` + `shiftTag` and backend resolves UTC times from facility-local slot definitions

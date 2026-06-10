@@ -31,7 +31,7 @@ router.get("/", getSchedules);
 // POST /api/v1/schedules  (admin only ideally, maybe)
 router.post("/", createSchedule);
 
-// AUTO GENERATE (admin only)
+// AUTO GENERATE Draft (admin only)
 router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
 
 // AUTO-SCHEDULE DRAFTS (admin only)

@@ -150,8 +150,14 @@ const getCoverageShiftTag = (coverage) =>
 const getCoverageCertificationTags = (coverage) =>
   dedupeStrings(coverage?.requiredCertificationTags || []);
 
+const getStaffExplicitAreas = (staff) =>
+  dedupeStrings(staff?.allowedAreas).map(normalizeAreaTag);
+
+const getStaffExplicitShiftTypes = (staff) =>
+  dedupeStrings(staff?.allowedShiftTypes).map(normalizeShiftType);
+
 const getStaffAllowedAreas = (staff, facilityAreas) => {
-  const explicit = dedupeStrings(staff?.allowedAreas).map(normalizeAreaTag);
+  const explicit = getStaffExplicitAreas(staff);
   if (explicit.length) return explicit;
 
   const legacyArea = getLegacyAreaFromRole(staff?.role);
@@ -161,9 +167,7 @@ const getStaffAllowedAreas = (staff, facilityAreas) => {
 };
 
 const getStaffAllowedShiftTypes = (staff, facilityShiftTypes) => {
-  const explicit = dedupeStrings(staff?.allowedShiftTypes).map(
-    normalizeShiftType,
-  );
+  const explicit = getStaffExplicitShiftTypes(staff);
   if (explicit.length) return explicit;
 
   return dedupeStrings(facilityShiftTypes).map(normalizeShiftType);
@@ -180,9 +184,9 @@ const isCertificationCompatible = (requiredTags, staffTags) => {
   return requiredTags.every((tag) => staffTagSet.has(tag.toLowerCase()));
 };
 
-const isAreaCompatible = (staffAreas, coverageArea) => {
-  if (!coverageArea) return true;
+const isAreaCompatible = (staffAreas, coverageArea, hasAreaRestrictions) => {
   if (!staffAreas || !staffAreas.length) return true;
+  if (!coverageArea) return !hasAreaRestrictions;
   return staffAreas.includes(coverageArea);
 };
 
@@ -190,12 +194,14 @@ const isShiftTypeCompatible = (
   staffShiftTypes,
   coverageShiftType,
   coverageShiftTag,
+  hasShiftTypeRestrictions,
 ) => {
+  if (!staffShiftTypes || !staffShiftTypes.length) return true;
+
   const normalizedCoverageShiftType = normalizeShiftType(coverageShiftType);
   const normalizedCoverageShiftTag = normalizeShiftTag(coverageShiftTag);
 
-  if (!normalizedCoverageShiftType) return true;
-  if (!staffShiftTypes || !staffShiftTypes.length) return true;
+  if (!normalizedCoverageShiftType) return !hasShiftTypeRestrictions;
 
   const compositeCoverageKey = normalizedCoverageShiftTag
     ? `${normalizedCoverageShiftType}:${normalizedCoverageShiftTag}`
@@ -244,11 +250,17 @@ const isEnabledScheduleRole = (role, facilityConfig) => {
 };
 
 const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
+  const explicitStaffAreas = getStaffExplicitAreas(staff);
+  const explicitStaffShiftTypes = getStaffExplicitShiftTypes(staff);
   const staffAreas = getStaffAllowedAreas(staff, facilityConfig.areas);
   const staffShiftTypes = getStaffAllowedShiftTypes(
     staff,
     facilityConfig.shiftTypes,
   );
+  const hasAreaRestrictions =
+    explicitStaffAreas.length > 0 ||
+    Boolean(getLegacyAreaFromRole(staff?.role));
+  const hasShiftTypeRestrictions = explicitStaffShiftTypes.length > 0;
   const staffCerts = getStaffCertificationTags(staff);
   const coverageArea = getCoverageArea(coverage);
   const coverageShiftType = getCoverageShiftType(coverage);
@@ -257,11 +269,12 @@ const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
 
   return (
     isRoleCompatible(staff.role, coverage.role) &&
-    isAreaCompatible(staffAreas, coverageArea) &&
+    isAreaCompatible(staffAreas, coverageArea, hasAreaRestrictions) &&
     isShiftTypeCompatible(
       staffShiftTypes,
       coverageShiftType,
       coverageShiftTag,
+      hasShiftTypeRestrictions,
     ) &&
     isCertificationCompatible(coverageCerts, staffCerts)
   );
@@ -454,7 +467,52 @@ const getPreferencePenalty = ({
   return penalty;
 };
 
+const getTagSpecificityScore = ({ staff, coverage }) => {
+  const coverageArea = getCoverageArea(coverage);
+  const coverageShiftType = getCoverageShiftType(coverage);
+  const coverageShiftTag = getCoverageShiftTag(coverage);
+
+  const explicitAreas = getStaffExplicitAreas(staff);
+  const explicitShiftTypes = getStaffExplicitShiftTypes(staff);
+
+  const hasExplicitAreaRestrictions =
+    explicitAreas.length > 0 || Boolean(getLegacyAreaFromRole(staff?.role));
+  const hasExplicitShiftRestrictions = explicitShiftTypes.length > 0;
+
+  const explicitShiftMatch =
+    hasExplicitShiftRestrictions &&
+    !!coverageShiftType &&
+    explicitShiftTypes.some((value) => {
+      const normalizedValue = normalizeShiftType(value);
+      if (!normalizedValue) return false;
+
+      const compositeCoverageKey = coverageShiftTag
+        ? `${coverageShiftType}:${coverageShiftTag}`
+        : null;
+
+      return (
+        normalizedValue === coverageShiftType ||
+        (compositeCoverageKey && normalizedValue === compositeCoverageKey)
+      );
+    });
+
+  let score = 0;
+
+  // Prefer explicitly-tagged staff that match the current tagged coverage.
+  if (coverageArea && hasExplicitAreaRestrictions) {
+    score += explicitAreas.includes(coverageArea) ? 2 : -2;
+  }
+
+  // Shift slot/type tag match gets higher precedence than area.
+  if (coverageShiftType && hasExplicitShiftRestrictions) {
+    score += explicitShiftMatch ? 3 : -3;
+  }
+
+  return score;
+};
+
 const buildRankingMetrics = ({
+  staff,
   staffId,
   coverage,
   coverageMinutes,
@@ -505,6 +563,10 @@ const buildRankingMetrics = ({
   const nightShiftCount = isNightShift(coverage.startTime, coverage.endTime)
     ? nightShiftCounts[staffId] || 0
     : 0;
+  const tagSpecificityScore = getTagSpecificityScore({
+    staff,
+    coverage,
+  });
 
   return {
     weekKey,
@@ -518,11 +580,16 @@ const buildRankingMetrics = ({
     weekendShiftCount,
     nightShiftCount,
     recentMinutes,
+    tagSpecificityScore,
     tieBreaker,
   };
 };
 
 const compareRankingMetrics = (a, b) => {
+  if (a.tagSpecificityScore !== b.tagSpecificityScore) {
+    return b.tagSpecificityScore - a.tagSpecificityScore;
+  }
+
   if (a.overtimeMinutes !== b.overtimeMinutes) {
     return a.overtimeMinutes - b.overtimeMinutes;
   }
@@ -560,6 +627,12 @@ const compareRankingMetrics = (a, b) => {
 
 const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
   if (!cutoffMetrics) return "no cutoff available";
+
+  if (
+    candidateMetrics.tagSpecificityScore < cutoffMetrics.tagSpecificityScore
+  ) {
+    return `lower tag-match specificity (${candidateMetrics.tagSpecificityScore} < ${cutoffMetrics.tagSpecificityScore})`;
+  }
 
   if (candidateMetrics.overtimeMinutes > cutoffMetrics.overtimeMinutes) {
     return `higher projected overtime (${candidateMetrics.overtimeMinutes}m > ${cutoffMetrics.overtimeMinutes}m)`;
@@ -750,7 +823,7 @@ const ensureDraftSchedule = async ({ draftId, tenantId }) => {
   return draft;
 };
 
-// AUTO-GENERATE SCHEDULE FOR SELECTED COVERAGES
+// AUTO-GENERATE DRAFT SCHEDULE FOR SELECTED COVERAGES
 exports.autoGenerateSchedule = async (req, res, next) => {
   try {
     const { coverageIds } = req.body;
@@ -1034,6 +1107,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           return {
             staff,
             metrics: buildRankingMetrics({
+              staff,
               staffId,
               coverage: cov,
               coverageMinutes,
@@ -2056,6 +2130,8 @@ exports.createSchedule = async (req, res, next) => {
       !isAreaCompatible(
         getStaffAllowedAreas(staff, facilityConfig.areas),
         normalizeAreaTag(schedulePayload.unitArea),
+        getStaffExplicitAreas(staff).length > 0 ||
+          Boolean(getLegacyAreaFromRole(staff?.role)),
       )
     ) {
       return res.status(400).json({
@@ -2068,6 +2144,7 @@ exports.createSchedule = async (req, res, next) => {
         getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
         normalizeShiftType(schedulePayload.shiftType),
         normalizeShiftTag(schedulePayload.shiftTag),
+        getStaffExplicitShiftTypes(staff).length > 0,
       )
     ) {
       return res.status(400).json({
@@ -2292,6 +2369,8 @@ exports.updateSchedule = async (req, res, next) => {
       !isAreaCompatible(
         getStaffAllowedAreas(staff, facilityConfig.areas),
         normalizeAreaTag(nextUnitArea),
+        getStaffExplicitAreas(staff).length > 0 ||
+          Boolean(getLegacyAreaFromRole(staff?.role)),
       )
     ) {
       return res.status(400).json({
@@ -2304,6 +2383,7 @@ exports.updateSchedule = async (req, res, next) => {
         getStaffAllowedShiftTypes(staff, facilityConfig.shiftTypes),
         normalizeShiftType(nextShiftType),
         normalizeShiftTag(nextShiftTag),
+        getStaffExplicitShiftTypes(staff).length > 0,
       )
     ) {
       return res.status(400).json({

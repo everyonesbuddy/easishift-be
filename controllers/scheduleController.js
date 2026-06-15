@@ -1686,11 +1686,6 @@ exports.requestShiftSwap = async (req, res, next) => {
       return res.status(404).json({ message: "Schedule not found" });
     }
 
-    const facilityPreferences = await FacilityPreferences.findOne({
-      tenantId: req.tenantId,
-    }).lean();
-    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
-
     if (schedule.status !== "scheduled") {
       return res.status(400).json({
         message: "Only scheduled shifts can be swapped",
@@ -1723,16 +1718,10 @@ exports.requestShiftSwap = async (req, res, next) => {
         .json({ message: "Requester or receiver staff not found" });
     }
 
-    if (
-      !isStaffCompatibleWithCoverage({
-        staff: receiver,
-        coverage: schedule,
-        facilityConfig,
-      })
-    ) {
+    if (!isRoleCompatible(receiver.role, schedule.role)) {
       return res.status(400).json({
         message:
-          "Shift swap is allowed only between staff with a compatible role, area, shift type, and certification profile",
+          "Shift swap is allowed only between staff with a compatible role",
       });
     }
 
@@ -1879,11 +1868,6 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
       return res.status(404).json({ message: "Original schedule not found" });
     }
 
-    const facilityPreferences = await FacilityPreferences.findOne({
-      tenantId: req.tenantId,
-    }).lean();
-    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
-
     const [requester, receiver] = await Promise.all([
       User.findOne({
         _id: swapRequest.requesterStaffId,
@@ -1980,16 +1964,10 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
           });
         }
 
-        if (
-          !isStaffCompatibleWithCoverage({
-            staff: receiver,
-            coverage: schedule,
-            facilityConfig,
-          })
-        ) {
+        if (!isRoleCompatible(receiver.role, schedule.role)) {
           return res.status(400).json({
             message:
-              "Swap cannot be accepted because receiver is no longer compatible with this shift",
+              "Swap cannot be accepted because receiver no longer has a compatible role for this shift",
           });
         }
 

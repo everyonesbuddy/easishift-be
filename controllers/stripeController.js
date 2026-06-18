@@ -12,6 +12,7 @@ const yearlyPremiumPriceCents = 900000;
 const monthlyStarterPriceCents = 40000;
 const monthlyGrowthPriceCents = 70000;
 const monthlyPremiumPriceCents = 90000;
+const freeTrialPeriodDays = 30;
 
 const PLANS = {
   starterYearly: {
@@ -89,6 +90,7 @@ exports.createCheckoutSession = async (req, res, next) => {
       // Ensure the subscription object itself carries tenant metadata so future
       // subscription/invoice webhooks can directly reference tenantId.
       subscription_data: {
+        trial_period_days: freeTrialPeriodDays,
         metadata: { tenantId, planKey },
       },
       success_url: `${
@@ -218,7 +220,7 @@ exports.handleWebhook = async (req, res) => {
           stripeSubscriptionId: session.subscription || null,
           stripePriceId: priceId,
           planKey,
-          subscriptionStatus: "active",
+          subscriptionStatus: (subscription && subscription.status) || "active",
           seatLimit: plan ? plan.seats : undefined,
         };
 
@@ -265,7 +267,7 @@ exports.handleWebhook = async (req, res) => {
     ) {
       const subscription = event.data.object;
       const subscriptionId = subscription.id;
-      const status = subscription.status; // active, past_due, canceled, incomplete
+      const status = subscription.status; // active, trialing, past_due, canceled, incomplete
 
       // Try to map price -> planKey if possible
       let planKey = subscription.metadata && subscription.metadata.planKey;

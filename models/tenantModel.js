@@ -91,13 +91,22 @@ const tenantSchema = new mongoose.Schema(
     // The active plan after payment. Keep null until active.
     planKey: {
       type: String,
-      enum: ["starter", "growth", "premium", "test", null],
+      enum: [
+        "starterYearly",
+        "growthYearly",
+        "premiumYearly",
+        "starterMonthly",
+        "growthMonthly",
+        "premiumMonthly",
+        "test",
+        null,
+      ],
       default: null,
     },
 
     subscriptionStatus: {
       type: String,
-      enum: ["inactive", "active", "past_due", "canceled"],
+      enum: ["inactive", "trialing", "active", "past_due", "canceled"],
       default: "inactive",
       index: true,
     },

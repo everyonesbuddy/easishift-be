@@ -1236,33 +1236,30 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       notifications,
     };
 
-    let draft = null;
-    if (generated.length > 0) {
-      draft = await AutoScheduleDraft.create({
-        tenantId,
-        createdBy: req.user._id,
-        status: "draft",
-        coverageIds: coverageList.map((coverage) => coverage._id),
-        policySource: facilityPreferences ? "facility_preferences" : "defaults",
-        facilityPolicy: {
-          schedulingPattern: facilityPolicy.schedulingPattern,
-          weeklyOvertimeThresholdHours:
-            facilityPolicy.weeklyOvertimeThresholdHours,
-          fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
-        },
-        summary: {
-          requestedCoverageIds: summary.requestedCoverageIds,
-          processedCoverageCount: summary.processedCoverageCount,
-          generatedAssignmentCount: summary.generatedAssignmentCount,
-          filledCoverageCount: summary.filledCoverageCount,
-          partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
-          skippedCoverageCount: summary.skippedCoverageCount,
-          alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
-        },
-        assignments: generated,
-        lastEditedBy: req.user._id,
-      });
-    }
+    const draft = await AutoScheduleDraft.create({
+      tenantId,
+      createdBy: req.user._id,
+      status: "draft",
+      coverageIds: coverageList.map((coverage) => coverage._id),
+      policySource: facilityPreferences ? "facility_preferences" : "defaults",
+      facilityPolicy: {
+        schedulingPattern: facilityPolicy.schedulingPattern,
+        weeklyOvertimeThresholdHours:
+          facilityPolicy.weeklyOvertimeThresholdHours,
+        fairnessLookbackDays: facilityPolicy.fairnessLookbackDays,
+      },
+      summary: {
+        requestedCoverageIds: summary.requestedCoverageIds,
+        processedCoverageCount: summary.processedCoverageCount,
+        generatedAssignmentCount: summary.generatedAssignmentCount,
+        filledCoverageCount: summary.filledCoverageCount,
+        partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
+        skippedCoverageCount: summary.skippedCoverageCount,
+        alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
+      },
+      assignments: generated,
+      lastEditedBy: req.user._id,
+    });
 
     const coveredItemsCount =
       summary.filledCoverageCount + summary.partiallyFilledCoverageCount;
@@ -1270,7 +1267,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     let successMessage = "";
     if (!generated.length) {
       successMessage =
-        "No assignments were generated from the selected coverage. Draft was not created.";
+        "No assignments were generated from the selected coverage. Draft was created with 0 assignments.";
     } else if (summary.partiallyFilledCoverageCount > 0) {
       successMessage = `Auto-scheduling draft created: ${generated.length} assignment(s) across ${coveredItemsCount} coverage item(s), with ${summary.partiallyFilledCoverageCount} partially filled.`;
     } else {

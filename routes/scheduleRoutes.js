@@ -35,12 +35,8 @@ router.post("/", createSchedule);
 router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
 
 // AUTO-SCHEDULE DRAFTS (admin only)
-router.get("/draft-schedules", restrictTo("admin"), getAutoScheduleDrafts);
-router.get(
-  "/draft-schedules/:draftId",
-  restrictTo("admin"),
-  getAutoScheduleDraftById,
-);
+router.get("/draft-schedules", getAutoScheduleDrafts);
+router.get("/draft-schedules/:draftId", getAutoScheduleDraftById);
 router.patch(
   "/draft-schedules/:draftId/assignments/:assignmentId",
   restrictTo("admin"),

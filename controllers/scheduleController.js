@@ -785,10 +785,65 @@ const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
 const toObjectId = (value) =>
   mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(value) : null;
 
-const buildDraftAssignmentPayload = ({ coverage, staff, metrics }) => ({
+const EMPTY_WARNING_METRICS = Object.freeze({
+  overtimeMinutes: 0,
+  consecutiveDaysIfAssigned: 0,
+  patternPenalty: 0,
+  weekendShiftCount: 0,
+  nightShiftCount: 0,
+  projectedWeekMinutes: 0,
+  preferencePenalty: 0,
+});
+
+const buildUnfilledReason = ({
+  reasonCode,
+  message,
+  skippedByReason,
+  candidateCount,
+  availableCount,
+}) => ({
+  code: reasonCode || "UNFILLED",
+  message: message || "No compatible staff assignment available.",
+  skippedByReason: skippedByReason || null,
+  candidateCount: Number(candidateCount) || 0,
+  availableCount: Number(availableCount) || 0,
+});
+
+const buildDraftStateCounts = (assignments) => {
+  const counts = {
+    totalSlots: 0,
+    proposedSlots: 0,
+    unfilledSlots: 0,
+    removedSlots: 0,
+    publishedSlots: 0,
+  };
+
+  for (const item of assignments || []) {
+    counts.totalSlots += 1;
+    if (item.state === "proposed" || item.state === "locked") {
+      counts.proposedSlots += 1;
+    } else if (item.state === "unfilled") {
+      counts.unfilledSlots += 1;
+    } else if (item.state === "removed") {
+      counts.removedSlots += 1;
+    } else if (item.state === "published") {
+      counts.publishedSlots += 1;
+    }
+  }
+
+  return counts;
+};
+
+const buildDraftAssignmentPayload = ({
+  coverage,
+  staff = null,
+  metrics = null,
+  state = "proposed",
+  unfilledReason = null,
+}) => ({
   assignmentId: new mongoose.Types.ObjectId(),
   coverageId: coverage._id,
-  staffId: staff._id,
+  staffId: staff?._id || null,
   role: coverage.role,
   unitArea: coverage.unitArea || null,
   shiftType: coverage.shiftType || null,
@@ -797,18 +852,36 @@ const buildDraftAssignmentPayload = ({ coverage, staff, metrics }) => ({
   startTime: coverage.startTime,
   endTime: coverage.endTime,
   timezone: "UTC",
-  notes: "Auto-generated draft",
-  state: "proposed",
+  notes:
+    state === "unfilled"
+      ? "Auto-generated unfilled slot"
+      : "Auto-generated draft",
+  state,
   source: "auto",
   warnings: {
-    overtimeMinutes: metrics.overtimeMinutes,
-    consecutiveDaysIfAssigned: metrics.consecutiveDaysIfAssigned,
-    patternPenalty: metrics.patternPenalty,
-    weekendShiftCount: metrics.weekendShiftCount,
-    nightShiftCount: metrics.nightShiftCount,
-    projectedWeekMinutes: metrics.projectedWeekMinutes,
-    preferencePenalty: metrics.preferencePenalty,
+    overtimeMinutes:
+      (metrics || EMPTY_WARNING_METRICS).overtimeMinutes ||
+      EMPTY_WARNING_METRICS.overtimeMinutes,
+    consecutiveDaysIfAssigned:
+      (metrics || EMPTY_WARNING_METRICS).consecutiveDaysIfAssigned ||
+      EMPTY_WARNING_METRICS.consecutiveDaysIfAssigned,
+    patternPenalty:
+      (metrics || EMPTY_WARNING_METRICS).patternPenalty ||
+      EMPTY_WARNING_METRICS.patternPenalty,
+    weekendShiftCount:
+      (metrics || EMPTY_WARNING_METRICS).weekendShiftCount ||
+      EMPTY_WARNING_METRICS.weekendShiftCount,
+    nightShiftCount:
+      (metrics || EMPTY_WARNING_METRICS).nightShiftCount ||
+      EMPTY_WARNING_METRICS.nightShiftCount,
+    projectedWeekMinutes:
+      (metrics || EMPTY_WARNING_METRICS).projectedWeekMinutes ||
+      EMPTY_WARNING_METRICS.projectedWeekMinutes,
+    preferencePenalty:
+      (metrics || EMPTY_WARNING_METRICS).preferencePenalty ||
+      EMPTY_WARNING_METRICS.preferencePenalty,
   },
+  unfilledReason: state === "unfilled" ? unfilledReason : null,
 });
 
 const ensureDraftSchedule = async ({ draftId, tenantId }) => {
@@ -979,6 +1052,37 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
 
+      const alreadyAssigned = existingSchedules.filter(
+        (s) =>
+          s.status !== "call_out" &&
+          isStaffCompatibleWithCoverage({
+            staff: s,
+            coverage: cov,
+            facilityConfig,
+          }) &&
+          s.startTime.getTime() === cov.startTime.getTime() &&
+          s.endTime.getTime() === cov.endTime.getTime(),
+      );
+
+      const needed = cov.requiredCount - alreadyAssigned.length;
+      console.log(`${needed} staff needed for this coverage`);
+
+      if (needed <= 0) {
+        console.log("Coverage already fully assigned");
+        coverageResults.push({
+          ...coverageMeta,
+          status: "already_filled",
+          reasonCode: "ALREADY_FULLY_ASSIGNED",
+          message: "Coverage is already fully assigned.",
+          assignedCount: 0,
+          alreadyAssignedCount: alreadyAssigned.length,
+          neededCount: 0,
+          unfilledCount: 0,
+          assignments: [],
+        });
+        continue;
+      }
+
       const roleStaff = tenantUsers.filter((staff) =>
         isStaffCompatibleWithCoverage({
           staff,
@@ -990,12 +1094,40 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         console.log(
           `No staff found for compatible role/area/shift/certifications for ${cov.role}`,
         );
+
+        const unfilledReason = buildUnfilledReason({
+          reasonCode: "NO_STAFF_FOR_ROLE",
+          message: `No staff found with a compatible role, area, shift type, and certification profile for ${cov.role}.`,
+          candidateCount: 0,
+          availableCount: 0,
+        });
+        const unfilledSlots = Array.from({ length: needed }).map(() =>
+          buildDraftAssignmentPayload({
+            coverage: cov,
+            state: "unfilled",
+            unfilledReason,
+          }),
+        );
+        generated.push(...unfilledSlots);
+
         coverageResults.push({
           ...coverageMeta,
-          status: "skipped",
+          status: "unfilled",
           reasonCode: "NO_STAFF_FOR_ROLE",
           message: `No staff found with a compatible role, area, shift type, and certification profile for ${cov.role}.`,
           assignedCount: 0,
+          neededCount: needed,
+          availableCount: 0,
+          alreadyAssignedCount: alreadyAssigned.length,
+          unfilledCount: needed,
+          assignments: unfilledSlots.map((slot) => ({
+            assignmentId: slot.assignmentId,
+            state: slot.state,
+            staffId: null,
+            staffName: null,
+            unfilledReason: slot.unfilledReason,
+            warnings: slot.warnings,
+          })),
         });
         continue;
       }
@@ -1061,42 +1193,44 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       if (!available.length) {
         console.log("No available staff for this coverage");
+
+        const unfilledReason = buildUnfilledReason({
+          reasonCode: "NO_AVAILABLE_STAFF",
+          message:
+            "No eligible staff available due to conflicts, time off, call out, availability preferences, or break constraints.",
+          skippedByReason,
+          candidateCount: roleStaff.length,
+          availableCount: 0,
+        });
+        const unfilledSlots = Array.from({ length: needed }).map(() =>
+          buildDraftAssignmentPayload({
+            coverage: cov,
+            state: "unfilled",
+            unfilledReason,
+          }),
+        );
+        generated.push(...unfilledSlots);
+
         coverageResults.push({
           ...coverageMeta,
-          status: "skipped",
+          status: "unfilled",
           reasonCode: "NO_AVAILABLE_STAFF",
           message:
             "No eligible staff available due to conflicts, time off, call out, availability preferences, or break constraints.",
           assignedCount: 0,
-          skippedByReason,
-        });
-        continue;
-      }
-
-      const alreadyAssigned = existingSchedules.filter(
-        (s) =>
-          s.status !== "call_out" &&
-          isStaffCompatibleWithCoverage({
-            staff: s,
-            coverage: cov,
-            facilityConfig,
-          }) &&
-          s.startTime.getTime() === cov.startTime.getTime() &&
-          s.endTime.getTime() === cov.endTime.getTime(),
-      );
-
-      const needed = cov.requiredCount - alreadyAssigned.length;
-      console.log(`${needed} staff needed for this coverage`);
-
-      if (needed <= 0) {
-        console.log("Coverage already fully assigned");
-        coverageResults.push({
-          ...coverageMeta,
-          status: "already_filled",
-          reasonCode: "ALREADY_FULLY_ASSIGNED",
-          message: "Coverage is already fully assigned.",
-          assignedCount: 0,
+          neededCount: needed,
+          availableCount: 0,
           alreadyAssignedCount: alreadyAssigned.length,
+          unfilledCount: needed,
+          skippedByReason,
+          assignments: unfilledSlots.map((slot) => ({
+            assignmentId: slot.assignmentId,
+            state: slot.state,
+            staffId: null,
+            staffName: null,
+            unfilledReason: slot.unfilledReason,
+            warnings: slot.warnings,
+          })),
         });
         continue;
       }
@@ -1164,6 +1298,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         generated.push(draftAssignment);
         assignmentDetails.push({
           assignmentId: draftAssignment.assignmentId,
+          state: draftAssignment.state,
           staffId: staff._id,
           staffName: staff.name,
           warnings: draftAssignment.warnings,
@@ -1190,9 +1325,43 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       const assignedCount = selectedRanked.length;
       const unfilledCount = Math.max(0, needed - assignedCount);
+
+      if (unfilledCount > 0) {
+        const unfilledReason = buildUnfilledReason({
+          reasonCode: "INSUFFICIENT_CANDIDATES",
+          message:
+            "Not enough eligible staff remained after ranking and conflict checks.",
+          skippedByReason,
+          candidateCount: roleStaff.length,
+          availableCount: available.length,
+        });
+
+        for (let index = 0; index < unfilledCount; index += 1) {
+          const unfilledAssignment = buildDraftAssignmentPayload({
+            coverage: cov,
+            state: "unfilled",
+            unfilledReason,
+          });
+          generated.push(unfilledAssignment);
+          assignmentDetails.push({
+            assignmentId: unfilledAssignment.assignmentId,
+            state: unfilledAssignment.state,
+            staffId: null,
+            staffName: null,
+            unfilledReason: unfilledAssignment.unfilledReason,
+            warnings: unfilledAssignment.warnings,
+          });
+        }
+      }
+
       coverageResults.push({
         ...coverageMeta,
-        status: unfilledCount > 0 ? "partially_filled" : "filled",
+        status:
+          assignedCount === 0
+            ? "unfilled"
+            : unfilledCount > 0
+              ? "partially_filled"
+              : "filled",
         message:
           unfilledCount > 0
             ? `Assigned ${assignedCount} of ${needed} needed staff.`
@@ -1211,14 +1380,24 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       `\nAuto-scheduling complete, ${generated.length} draft assignment(s) generated`,
     );
 
+    const slotCounts = buildDraftStateCounts(generated);
+
     const summary = {
       requestedCoverageIds: coverageIds.length,
       processedCoverageCount: coverageList.length,
-      generatedAssignmentCount: generated.length,
+      generatedAssignmentCount: slotCounts.proposedSlots,
+      totalSlots: slotCounts.totalSlots,
+      proposedSlots: slotCounts.proposedSlots,
+      unfilledSlots: slotCounts.unfilledSlots,
+      removedSlots: slotCounts.removedSlots,
+      publishedSlots: slotCounts.publishedSlots,
       filledCoverageCount: coverageResults.filter((r) => r.status === "filled")
         .length,
       partiallyFilledCoverageCount: coverageResults.filter(
         (r) => r.status === "partially_filled",
+      ).length,
+      unfilledCoverageCount: coverageResults.filter(
+        (r) => r.status === "unfilled",
       ).length,
       skippedCoverageCount: coverageResults.filter(
         (r) => r.status === "skipped",
@@ -1252,8 +1431,14 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         requestedCoverageIds: summary.requestedCoverageIds,
         processedCoverageCount: summary.processedCoverageCount,
         generatedAssignmentCount: summary.generatedAssignmentCount,
+        totalSlots: summary.totalSlots,
+        proposedSlots: summary.proposedSlots,
+        unfilledSlots: summary.unfilledSlots,
+        removedSlots: summary.removedSlots,
+        publishedSlots: summary.publishedSlots,
         filledCoverageCount: summary.filledCoverageCount,
         partiallyFilledCoverageCount: summary.partiallyFilledCoverageCount,
+        unfilledCoverageCount: summary.unfilledCoverageCount,
         skippedCoverageCount: summary.skippedCoverageCount,
         alreadyFilledCoverageCount: summary.alreadyFilledCoverageCount,
       },
@@ -1299,6 +1484,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         ? {
             draftId: draft._id,
             status: draft.status,
+            slotCounts: buildDraftStateCounts(draft.assignments || []),
           }
         : null,
       coverageResults,
@@ -1334,7 +1520,13 @@ exports.getAutoScheduleDrafts = async (req, res, next) => {
       .populate("publishedBy", "name email")
       .populate("discardedBy", "name email");
 
-    res.json(drafts);
+    const draftsWithCounts = drafts.map((draft) => {
+      const draftObject = draft.toObject();
+      draftObject.slotCounts = buildDraftStateCounts(draftObject.assignments);
+      return draftObject;
+    });
+
+    res.json(draftsWithCounts);
   } catch (err) {
     next(err);
   }
@@ -1354,7 +1546,10 @@ exports.getAutoScheduleDraftById = async (req, res, next) => {
       return res.status(404).json({ message: "Draft schedule not found" });
     }
 
-    res.json(draft);
+    const draftObject = draft.toObject();
+    draftObject.slotCounts = buildDraftStateCounts(draftObject.assignments);
+
+    res.json(draftObject);
   } catch (err) {
     next(err);
   }
@@ -1397,6 +1592,11 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
       force,
     } = req.body;
 
+    const hasStaffIdInBody = Object.prototype.hasOwnProperty.call(
+      req.body,
+      "staffId",
+    );
+
     if (state !== undefined) {
       assignment.state = state;
     }
@@ -1429,11 +1629,47 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
       assignment.certificationTags = dedupeStrings(certificationTags);
     }
 
-    if (staffId !== undefined) {
-      if (!mongoose.isValidObjectId(staffId)) {
-        return res.status(400).json({ message: "Invalid staffId" });
+    if (hasStaffIdInBody) {
+      if (staffId === null || String(staffId).trim() === "") {
+        assignment.staffId = null;
+        assignment.state = "unfilled";
+        assignment.unfilledReason = buildUnfilledReason({
+          reasonCode: "STAFF_UNASSIGNED",
+          message: "Staff cleared from draft slot by scheduler.",
+        });
+      } else {
+        if (!mongoose.isValidObjectId(staffId)) {
+          return res.status(400).json({ message: "Invalid staffId" });
+        }
+        assignment.staffId = toObjectId(staffId);
+        assignment.state = "proposed";
+        assignment.unfilledReason = null;
       }
-      assignment.staffId = toObjectId(staffId);
+    }
+
+    if (!assignment.staffId) {
+      if (
+        state &&
+        ["proposed", "locked", "published"].includes(state) &&
+        !force
+      ) {
+        return res.status(400).json({
+          message:
+            "staffId is required when state is proposed, locked, or published",
+        });
+      }
+      if (assignment.state !== "removed") {
+        assignment.state = "unfilled";
+        if (!assignment.unfilledReason) {
+          assignment.unfilledReason = buildUnfilledReason({
+            reasonCode: "STAFF_UNASSIGNED",
+            message: "No staff assigned to this draft slot.",
+          });
+        }
+      }
+    } else if (assignment.state === "unfilled") {
+      assignment.state = "proposed";
+      assignment.unfilledReason = null;
     }
 
     const facilityPreferences = await FacilityPreferences.findOne({
@@ -1441,38 +1677,43 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
     }).lean();
     const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
 
-    const staff = await User.findOne({
-      _id: assignment.staffId,
-      tenantId: req.tenantId,
-    }).select("role allowedAreas allowedShiftTypes certificationTags");
+    if (assignment.staffId) {
+      const staff = await User.findOne({
+        _id: assignment.staffId,
+        tenantId: req.tenantId,
+      }).select("role allowedAreas allowedShiftTypes certificationTags");
 
-    if (!staff) {
-      return res.status(404).json({ message: "Staff not found" });
+      if (!staff) {
+        return res.status(404).json({ message: "Staff not found" });
+      }
+
+      const compatibilityTarget = {
+        role: assignment.role,
+        unitArea: assignment.unitArea,
+        shiftType: assignment.shiftType,
+        shiftTag: assignment.shiftTag,
+        requiredCertificationTags: assignment.certificationTags,
+      };
+
+      if (
+        !isStaffCompatibleWithCoverage({
+          staff,
+          coverage: compatibilityTarget,
+          facilityConfig,
+        }) &&
+        !force
+      ) {
+        return res.status(400).json({
+          message:
+            "Staff is not compatible with this draft assignment. Pass force=true to override.",
+        });
+      }
     }
-
-    const compatibilityTarget = {
-      role: assignment.role,
-      unitArea: assignment.unitArea,
-      shiftType: assignment.shiftType,
-      shiftTag: assignment.shiftTag,
-      requiredCertificationTags: assignment.certificationTags,
-    };
 
     if (
-      !isStaffCompatibleWithCoverage({
-        staff,
-        coverage: compatibilityTarget,
-        facilityConfig,
-      }) &&
-      !force
+      ["proposed", "locked"].includes(assignment.state) &&
+      assignment.staffId
     ) {
-      return res.status(400).json({
-        message:
-          "Staff is not compatible with this draft assignment. Pass force=true to override.",
-      });
-    }
-
-    if (assignment.state === "proposed") {
       const conflict = await hasConflict({
         tenantId: req.tenantId,
         staffId: assignment.staffId,
@@ -1490,6 +1731,7 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
       const draftConflict = draft.assignments.find(
         (item) =>
           item.assignmentId.toString() !== assignment.assignmentId.toString() &&
+          item.staffId &&
           item.staffId.toString() === assignment.staffId.toString() &&
           ["proposed", "locked"].includes(item.state) &&
           item.startTime < assignment.endTime &&
@@ -1520,6 +1762,7 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
     res.json({
       message: "Draft assignment updated",
       assignment: updatedAssignment,
+      slotCounts: buildDraftStateCounts(draft.assignments || []),
     });
   } catch (err) {
     next(err);
@@ -1557,6 +1800,15 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
 
     const blocked = [];
     for (const assignment of assignments) {
+      if (!assignment.staffId) {
+        blocked.push({
+          assignmentId: assignment.assignmentId,
+          staffId: null,
+          conflict: { message: "Draft assignment has no staff assigned" },
+        });
+        continue;
+      }
+
       const conflict = await hasConflict({
         tenantId: req.tenantId,
         staffId: assignment.staffId,
@@ -1620,12 +1872,16 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
     draft.lastEditedBy = req.user._id;
     await draft.save();
 
+    const slotCounts = buildDraftStateCounts(draft.assignments || []);
+
     res.json({
       message: "Draft schedule published to schedule",
       draftId: draft._id,
       publishedCount: createdSchedules.length,
       scheduleIds: createdSchedules.map((schedule) => schedule._id),
       draftStatus: draft.status,
+      remainingUnfilledSlots: slotCounts.unfilledSlots,
+      slotCounts,
     });
   } catch (err) {
     next(err);

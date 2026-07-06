@@ -16,7 +16,7 @@ const draftAssignmentSchema = new mongoose.Schema(
     staffId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: "User",
-      required: true,
+      default: null,
       index: true,
     },
     role: {
@@ -65,7 +65,7 @@ const draftAssignmentSchema = new mongoose.Schema(
     },
     state: {
       type: String,
-      enum: ["proposed", "removed", "locked", "published"],
+      enum: ["proposed", "unfilled", "removed", "locked", "published"],
       default: "proposed",
       index: true,
     },
@@ -82,6 +82,13 @@ const draftAssignmentSchema = new mongoose.Schema(
       nightShiftCount: { type: Number, default: 0 },
       projectedWeekMinutes: { type: Number, default: 0 },
       preferencePenalty: { type: Number, default: 0 },
+    },
+    unfilledReason: {
+      code: { type: String, default: null },
+      message: { type: String, default: null },
+      skippedByReason: { type: mongoose.Schema.Types.Mixed, default: null },
+      candidateCount: { type: Number, default: 0 },
+      availableCount: { type: Number, default: 0 },
     },
     publishedScheduleId: {
       type: mongoose.Schema.Types.ObjectId,
@@ -130,8 +137,14 @@ const autoScheduleDraftSchema = new mongoose.Schema(
       requestedCoverageIds: { type: Number, default: 0 },
       processedCoverageCount: { type: Number, default: 0 },
       generatedAssignmentCount: { type: Number, default: 0 },
+      totalSlots: { type: Number, default: 0 },
+      proposedSlots: { type: Number, default: 0 },
+      unfilledSlots: { type: Number, default: 0 },
+      removedSlots: { type: Number, default: 0 },
+      publishedSlots: { type: Number, default: 0 },
       filledCoverageCount: { type: Number, default: 0 },
       partiallyFilledCoverageCount: { type: Number, default: 0 },
+      unfilledCoverageCount: { type: Number, default: 0 },
       skippedCoverageCount: { type: Number, default: 0 },
       alreadyFilledCoverageCount: { type: Number, default: 0 },
     },

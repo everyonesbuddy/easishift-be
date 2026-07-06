@@ -1769,6 +1769,367 @@ exports.updateAutoScheduleDraftAssignment = async (req, res, next) => {
   }
 };
 
+exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
+  try {
+    const draft = await ensureDraftSchedule({
+      draftId: req.params.draftId,
+      tenantId: req.tenantId,
+    });
+
+    if (!draft) {
+      return res.status(404).json({ message: "Draft schedule not found" });
+    }
+
+    const assignmentId = toObjectId(req.params.assignmentId);
+    if (!assignmentId) {
+      return res.status(400).json({ message: "Invalid assignmentId" });
+    }
+
+    const assignment = draft.assignments.find(
+      (item) => item.assignmentId.toString() === assignmentId.toString(),
+    );
+
+    if (!assignment) {
+      return res.status(404).json({ message: "Draft assignment not found" });
+    }
+
+    if (assignment.state === "published" || assignment.publishedScheduleId) {
+      return res.status(400).json({
+        message: "Published draft assignments cannot be refilled with AI",
+      });
+    }
+
+    if (!assignment.startTime || !assignment.endTime) {
+      return res.status(400).json({
+        message: "Assignment is missing startTime or endTime",
+      });
+    }
+
+    const coverageTarget = {
+      _id: assignment.coverageId || assignment.assignmentId,
+      role: assignment.role,
+      unitArea: assignment.unitArea || null,
+      shiftType: assignment.shiftType || null,
+      shiftTag: assignment.shiftTag || null,
+      requiredCertificationTags: assignment.certificationTags || [],
+      startTime: new Date(assignment.startTime),
+      endTime: new Date(assignment.endTime),
+      date: new Date(assignment.startTime),
+    };
+
+    const coverageMinutes = minutesBetween(
+      coverageTarget.startTime,
+      coverageTarget.endTime,
+    );
+
+    if (!Number.isFinite(coverageMinutes) || coverageMinutes <= 0) {
+      return res.status(400).json({
+        message: "Assignment has an invalid time window",
+      });
+    }
+
+    const tenantId = req.tenantId;
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId,
+    }).lean();
+    const facilityPolicy = getEffectiveFacilityPolicy(facilityPreferences);
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+
+    if (!isEnabledScheduleRole(coverageTarget.role, facilityConfig)) {
+      return res.status(400).json({
+        message: `invalid role '${coverageTarget.role || ""}'`,
+      });
+    }
+
+    const targetStart = new Date(coverageTarget.startTime);
+    const targetEnd = new Date(coverageTarget.endTime);
+
+    const fairnessWindowStart = new Date(targetStart);
+    fairnessWindowStart.setUTCDate(
+      fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
+    );
+    const firstCoverageWeekStart = getUtcWeekStart(targetStart);
+    const lastCoverageWeekStart = getUtcWeekStart(targetEnd);
+    const weeklyWindowEnd = new Date(lastCoverageWeekStart);
+    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
+
+    const [timeOffDocs, existingSchedules, fairnessSchedules, tenantUsers] =
+      await Promise.all([
+        TimeOff.find({
+          tenantId,
+          status: "approved",
+          $or: [
+            { start: { $lte: targetEnd }, end: { $gte: targetStart } },
+            { startDate: { $lte: targetEnd }, endDate: { $gte: targetStart } },
+          ],
+        }),
+        Schedule.find({
+          tenantId,
+          status: { $nin: ["completed", "cancelled"] },
+          startTime: { $lt: targetEnd },
+          endTime: { $gt: targetStart },
+        }),
+        Schedule.find({
+          tenantId,
+          status: { $in: ["scheduled", "completed"] },
+          startTime: { $lte: targetEnd },
+          endTime: { $gte: fairnessWindowStart },
+        }).select("staffId startTime endTime"),
+        User.find({ tenantId }).select(
+          "name email role allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
+        ),
+      ]);
+
+    const timeOffMap = {};
+    timeOffDocs.forEach((timeOff) => {
+      const staffId = timeOff.staffId && timeOff.staffId.toString();
+      if (!staffId) return;
+      if (!timeOffMap[staffId]) timeOffMap[staffId] = [];
+      timeOffMap[staffId].push(timeOff);
+    });
+
+    const existingByStaff = {};
+    existingSchedules.forEach((schedule) => {
+      const staffId = schedule.staffId && schedule.staffId.toString();
+      if (!staffId) return;
+      if (!existingByStaff[staffId]) existingByStaff[staffId] = [];
+      existingByStaff[staffId].push(schedule);
+    });
+
+    const recentWorkload = {};
+    const weeklyWorkload = {};
+    const weekendShiftCounts = {};
+    const nightShiftCounts = {};
+    const staffAssignedDaySets = {};
+    const trackedScheduleKeys = new Set();
+
+    fairnessSchedules.forEach((schedule) => {
+      const staffId = schedule.staffId.toString();
+      const minutes = minutesBetween(schedule.startTime, schedule.endTime);
+
+      recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
+
+      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      if (
+        scheduleWeekStart >= firstCoverageWeekStart &&
+        scheduleWeekStart < weeklyWindowEnd
+      ) {
+        const key = buildWeekKey(staffId, schedule.startTime);
+        weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
+      }
+
+      addTrackedSchedule({
+        schedule,
+        trackedKeys: trackedScheduleKeys,
+        staffAssignedDaySets,
+        weekendShiftCounts,
+        nightShiftCounts,
+      });
+    });
+
+    existingSchedules.forEach((schedule) => {
+      addTrackedSchedule({
+        schedule,
+        trackedKeys: trackedScheduleKeys,
+        staffAssignedDaySets,
+        weekendShiftCounts,
+        nightShiftCounts,
+      });
+    });
+
+    const syntheticDraftSchedules = draft.assignments
+      .filter(
+        (item) =>
+          item.assignmentId.toString() !== assignment.assignmentId.toString() &&
+          item.staffId &&
+          ["proposed", "locked", "published"].includes(item.state),
+      )
+      .map((item) => ({
+        staffId: item.staffId,
+        startTime: item.startTime,
+        endTime: item.endTime,
+        status: item.state === "published" ? "scheduled" : "draft",
+      }));
+
+    syntheticDraftSchedules.forEach((schedule) => {
+      const staffId = schedule.staffId.toString();
+      if (!existingByStaff[staffId]) existingByStaff[staffId] = [];
+      existingByStaff[staffId].push(schedule);
+
+      const minutes = minutesBetween(schedule.startTime, schedule.endTime);
+      recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
+
+      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      if (
+        scheduleWeekStart >= firstCoverageWeekStart &&
+        scheduleWeekStart < weeklyWindowEnd
+      ) {
+        const weekKey = buildWeekKey(staffId, schedule.startTime);
+        weeklyWorkload[weekKey] = (weeklyWorkload[weekKey] || 0) + minutes;
+      }
+
+      addTrackedSchedule({
+        schedule,
+        trackedKeys: trackedScheduleKeys,
+        staffAssignedDaySets,
+        weekendShiftCounts,
+        nightShiftCounts,
+      });
+    });
+
+    const roleStaff = tenantUsers.filter((staff) =>
+      isStaffCompatibleWithCoverage({
+        staff,
+        coverage: coverageTarget,
+        facilityConfig,
+      }),
+    );
+
+    if (!roleStaff.length) {
+      return res.status(409).json({
+        message:
+          "No staff found with a compatible role, area, shift type, and certification profile.",
+        reasonCode: "NO_STAFF_FOR_ROLE",
+        skippedByReason: {},
+        candidateCount: 0,
+        availableCount: 0,
+      });
+    }
+
+    const staffIds = roleStaff.map((staff) => staff._id.toString());
+    const preferences = await Preferences.find({
+      tenantId,
+      staffId: { $in: staffIds },
+    });
+
+    const preferenceMap = {};
+    preferences.forEach((preference) => {
+      preferenceMap[preference.staffId.toString()] = preference;
+    });
+
+    const skippedByReason = {};
+    const available = [];
+
+    for (const staff of roleStaff) {
+      const staffId = staff._id.toString();
+      const currentSchedules = existingByStaff[staffId] || [];
+      let skipReason = null;
+
+      if (
+        currentSchedules.some(
+          (schedule) =>
+            schedule.status === "call_out" &&
+            schedule.startTime.getTime() === targetStart.getTime() &&
+            schedule.endTime.getTime() === targetEnd.getTime(),
+        )
+      ) {
+        skipReason = "called out for this shift";
+      } else if (
+        timeOffMap[staffId]?.some((timeOff) => {
+          const timeOffStart = new Date(timeOff.start || timeOff.startDate);
+          const timeOffEnd = new Date(timeOff.end || timeOff.endDate);
+          return timeOffStart <= targetEnd && timeOffEnd >= targetStart;
+        })
+      ) {
+        skipReason = "has approved time off overlapping coverage";
+      } else if (
+        currentSchedules.some(
+          (schedule) =>
+            schedule.status !== "call_out" &&
+            !(
+              schedule.endTime <= targetStart || schedule.startTime >= targetEnd
+            ),
+        )
+      ) {
+        skipReason = "already scheduled for overlapping shift";
+      }
+
+      if (skipReason) {
+        skippedByReason[skipReason] = (skippedByReason[skipReason] || 0) + 1;
+      } else {
+        available.push(staff);
+      }
+    }
+
+    if (!available.length) {
+      return res.status(409).json({
+        message:
+          "No eligible staff available due to conflicts, time off, call out, availability preferences, or break constraints.",
+        reasonCode: "NO_AVAILABLE_STAFF",
+        skippedByReason,
+        candidateCount: roleStaff.length,
+        availableCount: 0,
+      });
+    }
+
+    const rankedCandidates = available
+      .map((staff) => {
+        const staffId = staff._id.toString();
+        return {
+          staff,
+          metrics: buildRankingMetrics({
+            staff,
+            staffId,
+            coverage: coverageTarget,
+            coverageMinutes,
+            coverageId: coverageTarget._id,
+            facilityPolicy,
+            staffPreferences: preferenceMap[staffId],
+            weeklyWorkload,
+            recentWorkload,
+            weekendShiftCounts,
+            nightShiftCounts,
+            staffAssignedDaySets,
+          }),
+        };
+      })
+      .sort((a, b) => compareRankingMetrics(a.metrics, b.metrics));
+
+    const selected = rankedCandidates[0];
+    if (!selected) {
+      return res.status(409).json({
+        message:
+          "No eligible staff remained after ranking and conflict checks.",
+        reasonCode: "INSUFFICIENT_CANDIDATES",
+        skippedByReason,
+        candidateCount: roleStaff.length,
+        availableCount: available.length,
+      });
+    }
+
+    assignment.staffId = selected.staff._id;
+    assignment.state = "proposed";
+    assignment.source = "auto";
+    assignment.unfilledReason = null;
+    assignment.warnings = {
+      overtimeMinutes: selected.metrics.overtimeMinutes || 0,
+      consecutiveDaysIfAssigned:
+        selected.metrics.consecutiveDaysIfAssigned || 0,
+      patternPenalty: selected.metrics.patternPenalty || 0,
+      weekendShiftCount: selected.metrics.weekendShiftCount || 0,
+      nightShiftCount: selected.metrics.nightShiftCount || 0,
+      projectedWeekMinutes: selected.metrics.projectedWeekMinutes || 0,
+      preferencePenalty: selected.metrics.preferencePenalty || 0,
+    };
+
+    draft.lastEditedBy = req.user._id;
+    await draft.save();
+
+    const updatedAssignment = draft.assignments.find(
+      (item) =>
+        item.assignmentId.toString() === assignment.assignmentId.toString(),
+    );
+
+    return res.json({
+      message: "Draft assignment filled with AI",
+      assignment: updatedAssignment,
+      slotCounts: buildDraftStateCounts(draft.assignments || []),
+    });
+  } catch (err) {
+    return next(err);
+  }
+};
+
 exports.publishAutoScheduleDraft = async (req, res, next) => {
   try {
     const draft = await ensureDraftSchedule({

@@ -12,6 +12,7 @@ const {
   getAutoScheduleDrafts,
   getAutoScheduleDraftById,
   updateAutoScheduleDraftAssignment,
+  fillAutoScheduleDraftAssignmentWithAI,
   publishAutoScheduleDraft,
   discardAutoScheduleDraft,
   requestShiftSwap,
@@ -41,6 +42,11 @@ router.patch(
   "/draft-schedules/:draftId/assignments/:assignmentId",
   restrictTo("admin"),
   updateAutoScheduleDraftAssignment,
+);
+router.post(
+  "/draft-schedules/:draftId/assignments/:assignmentId/fill-ai",
+  restrictTo("admin"),
+  fillAutoScheduleDraftAssignmentWithAI,
 );
 router.post(
   "/draft-schedules/:draftId/publish",

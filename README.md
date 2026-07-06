@@ -95,6 +95,7 @@ All tenant data is isolated using `tenantId`.
 - `GET /api/v1/schedules/draft-schedules` - list auto-schedule drafts (admin)
 - `GET /api/v1/schedules/draft-schedules/:draftId` - get one draft with assignments (admin)
 - `PATCH /api/v1/schedules/draft-schedules/:draftId/assignments/:assignmentId` - edit one draft assignment (admin)
+- `POST /api/v1/schedules/draft-schedules/:draftId/assignments/:assignmentId/fill-ai` - fill one draft assignment with AI-selected staff (admin)
 - `POST /api/v1/schedules/draft-schedules/:draftId/publish` - publish draft assignments to schedules (admin)
 - `POST /api/v1/schedules/draft-schedules/:draftId/discard` - discard a draft (admin)
 - `GET /api/v1/schedules/:id` - get schedule by id
@@ -138,8 +139,20 @@ High-level lifecycle:
    - adjust assignment state (`proposed`, `locked`, `removed`)
    - adjust notes/window/tags (`notes`, `startTime`, `endTime`, `unitArea`, `shiftType`, `shiftTag`, `certificationTags`)
    - use `force=true` to override compatibility/conflict safeguards when intentionally needed
+
+- fill one unfilled assignment automatically with `POST /draft-schedules/:draftId/assignments/:assignmentId/fill-ai`
+
 5. Publish when ready (`POST /draft-schedules/:draftId/publish`) to create real `Schedule` rows.
 6. Optionally discard (`POST /draft-schedules/:draftId/discard`) to retire a draft.
+
+Per-assignment AI fill works as a targeted repair step inside an existing draft:
+
+1. It reads the selected draft assignment as the coverage target.
+2. It reuses the same compatibility gates and ranking stack as auto-generate.
+3. It selects the best eligible staff member and updates the assignment in place.
+4. It returns the updated assignment plus refreshed draft slot counts.
+
+If no eligible staff remain, the endpoint returns a structured `409` response with a reason code and skip summary so the UI can explain why the slot could not be filled.
 
 Draft statuses:
 

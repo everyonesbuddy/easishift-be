@@ -7,21 +7,34 @@ const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 
+const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
 const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
 
-const getPasswordResetTtlMs = () => {
-  const raw = process.env.PASSWORD_RESET_TTL_MINUTES;
+const getPasswordTtlMs = (envName, fallbackMinutes) => {
+  const raw = process.env[envName];
   const parsed = Number(raw);
   const minutes =
     Number.isFinite(parsed) && parsed > 0
       ? Math.floor(parsed)
-      : DEFAULT_PASSWORD_RESET_TTL_MINUTES;
+      : fallbackMinutes;
 
   return minutes * 60 * 1000;
 };
 
-const getPasswordResetTtlLabel = () => {
-  const ttlMinutes = Math.floor(getPasswordResetTtlMs() / (60 * 1000));
+const getPasswordSetupTtlMs = () =>
+  getPasswordTtlMs(
+    "PASSWORD_SETUP_TTL_MINUTES",
+    DEFAULT_PASSWORD_SETUP_TTL_MINUTES,
+  );
+
+const getPasswordResetTtlMs = () =>
+  getPasswordTtlMs(
+    "PASSWORD_RESET_TTL_MINUTES",
+    DEFAULT_PASSWORD_RESET_TTL_MINUTES,
+  );
+
+const getTtlLabel = (ttlMs) => {
+  const ttlMinutes = Math.floor(ttlMs / (60 * 1000));
   if (ttlMinutes % (24 * 60) === 0) {
     const days = ttlMinutes / (24 * 60);
     return `${days} day${days === 1 ? "" : "s"}`;
@@ -34,6 +47,9 @@ const getPasswordResetTtlLabel = () => {
 
   return `${ttlMinutes} minute${ttlMinutes === 1 ? "" : "s"}`;
 };
+
+const getPasswordSetupTtlLabel = () => getTtlLabel(getPasswordSetupTtlMs());
+const getPasswordResetTtlLabel = () => getTtlLabel(getPasswordResetTtlMs());
 
 // Helper: Create JWT
 const signToken = (id, role, tenantId) =>
@@ -138,11 +154,14 @@ const createPasswordSetupLink = async (req, user) => {
     .digest("hex");
 
   user.passwordResetToken = setupTokenHash;
-  user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
+  user.passwordResetExpires = new Date(Date.now() + getPasswordSetupTtlMs());
   await user.save({ validateBeforeSave: false });
 
   return buildResetUrl(req, setupToken);
 };
+
+const getPasswordSetupValidityText = () =>
+  `valid for ${getPasswordSetupTtlLabel()}`;
 
 const getPasswordResetValidityText = () =>
   `valid for ${getPasswordResetTtlLabel()}`;
@@ -325,7 +344,7 @@ exports.registerStaff = async (req, res, next) => {
             <li><strong>Login email:</strong> ${user.email}</li>
             <li><strong>Role:</strong> ${user.role}</li>
           </ul>
-          <p>Set your password using the secure link below (${getPasswordResetValidityText()}):</p>
+          <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
           <p><a href="${setupUrl}">${setupUrl}</a></p>
         `;
 
@@ -486,7 +505,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
               <li><strong>Login email:</strong> ${user.email}</li>
               <li><strong>Role:</strong> ${user.role}</li>
             </ul>
-            <p>Set your password using the secure link below (${getPasswordResetValidityText()}):</p>
+            <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
             <p><a href="${setupUrl}">${setupUrl}</a></p>
           `;
 

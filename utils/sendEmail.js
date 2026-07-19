@@ -7,18 +7,66 @@ const postmarkPkg = (() => {
   }
 })();
 
-/**
- * sendEmail
- * ----------
- * Sends an email to staff. Prefers Postmark when
- * POSTMARK_API_TOKEN is present; falls back to SMTP via nodemailer.
- *
- * @param {string|string[]} to - Recipient email or list
- * @param {string} subject - Email subject
- * @param {string} html - HTML content of the email
- * @param {string} [text] - Optional plaintext body
- */
-exports.sendEmail = async (to, subject, html, text) => {
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const parsePositiveInt = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : fallback;
+};
+
+const EMAIL_RATE_LIMIT_PER_DOMAIN_MS = parsePositiveInt(
+  process.env.EMAIL_RATE_LIMIT_PER_DOMAIN_MS,
+  1000,
+);
+const EMAIL_RATE_LIMIT_GLOBAL_MS = parsePositiveInt(
+  process.env.EMAIL_RATE_LIMIT_GLOBAL_MS,
+  250,
+);
+const EMAIL_RETRY_MAX_ATTEMPTS = parsePositiveInt(
+  process.env.EMAIL_RETRY_MAX_ATTEMPTS,
+  5,
+);
+const EMAIL_RETRY_BASE_DELAY_MS = parsePositiveInt(
+  process.env.EMAIL_RETRY_BASE_DELAY_MS,
+  30 * 1000,
+);
+
+const domainNextAllowedAt = new Map();
+let globalNextAllowedAt = 0;
+let queueTail = Promise.resolve();
+
+const getRecipientDomains = (to) => {
+  const list = Array.isArray(to) ? to : String(to || "").split(",");
+  return Array.from(
+    new Set(
+      list
+        .map((item) =>
+          String(item || "")
+            .trim()
+            .toLowerCase(),
+        )
+        .map((item) => item.split("@")[1])
+        .filter(Boolean),
+    ),
+  );
+};
+
+const isTransientError = (err) => {
+  const message = String(
+    (err && (err.message || err.statusMessage || err.code)) || err || "",
+  ).toLowerCase();
+
+  return (
+    /\b4\.7\.\d+\b/.test(message) ||
+    /rate\s*limit/.test(message) ||
+    /temporar/.test(message) ||
+    /try again later/.test(message) ||
+    /throttl/.test(message) ||
+    /timeout|timed out|econnreset|eai_again|etimedout/.test(message)
+  );
+};
+
+const sendViaConfiguredProvider = async (to, subject, html, text) => {
   const recipients = Array.isArray(to) ? to.join(",") : to;
 
   // Track last error for diagnostic return
@@ -110,7 +158,106 @@ exports.sendEmail = async (to, subject, html, text) => {
   }
 };
 
+const sendWithRetry = async (to, subject, html, text, options = {}) => {
+  const maxAttempts = parsePositiveInt(
+    options.maxAttempts,
+    EMAIL_RETRY_MAX_ATTEMPTS,
+  );
+  const baseDelayMs = parsePositiveInt(
+    options.baseDelayMs,
+    EMAIL_RETRY_BASE_DELAY_MS,
+  );
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const result = await sendViaConfiguredProvider(to, subject, html, text);
+    if (result && result.success) {
+      return result;
+    }
+
+    const err = result && result.error ? result.error : "unknown email error";
+    if (attempt === maxAttempts || !isTransientError(err)) {
+      return result;
+    }
+
+    const jitterMs = Math.floor(Math.random() * 1000);
+    const backoffMs = baseDelayMs * Math.pow(2, attempt - 1) + jitterMs;
+    console.warn(
+      `⚠️ Email transient failure. Retry ${attempt + 1}/${maxAttempts} in ${Math.floor(
+        backoffMs / 1000,
+      )}s`,
+    );
+    await sleep(backoffMs);
+  }
+
+  return { success: false, error: "email retries exhausted" };
+};
+
+const queueAndRateLimit = async (to, job, options = {}) => {
+  const domains = getRecipientDomains(to);
+  const globalGapMs = parsePositiveInt(
+    options.globalMinIntervalMs,
+    EMAIL_RATE_LIMIT_GLOBAL_MS,
+  );
+  const perDomainGapMs = parsePositiveInt(
+    options.perDomainMinIntervalMs,
+    EMAIL_RATE_LIMIT_PER_DOMAIN_MS,
+  );
+
+  const queuedJob = queueTail.then(async () => {
+    const now = Date.now();
+    let allowedAt = Math.max(now, globalNextAllowedAt);
+
+    for (const domain of domains) {
+      allowedAt = Math.max(allowedAt, domainNextAllowedAt.get(domain) || 0);
+    }
+
+    const waitMs = allowedAt - now;
+    if (waitMs > 0) {
+      await sleep(waitMs);
+    }
+
+    const sentAt = Date.now();
+    globalNextAllowedAt = sentAt + globalGapMs;
+    for (const domain of domains) {
+      domainNextAllowedAt.set(domain, sentAt + perDomainGapMs);
+    }
+
+    return job();
+  });
+
+  queueTail = queuedJob.catch((err) => {
+    console.error(
+      "❌ Email queue error:",
+      err && err.message ? err.message : err,
+    );
+  });
+
+  return queuedJob;
+};
+
+/**
+ * sendEmail
+ * ----------
+ * Sends an email to staff. Prefers Postmark when
+ * POSTMARK_API_TOKEN is present; falls back to SMTP via nodemailer.
+ *
+ * @param {string|string[]} to - Recipient email or list
+ * @param {string} subject - Email subject
+ * @param {string} html - HTML content of the email
+ * @param {string} [text] - Optional plaintext body
+ */
+exports.sendEmail = async (to, subject, html, text) =>
+  sendViaConfiguredProvider(to, subject, html, text);
+
+exports.sendEmailQueued = async (to, subject, html, text, options = {}) =>
+  queueAndRateLimit(
+    to,
+    () => sendWithRetry(to, subject, html, text, options),
+    options,
+  );
+
 // Keep backwards-compatible default for consumers using require('./sendEmail')
 module.exports = {
   sendEmail: exports.sendEmail,
+  sendEmailQueued: exports.sendEmailQueued,
 };

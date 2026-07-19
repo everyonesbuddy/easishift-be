@@ -5,7 +5,7 @@ const { parse } = require("csv-parse/sync");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
-const { sendEmail } = require("../utils/sendEmail");
+const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
 
 const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
 const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
@@ -509,7 +509,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
             <p><a href="${setupUrl}">${setupUrl}</a></p>
           `;
 
-          const emailResult = await sendEmail(user.email, subject, html);
+          const emailResult = await sendEmailQueued(user.email, subject, html);
           if (!emailResult || !emailResult.success) {
             inviteWarning = "account created but setup email failed";
           }

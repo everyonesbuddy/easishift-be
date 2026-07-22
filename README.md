@@ -75,7 +75,7 @@ All tenant data is isolated using `tenantId`.
 - `GET /api/v1/auth/users` - list tenant users
 - `GET /api/v1/auth/:id` - get user by id
 - `PUT /api/v1/auth/:id` - update user
-- `DELETE /api/v1/auth/:id` - delete user (admin only)
+- `DELETE /api/v1/auth/:id` - delete user; use `me` to delete your own account, admins can delete other users
 
 ---
 

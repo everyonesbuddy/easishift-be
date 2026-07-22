@@ -76,7 +76,7 @@ router.get("/:id", auth, tenant, getUserById);
 // Update user
 router.put("/:id", auth, tenant, updateUser);
 
-// Delete user (admin only)
-router.delete("/:id", auth, tenant, restrictTo("admin"), deleteUser);
+// Delete user or own account
+router.delete("/:id", auth, tenant, deleteUser);
 
 module.exports = router;

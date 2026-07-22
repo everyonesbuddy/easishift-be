@@ -5,6 +5,11 @@ const { parse } = require("csv-parse/sync");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
+const Schedule = require("../models/scheduleModel");
+const TimeOff = require("../models/timeOffModel");
+const Message = require("../models/messageModel");
+const Preferences = require("../models/preferencesModel");
+const ShiftSwap = require("../models/shiftSwapModel");
 const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
 
 const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
@@ -165,6 +170,32 @@ const getPasswordSetupValidityText = () =>
 
 const getPasswordResetValidityText = () =>
   `valid for ${getPasswordResetTtlLabel()}`;
+
+const deleteUserScopedData = async (userId, tenantId) => {
+  const userObjectId = userId;
+  const tenantObjectId = tenantId;
+
+  await Promise.all([
+    Schedule.deleteMany({ staffId: userObjectId, tenantId: tenantObjectId }),
+    TimeOff.deleteMany({ staffId: userObjectId, tenantId: tenantObjectId }),
+    Preferences.deleteMany({
+      staffId: userObjectId,
+      tenantId: tenantObjectId,
+    }),
+    Message.deleteMany({
+      tenantId: tenantObjectId,
+      $or: [{ senderId: userObjectId }, { receiverId: userObjectId }],
+    }),
+    ShiftSwap.deleteMany({
+      tenantId: tenantObjectId,
+      $or: [
+        { requesterStaffId: userObjectId },
+        { receiverStaffId: userObjectId },
+        { resolvedBy: userObjectId },
+      ],
+    }),
+  ]);
+};
 
 /**
  * TENANT SIGNUP
@@ -845,14 +876,34 @@ exports.updateUser = async (req, res, next) => {
  */
 exports.deleteUser = async (req, res, next) => {
   try {
-    const deleted = await User.findOneAndDelete({
-      _id: req.params.id,
+    const isSelfDelete =
+      req.params.id === "me" || req.params.id === req.user.id;
+    const isAdmin = req.user && req.user.role === "admin";
+
+    if (!isSelfDelete && !isAdmin) {
+      return res.status(403).json({
+        message: "Access denied. You can only delete your own account.",
+      });
+    }
+
+    const targetUserId = req.params.id === "me" ? req.user.id : req.params.id;
+
+    const user = await User.findOne({
+      _id: targetUserId,
       tenantId: req.tenantId,
     });
 
-    if (!deleted) return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ message: "User not found" });
 
-    res.status(200).json({ message: "User deleted successfully" });
+    await deleteUserScopedData(user._id, req.tenantId);
+
+    await User.deleteOne({ _id: user._id, tenantId: req.tenantId });
+
+    res.status(200).json({
+      message: isSelfDelete
+        ? "Your account has been deleted"
+        : "User deleted successfully",
+    });
   } catch (err) {
     next(err);
   }

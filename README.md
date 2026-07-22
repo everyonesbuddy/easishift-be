@@ -86,6 +86,7 @@ All tenant data is isolated using `tenantId`.
 - `GET /api/v1/tenants` - list tenants (`superadmin`)
 - `POST /api/v1/tenants` - create tenant (`superadmin`)
 - `GET /api/v1/tenants/:id` - get single tenant
+- `DELETE /api/v1/tenants/:id` - delete tenant account and all tenant data (`admin` for own tenant, `superadmin` for any tenant)
 
 ### Schedules
 

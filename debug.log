@@ -1,0 +1,11 @@
+[0721/110732.174:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: The system cannot find the file specified. (0x2)
+[0721/110732.396:ERROR:electron\shell\common\node_util.cc:166] Failed to initialize Node.js. {
+   "args": [ "C:\\Program Files\\Microsoft VS Code\\Code.exe", "c:\\Users\\Joseph Adeyemo\\.vscode\\extensions\\redhat.vscode-yaml-1.24.0\\dist\\languageserver.js", "--node-ipc", "--clientProcessId=4024" ],
+   "location": ", at node:internal/buffer:1104",
+   "message": "Uncaught RangeError: Failed to allocate memory",
+   "source_line": "  return new FastBuffer(createUnsafeArrayBuffer(size));"
+}
+
+[0721/110738.272:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: The system cannot find the file specified. (0x2)
+[0721/110741.910:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: The system cannot find the file specified. (0x2)
+[0721/110748.759:ERROR:third_party\crashpad\crashpad\util\win\registration_protocol_win.cc:108] CreateFile: The system cannot find the file specified. (0x2)

@@ -194,6 +194,58 @@ const facilityPreferencesSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+
+    // ─── TIME TRACKING ───────────────────────────────────────────────────────
+    /**
+     * Optional tenant-level time tracking configuration.
+     * When disabled, clock-in/clock-out endpoints reject requests.
+     */
+    timeTracking: {
+      enabled: {
+        type: Boolean,
+        default: false,
+      },
+      mode: {
+        type: String,
+        enum: ["open", "qr"],
+        default: "open",
+      },
+      requireScheduleMatch: {
+        type: Boolean,
+        default: true,
+      },
+      clockInGraceMinutes: {
+        type: Number,
+        default: 15,
+        min: 0,
+      },
+      clockOutGraceMinutes: {
+        type: Number,
+        default: 30,
+        min: 0,
+      },
+      roundingMinutes: {
+        type: Number,
+        default: 0,
+        enum: [0, 5, 6, 10, 15],
+      },
+      autoCloseOpenBreakOnClockOut: {
+        type: Boolean,
+        default: true,
+      },
+      qrTokenHash: {
+        type: String,
+        default: null,
+      },
+      qrTokenValue: {
+        type: String,
+        default: null,
+      },
+      qrTokenVersion: {
+        type: Number,
+        default: 0,
+      },
+    },
   },
   { timestamps: true },
 );

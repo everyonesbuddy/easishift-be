@@ -966,10 +966,10 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
     console.log(`Loaded time-off records for ${timeOff.length} staff`);
 
-    // 3) LOAD EXISTING SCHEDULES (ignore completed + legacy cancelled; keep call_out for availability checks)
+    // 3) LOAD EXISTING SCHEDULES (ignore terminal statuses; keep call_out for availability checks)
     const existingSchedules = await Schedule.find({
       tenantId,
-      status: { $nin: ["completed", "cancelled"] },
+      status: { $nin: ["completed", "left_early", "no_show", "cancelled"] },
       startTime: { $gte: start, $lte: end },
     });
 
@@ -1865,7 +1865,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         }),
         Schedule.find({
           tenantId,
-          status: { $nin: ["completed", "cancelled"] },
+          status: { $nin: ["completed", "left_early", "no_show", "cancelled"] },
           startTime: { $lt: targetEnd },
           endTime: { $gt: targetStart },
         }),

@@ -51,6 +51,7 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 - **Schedule**: assigned shifts per staff member
 - **Preferences**: staff preferred weekdays + notification toggles
 - **FacilityPreferences**: tenant-level scheduling policy and taxonomy (`roleFamilies`, `unitAreas`, `shiftTypes`, `certificationTags`)
+- **TimeEntry**: tenant-scoped attendance records with clock-in/out, mode (`open`/`geofence`), and multi-break logs
 - **TimeOff**: staff PTO/leave requests with admin approval flow
 - **Message**: internal staff-to-staff tenant-scoped messages
 
@@ -311,6 +312,25 @@ Coverage behavior notes:
 - `GET /api/v1/timeoff` - list time off (admins see tenant; staff see own)
 - `PATCH /api/v1/timeoff/:id/review` - approve/deny request (admin)
 
+### Time Tracking
+
+- `GET /api/v1/time-tracking/me` - list my time entries
+- `POST /api/v1/time-tracking/clock-in` - start a time entry
+- `POST /api/v1/time-tracking/breaks/start` - start a break within active entry
+- `POST /api/v1/time-tracking/breaks/end` - end current break
+- `POST /api/v1/time-tracking/clock-out` - finish active time entry
+- `POST /api/v1/time-tracking/qr-token` - generate short-lived QR clock token (admin; QR mode only)
+- `GET /api/v1/time-tracking` - list tenant time entries (admin)
+- `PATCH /api/v1/time-tracking/:id/adjust` - adjust a time entry (admin)
+
+Time tracking behavior:
+
+- Controlled per tenant in facility preferences via `timeTracking.enabled` and `timeTracking.mode`.
+- Supported modes are `open` and `qr`.
+- `qr` mode requires `qrToken` on clock-in and clock-out.
+- Multiple breaks are supported as a break-event array (not a single break duration field).
+- Only one active entry is allowed per staff member at a time.
+
 ### Preferences
 
 - `GET /api/v1/preferences/me` - get current user preferences
@@ -329,9 +349,20 @@ Timezone behavior for scheduling is standardized to UTC in the backend. Any loca
 
 ### Facility Preferences
 
-- `GET /api/v1/facility-preferences` - get current facility scheduling policy (admin)
+- `GET /api/v1/facility-preferences` - get current facility scheduling policy (admin gets full config; authenticated non-admin users get a limited read-only view)
 - `POST /api/v1/facility-preferences` - create/update facility scheduling policy (admin)
 - `DELETE /api/v1/facility-preferences/reset` - reset facility scheduling policy to defaults (admin)
+
+Non-admin users receive only a limited subset of facility preferences, primarily the fields needed by the UI to determine whether time tracking is available and how it behaves:
+
+- `facilityTimezone`
+- `timeTracking.enabled`
+- `timeTracking.mode`
+- `timeTracking.requireScheduleMatch`
+- `timeTracking.clockInGraceMinutes`
+- `timeTracking.clockOutGraceMinutes`
+- `timeTracking.roundingMinutes`
+- `timeTracking.autoCloseOpenBreakOnClockOut`
 
 Current facility preference fields include:
 
@@ -346,6 +377,17 @@ Current facility preference fields include:
 - `shiftTypes`
 - `shiftTypeDefinitions` (multiple local-time slots per shift type, each with a `tag`)
 - `certificationTags`
+- `timeTracking` object:
+  - `enabled`
+  - `mode` (`open` or `qr`)
+  - `requireScheduleMatch`
+  - `clockInGraceMinutes`
+  - `clockOutGraceMinutes`
+  - `roundingMinutes`
+  - `autoCloseOpenBreakOnClockOut`
+  - `geofenceRadiusMeters`
+
+For easier admin setup, you can store `timeTracking.geofenceAddress` as a human-readable location label. Geofence enforcement still uses `geofenceLatitude` and `geofenceLongitude` for distance checks.
 
 ### Messaging
 

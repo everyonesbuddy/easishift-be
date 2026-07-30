@@ -14,12 +14,15 @@ const restrictTo = require("../middleware/roleMiddleware");
 // All routes require auth + tenant context + admin role
 router.use(auth);
 router.use(tenant);
-router.use(restrictTo("admin"));
 
 // GET    /api/v1/facility-preferences       — fetch current (or default) config
+//                                           limited view for non-admin users
+router.get("/", getFacilityPreferences);
+
+// Admin-only management actions
 // POST   /api/v1/facility-preferences       — create or update config
 // DELETE /api/v1/facility-preferences/reset — wipe back to defaults
-router.get("/", getFacilityPreferences);
+router.use(restrictTo("admin"));
 router.post("/", upsertFacilityPreferences);
 router.delete("/reset", resetFacilityPreferences);
 

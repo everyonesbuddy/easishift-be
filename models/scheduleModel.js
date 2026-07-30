@@ -49,7 +49,14 @@ const scheduleSchema = new mongoose.Schema(
     },
     status: {
       type: String,
-      enum: ["scheduled", "completed", "call_out"],
+      enum: [
+        "scheduled",
+        "in_progress",
+        "completed",
+        "left_early",
+        "no_show",
+        "call_out",
+      ],
       default: "scheduled",
     },
     certificationTags: {
@@ -61,6 +68,10 @@ const scheduleSchema = new mongoose.Schema(
     meta: {
       createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       publishedAt: Date,
+      clockedInAt: Date,
+      completedAt: Date,
+      leftEarlyAt: Date,
+      noShowAt: Date,
     },
   },
   { timestamps: true },

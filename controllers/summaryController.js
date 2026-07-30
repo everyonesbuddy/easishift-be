@@ -70,7 +70,7 @@ exports.getStaffSummary = async (req, res, next) => {
           tenantId,
           staffId,
           startTime: { $gte: startOfWeekUTC(), $lte: endOfWeekUTC() },
-          status: { $nin: ["call_out", "cancelled"] },
+          status: { $nin: ["left_early", "no_show", "call_out", "cancelled"] },
         }).sort({ startTime: 1 }),
       ]);
 
@@ -125,7 +125,7 @@ exports.getAdminSummary = async (req, res, next) => {
           tenantId,
           startTime: { $lte: todayEnd },
           endTime: { $gt: todayStart },
-          status: { $nin: ["call_out", "cancelled"] },
+          status: { $nin: ["left_early", "no_show", "call_out", "cancelled"] },
         }).populate("staffId", "name role"),
 
         Coverage.find({

@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const cron = require("node-cron");
 const { sendPendingReminders } = require("./utils/scheduleJobs");
+const FacilityPreferences = require("./models/facilityPreferencesModel");
 const Schedule = require("./models/scheduleModel");
 const errorHandler = require("./middleware/errorMiddleware");
 
@@ -18,6 +19,7 @@ const timeOffRoutes = require("./routes/timeOffRoutes");
 const coverageRoutes = require("./routes/coverageRoutes");
 const preferencesRoutes = require("./routes/preferencesRoutes");
 const facilityPreferencesRoutes = require("./routes/facilityPreferencesRoutes");
+const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 
@@ -92,19 +94,67 @@ cron.schedule("0 8 * * *", async () => {
   await sendPendingReminders();
 });
 
-// ✅ Cron job: every 2 hours mark past schedules as completed
+// ✅ Cron job: every 2 hours close out past schedules
 cron.schedule("0 */2 * * *", async () => {
   console.log("⏰ Running schedule status updater (every 2 hours)...");
   try {
     const now = new Date();
-    const filter = { status: "scheduled", endTime: { $lt: now } };
-    const update = { $set: { status: "completed", "meta.completedAt": now } };
-    const result = await Schedule.updateMany(filter, update);
-    const count =
-      result.modifiedCount !== undefined
-        ? result.modifiedCount
-        : result.nModified;
-    console.log(`✅ Updated ${count} schedule(s) to 'completed'`);
+    const [scheduledPast, facilityPrefs] = await Promise.all([
+      Schedule.find({
+        status: "scheduled",
+        endTime: { $lt: now },
+      })
+        .select("tenantId")
+        .lean(),
+      FacilityPreferences.find({})
+        .select("tenantId timeTracking.enabled")
+        .lean(),
+    ]);
+
+    const timeTrackingEnabledTenantIds = new Set(
+      facilityPrefs
+        .filter((prefs) => prefs?.timeTracking?.enabled)
+        .map((prefs) => String(prefs.tenantId)),
+    );
+
+    const noShowScheduleIds = [];
+    const completedScheduleIds = [];
+
+    for (const schedule of scheduledPast) {
+      if (timeTrackingEnabledTenantIds.has(String(schedule.tenantId))) {
+        noShowScheduleIds.push(schedule._id);
+      } else {
+        completedScheduleIds.push(schedule._id);
+      }
+    }
+
+    const noShowResult = noShowScheduleIds.length
+      ? await Schedule.updateMany(
+          { _id: { $in: noShowScheduleIds } },
+          { $set: { status: "no_show", "meta.noShowAt": now } },
+        )
+      : { modifiedCount: 0, nModified: 0 };
+
+    const completedResult = await Schedule.updateMany(
+      {
+        status: "in_progress",
+        endTime: { $lt: now },
+      },
+      { $set: { status: "completed", "meta.completedAt": now } },
+    );
+
+    const noShowCount =
+      noShowResult.modifiedCount !== undefined
+        ? noShowResult.modifiedCount
+        : noShowResult.nModified;
+    const completedCount =
+      completedResult.modifiedCount !== undefined
+        ? completedResult.modifiedCount
+        : completedResult.nModified;
+
+    console.log(
+      `✅ Updated ${noShowCount} schedule(s) to 'no_show' and ${completedCount} schedule(s) to 'completed'`,
+    );
   } catch (err) {
     console.error("🚫 Error updating schedules status:", err);
   }
@@ -120,6 +170,7 @@ app.use("/api/v1/timeoff", timeOffRoutes);
 app.use("/api/v1/coverage", coverageRoutes);
 app.use("/api/v1/preferences", preferencesRoutes);
 app.use("/api/v1/facility-preferences", facilityPreferencesRoutes);
+app.use("/api/v1/time-tracking", timeTrackingRoutes);
 app.use("/api/v1/stripe", stripeRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 

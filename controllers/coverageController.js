@@ -818,7 +818,9 @@ exports.getUnfilledCoverage = async (req, res, next) => {
       ...(unitArea ? { unitArea: normalizeAreaTag(unitArea) } : {}),
       ...(shiftType ? { shiftType: normalizeShiftType(shiftType) } : {}),
       ...(shiftTag ? { shiftTag: normalizeShiftTag(shiftTag) } : {}),
-      status: { $nin: ["completed", "call_out", "cancelled"] },
+      status: {
+        $nin: ["completed", "left_early", "no_show", "call_out", "cancelled"],
+      },
       $or: coverages.map((c) => ({
         startTime: c.startTime,
         endTime: c.endTime,
@@ -876,7 +878,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     // If a role was provided, include it so we only count schedules for that role.
     const scheduleQuery = {
       tenantId,
-      status: { $nin: ["completed", "call_out"] },
+      status: { $nin: ["completed", "left_early", "no_show", "call_out"] },
       $or: coverages.map((c) => ({
         startTime: c.startTime,
         endTime: c.endTime,

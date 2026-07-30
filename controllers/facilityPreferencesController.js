@@ -1,6 +1,27 @@
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 
-// ADMIN: Get this facility's preferences (create defaults if none exist yet)
+const buildLimitedFacilityPreferencesView = (prefs) => {
+  if (!prefs) return null;
+
+  const timeTracking = prefs.timeTracking || {};
+
+  return {
+    tenantId: prefs.tenantId,
+    facilityTimezone: prefs.facilityTimezone,
+    timeTracking: {
+      enabled: Boolean(timeTracking.enabled),
+      mode: timeTracking.mode || "open",
+      requireScheduleMatch: Boolean(timeTracking.requireScheduleMatch),
+      clockInGraceMinutes: timeTracking.clockInGraceMinutes ?? 15,
+      clockOutGraceMinutes: timeTracking.clockOutGraceMinutes ?? 30,
+      roundingMinutes: timeTracking.roundingMinutes ?? 0,
+      autoCloseOpenBreakOnClockOut:
+        timeTracking.autoCloseOpenBreakOnClockOut ?? true,
+    },
+  };
+};
+
+// Admin gets full config. Non-admin users receive a limited read-only view.
 exports.getFacilityPreferences = async (req, res, next) => {
   try {
     let prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId });
@@ -8,6 +29,10 @@ exports.getFacilityPreferences = async (req, res, next) => {
     if (!prefs) {
       // Return schema defaults without persisting — let the admin decide when to save
       prefs = new FacilityPreferences({ tenantId: req.tenantId });
+    }
+
+    if (req.user && req.user.role !== "admin") {
+      return res.json(buildLimitedFacilityPreferencesView(prefs));
     }
 
     res.json(prefs);

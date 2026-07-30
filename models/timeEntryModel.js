@@ -68,6 +68,12 @@ const timeEntrySchema = new mongoose.Schema(
       default: "in_progress",
       index: true,
     },
+    attendanceOutcome: {
+      type: String,
+      enum: ["in_progress", "completed", "left_early"],
+      default: "in_progress",
+      index: true,
+    },
     mode: {
       type: String,
       enum: ["open", "qr"],

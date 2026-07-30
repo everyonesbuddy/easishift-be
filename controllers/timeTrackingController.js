@@ -151,6 +151,65 @@ const rotateFacilityQrToken = async (tenantId) => {
   return { token, version: nextVersion };
 };
 
+const getAttendanceOutcomeForClockOut = ({
+  scheduledEndTime,
+  clockOutAt,
+  clockOutGraceMinutes,
+}) => {
+  if (!scheduledEndTime || !clockOutAt) return "completed";
+
+  const earlyCheckoutCutoff = new Date(
+    new Date(scheduledEndTime).getTime() - clockOutGraceMinutes * 60 * 1000,
+  );
+
+  return clockOutAt < earlyCheckoutCutoff ? "left_early" : "completed";
+};
+
+const syncScheduleAttendanceOutcome = async ({
+  tenantId,
+  scheduleId,
+  clockOutAt,
+  clockOutGraceMinutes,
+}) => {
+  if (!scheduleId || !clockOutAt) {
+    return { attendanceOutcome: "completed", schedule: null };
+  }
+
+  const schedule = await Schedule.findOne({
+    _id: scheduleId,
+    tenantId,
+    status: { $ne: "call_out" },
+  }).select("endTime");
+
+  if (!schedule) {
+    return { attendanceOutcome: "completed", schedule: null };
+  }
+
+  const attendanceOutcome = getAttendanceOutcomeForClockOut({
+    scheduledEndTime: schedule.endTime,
+    clockOutAt,
+    clockOutGraceMinutes,
+  });
+
+  await Schedule.updateOne(
+    {
+      _id: scheduleId,
+      tenantId,
+      status: { $ne: "call_out" },
+    },
+    {
+      $set: {
+        status: attendanceOutcome,
+        ...(attendanceOutcome === "left_early"
+          ? { "meta.leftEarlyAt": clockOutAt, "meta.completedAt": null }
+          : { "meta.completedAt": clockOutAt, "meta.leftEarlyAt": null }),
+      },
+    },
+  );
+
+  return { attendanceOutcome, schedule };
+};
+
 const findScheduleForClockAction = async ({
   tenantId,
   staffId,
@@ -301,6 +360,7 @@ exports.clockIn = async (req, res, next) => {
       scheduleId: schedule ? schedule._id : null,
       clockInAt,
       mode: config.mode,
+      attendanceOutcome: "in_progress",
       source: ["mobile", "web", "admin"].includes(req.body.source)
         ? req.body.source
         : "mobile",
@@ -491,45 +551,24 @@ exports.clockOut = async (req, res, next) => {
 
     entry.totals = computeTotals(entry, config.roundingMinutes);
 
+    let attendanceOutcome = "completed";
+    if (entry.scheduleId) {
+      const syncResult = await syncScheduleAttendanceOutcome({
+        tenantId: req.tenantId,
+        scheduleId: entry.scheduleId,
+        clockOutAt,
+        clockOutGraceMinutes: config.clockOutGraceMinutes,
+      });
+      attendanceOutcome = syncResult.attendanceOutcome;
+    }
+
+    entry.attendanceOutcome = attendanceOutcome;
+
     if (config.mode === "qr") {
       entry.qrScan = {
         tokenId: qrPayload?.tokenId || entry.qrScan?.tokenId || null,
         scannedAt: new Date(),
       };
-    }
-
-    if (entry.scheduleId) {
-      const schedule = await Schedule.findOne({
-        _id: entry.scheduleId,
-        tenantId: req.tenantId,
-      }).select("endTime");
-
-      const scheduledEndTime = schedule ? new Date(schedule.endTime) : null;
-      const earlyCheckoutCutoff = scheduledEndTime
-        ? new Date(
-            scheduledEndTime.getTime() -
-              config.clockOutGraceMinutes * 60 * 1000,
-          )
-        : null;
-      const leftEarly = earlyCheckoutCutoff
-        ? clockOutAt < earlyCheckoutCutoff
-        : false;
-
-      await Schedule.findOneAndUpdate(
-        {
-          _id: entry.scheduleId,
-          tenantId: req.tenantId,
-          status: { $ne: "call_out" },
-        },
-        {
-          $set: {
-            status: leftEarly ? "left_early" : "completed",
-            ...(leftEarly
-              ? { "meta.leftEarlyAt": clockOutAt }
-              : { "meta.completedAt": clockOutAt }),
-          },
-        },
-      );
     }
 
     await entry.save();
@@ -677,6 +716,22 @@ exports.adjustTimeEntry = async (req, res, next) => {
     entry.adjustedBy = req.user._id;
     entry.adjustedAt = new Date();
     entry.totals = computeTotals(entry, config.roundingMinutes);
+
+    if (entry.clockOutAt) {
+      if (entry.scheduleId) {
+        const syncResult = await syncScheduleAttendanceOutcome({
+          tenantId: req.tenantId,
+          scheduleId: entry.scheduleId,
+          clockOutAt: entry.clockOutAt,
+          clockOutGraceMinutes: config.clockOutGraceMinutes,
+        });
+        entry.attendanceOutcome = syncResult.attendanceOutcome;
+      } else {
+        entry.attendanceOutcome = "completed";
+      }
+    } else {
+      entry.attendanceOutcome = "in_progress";
+    }
 
     await entry.save();
 

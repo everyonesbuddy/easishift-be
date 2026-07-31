@@ -7,6 +7,10 @@ const cron = require("node-cron");
 const { sendPendingReminders } = require("./utils/scheduleJobs");
 const FacilityPreferences = require("./models/facilityPreferencesModel");
 const Schedule = require("./models/scheduleModel");
+const TimeEntry = require("./models/timeEntryModel");
+const {
+  getAttendanceOutcomeForClockOut,
+} = require("./utils/timeTrackingAttendanceUtils");
 const errorHandler = require("./middleware/errorMiddleware");
 
 // Routers
@@ -107,7 +111,9 @@ cron.schedule("0 */2 * * *", async () => {
         .select("tenantId")
         .lean(),
       FacilityPreferences.find({})
-        .select("tenantId timeTracking.enabled")
+        .select(
+          "tenantId timeTracking.enabled timeTracking.clockOutGraceMinutes",
+        )
         .lean(),
     ]);
 
@@ -115,6 +121,21 @@ cron.schedule("0 */2 * * *", async () => {
       facilityPrefs
         .filter((prefs) => prefs?.timeTracking?.enabled)
         .map((prefs) => String(prefs.tenantId)),
+    );
+    const clockOutGraceMinutesByTenant = new Map(
+      facilityPrefs
+        .filter((prefs) => prefs?.timeTracking?.enabled)
+        .map((prefs) => {
+          const graceMinutes = Number(
+            prefs?.timeTracking?.clockOutGraceMinutes,
+          );
+          return [
+            String(prefs.tenantId),
+            Number.isFinite(graceMinutes) && graceMinutes >= 0
+              ? graceMinutes
+              : 30,
+          ];
+        }),
     );
 
     const noShowScheduleIds = [];
@@ -142,6 +163,61 @@ cron.schedule("0 */2 * * *", async () => {
       },
       { $set: { status: "completed", "meta.completedAt": now } },
     );
+
+    const enabledTenantObjectIds = facilityPrefs
+      .filter((prefs) => prefs?.timeTracking?.enabled)
+      .map((prefs) => prefs.tenantId);
+
+    const overdueTimeEntries = await TimeEntry.find({
+      tenantId: { $in: enabledTenantObjectIds },
+      status: "in_progress",
+      clockInAt: { $lte: now },
+    })
+      .select("_id tenantId scheduleId")
+      .lean();
+
+    if (overdueTimeEntries.length) {
+      const scheduleIds = overdueTimeEntries
+        .map((entry) => entry.scheduleId)
+        .filter(Boolean);
+      const schedules = await Schedule.find({
+        _id: { $in: scheduleIds },
+      })
+        .select("_id endTime tenantId")
+        .lean();
+      const scheduleById = new Map(
+        schedules.map((schedule) => [String(schedule._id), schedule]),
+      );
+
+      const bulkOps = overdueTimeEntries.map((entry) => {
+        const schedule = entry.scheduleId
+          ? scheduleById.get(String(entry.scheduleId))
+          : null;
+        const graceMinutes = clockOutGraceMinutesByTenant.get(
+          String(entry.tenantId),
+        );
+        const attendanceOutcome = getAttendanceOutcomeForClockOut({
+          scheduledEndTime: schedule?.endTime,
+          clockOutAt: now,
+          clockOutGraceMinutes: graceMinutes,
+        });
+
+        return {
+          updateOne: {
+            filter: { _id: entry._id, status: "in_progress" },
+            update: {
+              $set: {
+                clockOutAt: now,
+                status: "completed",
+                attendanceOutcome,
+              },
+            },
+          },
+        };
+      });
+
+      await TimeEntry.bulkWrite(bulkOps);
+    }
 
     const noShowCount =
       noShowResult.modifiedCount !== undefined

@@ -4,6 +4,9 @@ const crypto = require("crypto");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Schedule = require("../models/scheduleModel");
 const TimeEntry = require("../models/timeEntryModel");
+const {
+  getAttendanceOutcomeForClockOut,
+} = require("../utils/timeTrackingAttendanceUtils");
 
 const DEFAULT_TIME_TRACKING = {
   enabled: false,
@@ -151,20 +154,6 @@ const rotateFacilityQrToken = async (tenantId) => {
   return { token, version: nextVersion };
 };
 
-const getAttendanceOutcomeForClockOut = ({
-  scheduledEndTime,
-  clockOutAt,
-  clockOutGraceMinutes,
-}) => {
-  if (!scheduledEndTime || !clockOutAt) return "completed";
-
-  const earlyCheckoutCutoff = new Date(
-    new Date(scheduledEndTime).getTime() - clockOutGraceMinutes * 60 * 1000,
-  );
-
-  return clockOutAt < earlyCheckoutCutoff ? "left_early" : "completed";
-};
-
 const syncScheduleAttendanceOutcome = async ({
   tenantId,
   scheduleId,
@@ -208,6 +197,52 @@ const syncScheduleAttendanceOutcome = async ({
   );
 
   return { attendanceOutcome, schedule };
+};
+
+const syncTimeEntryAttendanceOutcome = async ({
+  tenantId,
+  timeEntryId,
+  clockOutAt,
+  clockOutGraceMinutes,
+}) => {
+  if (!timeEntryId || !clockOutAt) {
+    return { attendanceOutcome: "completed" };
+  }
+
+  const entry = await TimeEntry.findOne({
+    _id: timeEntryId,
+    tenantId,
+    status: "in_progress",
+  }).select("scheduleId clockOutAt attendanceOutcome");
+
+  if (!entry) {
+    return { attendanceOutcome: "completed" };
+  }
+
+  let attendanceOutcome = "completed";
+
+  if (entry.scheduleId) {
+    const syncResult = await syncScheduleAttendanceOutcome({
+      tenantId,
+      scheduleId: entry.scheduleId,
+      clockOutAt,
+      clockOutGraceMinutes,
+    });
+    attendanceOutcome = syncResult.attendanceOutcome;
+  }
+
+  await TimeEntry.updateOne(
+    { _id: timeEntryId, tenantId, status: "in_progress" },
+    {
+      $set: {
+        clockOutAt,
+        status: "completed",
+        attendanceOutcome,
+      },
+    },
+  );
+
+  return { attendanceOutcome };
 };
 
 const findScheduleForClockAction = async ({

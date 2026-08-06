@@ -11,7 +11,6 @@ const {
 const DEFAULT_TIME_TRACKING = {
   enabled: false,
   mode: "open",
-  requireScheduleMatch: true,
   clockInGraceMinutes: 15,
   clockOutGraceMinutes: 30,
   roundingMinutes: 0,
@@ -54,10 +53,8 @@ const normalizeTimeTrackingConfig = (prefs) => {
     mode: ["open", "qr"].includes(configured.mode)
       ? configured.mode
       : DEFAULT_TIME_TRACKING.mode,
-    requireScheduleMatch:
-      configured.requireScheduleMatch !== undefined
-        ? Boolean(configured.requireScheduleMatch)
-        : DEFAULT_TIME_TRACKING.requireScheduleMatch,
+    // Schedule matching is always enforced for clock-in.
+    requireScheduleMatch: true,
     clockInGraceMinutes: clampPositiveMinutes(
       configured.clockInGraceMinutes,
       DEFAULT_TIME_TRACKING.clockInGraceMinutes,
@@ -110,7 +107,13 @@ const verifyQrToken = (token, config) => {
     return { ok: false, message: "Invalid QR token" };
   }
 
-  return { ok: true, payload: { tokenVersion: config.qrTokenVersion ?? 0 } };
+  return {
+    ok: true,
+    payload: {
+      tokenVersion: config.qrTokenVersion ?? 0,
+      tokenId: String(config.qrTokenVersion ?? 0),
+    },
+  };
 };
 
 const requireQrTokenWhenNeeded = (config, qrToken, res) => {
@@ -370,23 +373,20 @@ exports.clockIn = async (req, res, next) => {
     const qrPayload = requireQrTokenWhenNeeded(config, req.body.qrToken, res);
     if (qrPayload === false) return;
 
-    let schedule = null;
-    if (config.requireScheduleMatch) {
-      schedule = await findScheduleForClockAction({
-        tenantId: req.tenantId,
-        staffId: req.user._id,
-        at: clockInAt,
-        scheduleId: req.body.scheduleId,
-        clockInGraceMinutes: config.clockInGraceMinutes,
-        clockOutGraceMinutes: config.clockOutGraceMinutes,
-      });
+    const schedule = await findScheduleForClockAction({
+      tenantId: req.tenantId,
+      staffId: req.user._id,
+      at: clockInAt,
+      scheduleId: req.body.scheduleId,
+      clockInGraceMinutes: config.clockInGraceMinutes,
+      clockOutGraceMinutes: config.clockOutGraceMinutes,
+    });
 
-      if (!schedule) {
-        return res.status(409).json({
-          message:
-            "No matching scheduled shift found within configured grace window",
-        });
-      }
+    if (!schedule) {
+      return res.status(409).json({
+        message:
+          "No matching scheduled shift found within configured grace window",
+      });
     }
 
     const created = await TimeEntry.create({

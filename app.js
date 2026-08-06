@@ -156,7 +156,14 @@ cron.schedule("0 */2 * * *", async () => {
         )
       : { modifiedCount: 0, nModified: 0 };
 
-    const completedResult = await Schedule.updateMany(
+    const completedScheduledResult = completedScheduleIds.length
+      ? await Schedule.updateMany(
+          { _id: { $in: completedScheduleIds } },
+          { $set: { status: "completed", "meta.completedAt": now } },
+        )
+      : { modifiedCount: 0, nModified: 0 };
+
+    const completedInProgressResult = await Schedule.updateMany(
       {
         status: "in_progress",
         endTime: { $lt: now },
@@ -189,7 +196,16 @@ cron.schedule("0 */2 * * *", async () => {
         schedules.map((schedule) => [String(schedule._id), schedule]),
       );
 
-      const bulkOps = overdueTimeEntries.map((entry) => {
+      const overdueEntriesWithEndedSchedules = overdueTimeEntries.filter(
+        (entry) => {
+          if (!entry.scheduleId) return false;
+          const schedule = scheduleById.get(String(entry.scheduleId));
+          if (!schedule?.endTime) return false;
+          return new Date(schedule.endTime).getTime() <= now.getTime();
+        },
+      );
+
+      const bulkOps = overdueEntriesWithEndedSchedules.map((entry) => {
         const schedule = entry.scheduleId
           ? scheduleById.get(String(entry.scheduleId))
           : null;
@@ -216,17 +232,24 @@ cron.schedule("0 */2 * * *", async () => {
         };
       });
 
-      await TimeEntry.bulkWrite(bulkOps);
+      if (bulkOps.length) {
+        await TimeEntry.bulkWrite(bulkOps);
+      }
     }
 
     const noShowCount =
       noShowResult.modifiedCount !== undefined
         ? noShowResult.modifiedCount
         : noShowResult.nModified;
-    const completedCount =
-      completedResult.modifiedCount !== undefined
-        ? completedResult.modifiedCount
-        : completedResult.nModified;
+    const completedScheduledCount =
+      completedScheduledResult.modifiedCount !== undefined
+        ? completedScheduledResult.modifiedCount
+        : completedScheduledResult.nModified;
+    const completedInProgressCount =
+      completedInProgressResult.modifiedCount !== undefined
+        ? completedInProgressResult.modifiedCount
+        : completedInProgressResult.nModified;
+    const completedCount = completedScheduledCount + completedInProgressCount;
 
     console.log(
       `✅ Updated ${noShowCount} schedule(s) to 'no_show' and ${completedCount} schedule(s) to 'completed'`,

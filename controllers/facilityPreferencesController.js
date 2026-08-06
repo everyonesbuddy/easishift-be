@@ -11,7 +11,7 @@ const buildLimitedFacilityPreferencesView = (prefs) => {
     timeTracking: {
       enabled: Boolean(timeTracking.enabled),
       mode: timeTracking.mode || "open",
-      requireScheduleMatch: Boolean(timeTracking.requireScheduleMatch),
+      requireScheduleMatch: true,
       clockInGraceMinutes: timeTracking.clockInGraceMinutes ?? 15,
       clockOutGraceMinutes: timeTracking.clockOutGraceMinutes ?? 30,
       roundingMinutes: timeTracking.roundingMinutes ?? 0,
@@ -52,6 +52,30 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       updatedAt: _u,
       ...updates
     } = req.body;
+
+    const hasNestedTimeTrackingUpdate =
+      updates.timeTracking && typeof updates.timeTracking === "object";
+
+    if (hasNestedTimeTrackingUpdate) {
+      updates.timeTracking = {
+        ...updates.timeTracking,
+        requireScheduleMatch: true,
+      };
+    }
+
+    // Also guard dot-notation payloads from clients.
+    if (
+      Object.prototype.hasOwnProperty.call(
+        updates,
+        "timeTracking.requireScheduleMatch",
+      )
+    ) {
+      if (hasNestedTimeTrackingUpdate) {
+        delete updates["timeTracking.requireScheduleMatch"];
+      } else {
+        updates["timeTracking.requireScheduleMatch"] = true;
+      }
+    }
 
     const prefs = await FacilityPreferences.findOneAndUpdate(
       { tenantId: req.tenantId },

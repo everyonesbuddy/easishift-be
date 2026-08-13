@@ -66,10 +66,7 @@ const normalizeTimeTrackingConfig = (prefs) => {
     roundingMinutes: [0, 5, 6, 10, 15].includes(configured.roundingMinutes)
       ? configured.roundingMinutes
       : DEFAULT_TIME_TRACKING.roundingMinutes,
-    autoCloseOpenBreakOnClockOut:
-      configured.autoCloseOpenBreakOnClockOut !== undefined
-        ? Boolean(configured.autoCloseOpenBreakOnClockOut)
-        : DEFAULT_TIME_TRACKING.autoCloseOpenBreakOnClockOut,
+    autoCloseOpenBreakOnClockOut: true,
     qrTokenHash: configured.qrTokenHash || null,
     qrTokenVersion: configured.qrTokenVersion ?? 0,
   };

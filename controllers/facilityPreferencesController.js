@@ -15,8 +15,7 @@ const buildLimitedFacilityPreferencesView = (prefs) => {
       clockInGraceMinutes: timeTracking.clockInGraceMinutes ?? 15,
       clockOutGraceMinutes: timeTracking.clockOutGraceMinutes ?? 30,
       roundingMinutes: timeTracking.roundingMinutes ?? 0,
-      autoCloseOpenBreakOnClockOut:
-        timeTracking.autoCloseOpenBreakOnClockOut ?? true,
+      autoCloseOpenBreakOnClockOut: true,
     },
   };
 };
@@ -60,6 +59,7 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       updates.timeTracking = {
         ...updates.timeTracking,
         requireScheduleMatch: true,
+        autoCloseOpenBreakOnClockOut: true,
       };
     }
 
@@ -74,6 +74,19 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
         delete updates["timeTracking.requireScheduleMatch"];
       } else {
         updates["timeTracking.requireScheduleMatch"] = true;
+      }
+    }
+
+    if (
+      Object.prototype.hasOwnProperty.call(
+        updates,
+        "timeTracking.autoCloseOpenBreakOnClockOut",
+      )
+    ) {
+      if (hasNestedTimeTrackingUpdate) {
+        delete updates["timeTracking.autoCloseOpenBreakOnClockOut"];
+      } else {
+        updates["timeTracking.autoCloseOpenBreakOnClockOut"] = true;
       }
     }
 

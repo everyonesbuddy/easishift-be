@@ -15,6 +15,7 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // Only super-admins (you) can access this directly
 router
@@ -25,6 +26,6 @@ router
 router
   .route("/:id")
   .get(auth, getTenantById)
-  .delete(auth, restrictTo("admin", "superadmin"), deleteTenantAccount);
+  .delete(auth, requirePermission("tenant.delete"), deleteTenantAccount);
 
 module.exports = router;

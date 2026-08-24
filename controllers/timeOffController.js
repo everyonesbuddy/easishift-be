@@ -4,6 +4,7 @@ const User = require("../models/userModel");
 const Preferences = require("../models/preferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
+const { hasPermission } = require("../config/authorization");
 
 const buildE164Number = (countryCode, phone) => {
   if (!phone) return null;
@@ -50,7 +51,12 @@ exports.requestTimeOff = async (req, res, next) => {
     try {
       const admins = await User.find({
         tenantId: req.tenantId,
-        role: "admin",
+        $or: [
+          { roles: "admin" },
+          { role: "admin" },
+          { roles: "owner" },
+          { role: "owner" },
+        ],
       }).select("name email userPhone userPhoneCountryCode");
       if (admins && admins.length) {
         const recipients = admins.map((admin) => admin.email).filter(Boolean);
@@ -122,7 +128,9 @@ exports.getTimeOff = async (req, res, next) => {
     const filter = { tenantId: req.tenantId };
     if (req.query.staffId) filter.staffId = req.query.staffId;
     // if not admin, only return own
-    if (req.user.role !== "admin") filter.staffId = req.user._id;
+    if (!hasPermission(req.user, "timeoff.review")) {
+      filter.staffId = req.user._id;
+    }
 
     const list = await TimeOff.find(filter).populate("staffId", "name email");
     res.json(list);

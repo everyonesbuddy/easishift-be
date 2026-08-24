@@ -1,4 +1,5 @@
 const FacilityPreferences = require("../models/facilityPreferencesModel");
+const { hasPermission } = require("../config/authorization");
 
 const buildLimitedFacilityPreferencesView = (prefs) => {
   if (!prefs) return null;
@@ -20,7 +21,28 @@ const buildLimitedFacilityPreferencesView = (prefs) => {
   };
 };
 
-// Admin gets full config. Non-admin users receive a limited read-only view.
+const buildSchedulingFacilityPreferencesView = (prefs) => {
+  if (!prefs) return null;
+
+  return {
+    tenantId: prefs.tenantId,
+    facilityTimezone: prefs.facilityTimezone,
+    roleFamilies: prefs.roleFamilies || [],
+    unitAreas: prefs.unitAreas || [],
+    shiftTypes: prefs.shiftTypes || [],
+    shiftTypeDefinitions: prefs.shiftTypeDefinitions || [],
+    certificationTags: prefs.certificationTags || [],
+    schedulingPattern: prefs.schedulingPattern || "balance",
+    weeklyOvertimeThresholdHours: prefs.weeklyOvertimeThresholdHours ?? 40,
+    fairnessLookbackDays: prefs.fairnessLookbackDays ?? 28,
+    timeTracking: {
+      enabled: Boolean(prefs.timeTracking?.enabled),
+      mode: prefs.timeTracking?.mode || "open",
+    },
+  };
+};
+
+// Managers get the full config. Schedulers get scheduling fields only.
 exports.getFacilityPreferences = async (req, res, next) => {
   try {
     let prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId });
@@ -30,7 +52,15 @@ exports.getFacilityPreferences = async (req, res, next) => {
       prefs = new FacilityPreferences({ tenantId: req.tenantId });
     }
 
-    if (req.user && req.user.role !== "admin") {
+    if (req.user && hasPermission(req.user, "facility_preferences.manage")) {
+      return res.json(prefs);
+    }
+
+    if (req.user && hasPermission(req.user, "facility_preferences.view")) {
+      return res.json(buildSchedulingFacilityPreferencesView(prefs));
+    }
+
+    if (req.user) {
       return res.json(buildLimitedFacilityPreferencesView(prefs));
     }
 

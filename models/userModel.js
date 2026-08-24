@@ -55,6 +55,12 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    roles: {
+      type: [String],
+      default: [],
+      lowercase: true,
+      trim: true,
+    },
     passwordResetToken: {
       type: String,
       select: false,

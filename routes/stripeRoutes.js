@@ -9,13 +9,13 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // Stripe needs the raw body for webhook signature verification. Keep webhook public.
 router.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
-  handleWebhook
+  handleWebhook,
 );
 
 // Protected routes: require authentication + tenant context
@@ -24,8 +24,8 @@ router.post(
   "/create-checkout-session",
   auth,
   tenant,
-  restrictTo("admin"),
-  createCheckoutSession
+  requirePermission("billing.manage"),
+  createCheckoutSession,
 );
 
 // Cancel subscription (admin)
@@ -33,8 +33,8 @@ router.post(
   "/cancel-subscription",
   auth,
   tenant,
-  restrictTo("admin"),
-  cancelSubscription
+  requirePermission("billing.manage"),
+  cancelSubscription,
 );
 
 module.exports = router;

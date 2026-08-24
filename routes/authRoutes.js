@@ -32,6 +32,7 @@ const {
   loginStaff,
   changePassword,
   forgotPassword,
+  sendPasswordReset,
   resetPassword,
   getAllUsers,
   getUserById,
@@ -41,18 +42,24 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // Tenant signup (creates hospital + admin user)
 router.post("/signup/tenant", registerTenant);
 
 // Staff signup (admin only)
-router.post("/signup/staff", auth, tenant, restrictTo("admin"), registerStaff);
+router.post(
+  "/signup/staff",
+  auth,
+  tenant,
+  requirePermission("staff.manage"),
+  registerStaff,
+);
 router.post(
   "/signup/staff/bulk",
   auth,
   tenant,
-  restrictTo("admin"),
+  requirePermission("staff.manage"),
   csvUpload,
   bulkRegisterStaff,
 );
@@ -66,17 +73,36 @@ router.patch("/change-password", auth, changePassword);
 // Forgot/reset password
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword);
+router.post(
+  "/users/:id/send-password-reset",
+  auth,
+  tenant,
+  requirePermission("staff.reset_password"),
+  sendPasswordReset,
+);
 
 // Get all users (optionally filter by role)
-router.get("/users", auth, tenant, getAllUsers);
+router.get(
+  "/users",
+  auth,
+  tenant,
+  requirePermission("staff.view"),
+  getAllUsers,
+);
 
 // Get single user by ID
-router.get("/:id", auth, tenant, getUserById);
+router.get("/:id", auth, tenant, requirePermission("staff.view"), getUserById);
 
 // Update user
-router.put("/:id", auth, tenant, updateUser);
+router.put("/:id", auth, tenant, requirePermission("staff.manage"), updateUser);
 
 // Delete user or own account
-router.delete("/:id", auth, tenant, deleteUser);
+router.delete(
+  "/:id",
+  auth,
+  tenant,
+  requirePermission("staff.manage"),
+  deleteUser,
+);
 
 module.exports = router;

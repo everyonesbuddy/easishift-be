@@ -11,10 +11,18 @@ const { hasConflict } = require("../utils/scheduleUtils");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 const mongoose = require("mongoose");
+const {
+  SYSTEM_ROLES,
+  getSystemRoles,
+  getUserRoles,
+  hasPermission,
+  normalizeRole,
+} = require("../config/authorization");
 
 const HOURS_TO_MINUTES = 60;
 const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
 const SCHEDULE_SYSTEM_ROLES = new Set(["user", "staff", "other"]);
+const PICKUP_ACTIVE_STATUSES = ["scheduled", "in_progress"];
 
 const DEFAULT_FACILITY_POLICY = Object.freeze({
   schedulingPattern: "balance",
@@ -75,6 +83,33 @@ const normalizeRoleFamily = (role) => {
   }
 
   return value;
+};
+
+const getStaffFacilityRoles = (staff, facilityConfig) => {
+  const configuredRoles = new Set(
+    (facilityConfig?.roleFamilies || []).map(normalizeRole),
+  );
+  const roles = getUserRoles(staff);
+  const facilityRoles = roles.filter((role) => configuredRoles.has(role));
+
+  if (facilityRoles.length) return facilityRoles;
+
+  const legacyRole = normalizeRole(staff?.role);
+  return legacyRole && !SYSTEM_ROLES.has(legacyRole) ? [legacyRole] : [];
+};
+
+const isStaffRoleCompatible = (staff, coverageRole, facilityConfig) =>
+  getStaffFacilityRoles(staff, facilityConfig).some((role) =>
+    isRoleCompatible(role, coverageRole),
+  );
+
+const getSchedulingCandidateTier = (staff, facilityConfig) => {
+  const hasSystemRole = getSystemRoles(staff).length > 0;
+  const hasFacilityRole =
+    getStaffFacilityRoles(staff, facilityConfig).length > 0;
+
+  if (!hasFacilityRole) return null;
+  return hasSystemRole ? 2 : 1;
 };
 
 const isRoleCompatible = (staffRole, coverageRole) =>
@@ -268,7 +303,7 @@ const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
   const coverageCerts = getCoverageCertificationTags(coverage);
 
   return (
-    isRoleCompatible(staff.role, coverage.role) &&
+    isStaffRoleCompatible(staff, coverage.role, facilityConfig) &&
     isAreaCompatible(staffAreas, coverageArea, hasAreaRestrictions) &&
     isShiftTypeCompatible(
       staffShiftTypes,
@@ -518,6 +553,7 @@ const buildRankingMetrics = ({
   coverageMinutes,
   coverageId,
   facilityPolicy,
+  facilityConfig,
   staffPreferences,
   weeklyWorkload,
   recentWorkload,
@@ -567,6 +603,9 @@ const buildRankingMetrics = ({
     staff,
     coverage,
   });
+  const candidateTier = getSchedulingCandidateTier(staff, {
+    roleFamilies: facilityConfig?.roleFamilies || [],
+  });
 
   return {
     weekKey,
@@ -581,11 +620,16 @@ const buildRankingMetrics = ({
     nightShiftCount,
     recentMinutes,
     tagSpecificityScore,
+    candidateTier,
     tieBreaker,
   };
 };
 
 const compareRankingMetrics = (a, b) => {
+  if (a.candidateTier !== b.candidateTier) {
+    return a.candidateTier - b.candidateTier;
+  }
+
   if (a.tagSpecificityScore !== b.tagSpecificityScore) {
     return b.tagSpecificityScore - a.tagSpecificityScore;
   }
@@ -777,7 +821,12 @@ const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
   const excluded = excludeUserIds.map((id) => id.toString());
   return User.find({
     tenantId,
-    role: "admin",
+    $or: [
+      { roles: "admin" },
+      { role: "admin" },
+      { roles: "owner" },
+      { role: "owner" },
+    ],
     _id: { $nin: excluded },
   });
 };
@@ -894,6 +943,191 @@ const ensureDraftSchedule = async ({ draftId, tenantId }) => {
   if (!["draft", "partially_published"].includes(draft.status)) return null;
 
   return draft;
+};
+
+const buildCoverageMatchKey = (item) =>
+  [
+    item.role || "",
+    item.unitArea || "",
+    item.shiftType || "",
+    item.shiftTag || "",
+    new Date(item.startTime).toISOString(),
+    new Date(item.endTime).toISOString(),
+  ].join("-");
+
+const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
+  const now = new Date();
+  const coverages = await Coverage.find({
+    tenantId,
+    startTime: { $gt: now },
+  })
+    .sort({ date: 1, startTime: 1 })
+    .lean();
+
+  if (!coverages.length) return [];
+
+  const activeDrafts = await AutoScheduleDraft.find({
+    tenantId,
+    status: { $in: ["draft", "partially_published"] },
+    coverageIds: { $in: coverages.map((coverage) => coverage._id) },
+  })
+    .select("coverageIds")
+    .lean();
+  const draftedCoverageIds = new Set(
+    activeDrafts.flatMap((draft) =>
+      (draft.coverageIds || []).map((coverageId) => coverageId.toString()),
+    ),
+  );
+
+  const eligibleCoverages = coverages.filter(
+    (coverage) =>
+      !draftedCoverageIds.has(coverage._id.toString()) &&
+      isStaffCompatibleWithCoverage({
+        staff,
+        coverage,
+        facilityConfig,
+      }),
+  );
+  if (!eligibleCoverages.length) return [];
+
+  const schedules = await Schedule.find({
+    tenantId,
+    status: { $in: PICKUP_ACTIVE_STATUSES },
+    $or: eligibleCoverages.map((coverage) => ({
+      role: coverage.role,
+      unitArea: coverage.unitArea,
+      shiftType: coverage.shiftType,
+      shiftTag: coverage.shiftTag,
+      startTime: coverage.startTime,
+      endTime: coverage.endTime,
+    })),
+  })
+    .select("staffId role unitArea shiftType shiftTag startTime endTime")
+    .lean();
+
+  const assignedCountByKey = new Map();
+  schedules.forEach((schedule) => {
+    const key = buildCoverageMatchKey(schedule);
+    assignedCountByKey.set(key, (assignedCountByKey.get(key) || 0) + 1);
+  });
+
+  return eligibleCoverages
+    .map((coverage) => {
+      const assignedCount =
+        assignedCountByKey.get(buildCoverageMatchKey(coverage)) || 0;
+      return {
+        ...coverage,
+        assignedCount,
+        remaining: Math.max(0, coverage.requiredCount - assignedCount),
+      };
+    })
+    .filter((coverage) => coverage.remaining > 0);
+};
+
+exports.getOpenCoverageForMe = async (req, res, next) => {
+  try {
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    }).lean();
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+    const coverages = await getOpenCoverageForStaff({
+      tenantId: req.tenantId,
+      staff: req.user,
+      facilityConfig,
+    });
+
+    res.json(coverages);
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.pickUpSchedule = async (req, res, next) => {
+  try {
+    const { coverageId } = req.body || {};
+    if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
+      return res.status(400).json({ message: "Valid coverageId is required" });
+    }
+
+    const [coverage, facilityPreferences] = await Promise.all([
+      Coverage.findOne({ _id: coverageId, tenantId: req.tenantId }),
+      FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
+    ]);
+    if (!coverage) {
+      return res.status(404).json({ message: "Coverage not found" });
+    }
+    if (coverage.startTime <= new Date()) {
+      return res
+        .status(400)
+        .json({ message: "Only future shifts can be picked up" });
+    }
+
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+    const openCoverages = await getOpenCoverageForStaff({
+      tenantId: req.tenantId,
+      staff: req.user,
+      facilityConfig,
+    });
+    const openCoverage = openCoverages.find(
+      (item) => item._id.toString() === coverage._id.toString(),
+    );
+    if (!openCoverage) {
+      return res.status(409).json({
+        message: "This shift is no longer available for pickup",
+      });
+    }
+
+    const timeOff = await TimeOff.findOne({
+      tenantId: req.tenantId,
+      staffId: req.user._id,
+      status: "approved",
+      $or: [
+        {
+          start: { $lte: coverage.endTime },
+          end: { $gte: coverage.startTime },
+        },
+        {
+          startDate: { $lte: coverage.endTime },
+          endDate: { $gte: coverage.startTime },
+        },
+      ],
+    });
+    if (timeOff) {
+      return res.status(409).json({
+        message: "You have approved time off overlapping this shift",
+      });
+    }
+
+    const conflict = await hasConflict({
+      tenantId: req.tenantId,
+      staffId: req.user._id,
+      startTime: coverage.startTime,
+      endTime: coverage.endTime,
+    });
+    if (conflict) {
+      return res.status(409).json({ message: "Schedule conflict", conflict });
+    }
+
+    const schedule = await Schedule.create({
+      tenantId: req.tenantId,
+      staffId: req.user._id,
+      role: coverage.role,
+      unitArea: coverage.unitArea,
+      shiftType: coverage.shiftType,
+      shiftTag: coverage.shiftTag,
+      certificationTags: coverage.requiredCertificationTags || [],
+      startTime: coverage.startTime,
+      endTime: coverage.endTime,
+      timezone: "UTC",
+      notes: "Picked up by staff member",
+      status: "scheduled",
+      meta: { createdBy: req.user._id, source: "staff_pickup" },
+    });
+
+    res.status(201).json({ message: "Shift picked up successfully", schedule });
+  } catch (err) {
+    next(err);
+  }
 };
 
 // AUTO-GENERATE DRAFT SCHEDULE FOR SELECTED COVERAGES
@@ -1039,7 +1273,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       sms: { sent: 0, failed: 0 },
     };
     const tenantUsers = await User.find({ tenantId }).select(
-      "name email role allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
+      "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
     );
 
     // 4) LOOP THROUGH COVERAGES
@@ -1247,6 +1481,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
               coverageMinutes,
               coverageId: cov._id,
               facilityPolicy,
+              facilityConfig,
               staffPreferences: prefMap[staffId],
               weeklyWorkload,
               recentWorkload,
@@ -1876,7 +2111,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
           endTime: { $gte: fairnessWindowStart },
         }).select("staffId startTime endTime"),
         User.find({ tenantId }).select(
-          "name email role allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
+          "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
         ),
       ]);
 
@@ -2074,6 +2309,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
             coverageMinutes,
             coverageId: coverageTarget._id,
             facilityPolicy,
+            facilityConfig,
             staffPreferences: preferenceMap[staffId],
             weeklyWorkload,
             recentWorkload,
@@ -2309,7 +2545,10 @@ exports.requestShiftSwap = async (req, res, next) => {
     const requesterId = schedule.staffId.toString();
     const actorId = req.user._id.toString();
 
-    if (req.user.role !== "admin" && actorId !== requesterId) {
+    if (
+      !hasPermission(req.user, "schedule.manage") &&
+      actorId !== requesterId
+    ) {
       return res.status(403).json({
         message: "Only the assigned staff member (or admin) can request a swap",
       });
@@ -2429,7 +2668,7 @@ exports.getShiftSwapRequests = async (req, res, next) => {
       filter.status = status;
     }
 
-    if (req.user.role !== "admin") {
+    if (!hasPermission(req.user, "schedule.manage")) {
       filter.$or = [
         { requesterStaffId: req.user._id },
         { receiverStaffId: req.user._id },
@@ -2508,7 +2747,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
     let scheduleUpdated = false;
 
     if (swapRequest.status === "pending_admin") {
-      if (req.user.role !== "admin") {
+      if (!hasPermission(req.user, "schedule.manage")) {
         return res.status(403).json({
           message:
             "Only admins can approve or deny swap requests at this stage",
@@ -2557,7 +2796,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
     } else if (swapRequest.status === "pending_receiver") {
       const isReceiver =
         swapRequest.receiverStaffId.toString() === req.user._id.toString();
-      if (!isReceiver && req.user.role !== "admin") {
+      if (!isReceiver && !hasPermission(req.user, "schedule.manage")) {
         return res.status(403).json({
           message:
             "Only the receiving staff member (or admin) can accept or deny at this stage",
@@ -2682,7 +2921,7 @@ exports.createSchedule = async (req, res, next) => {
       });
 
     const staff = await User.findById(staffId).select(
-      "role allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
+      "role roles allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
     );
 
     if (!staff) {
@@ -2712,7 +2951,7 @@ exports.createSchedule = async (req, res, next) => {
       });
     }
 
-    if (!isRoleCompatible(staff.role, schedulePayload.role)) {
+    if (!isStaffRoleCompatible(staff, schedulePayload.role, facilityConfig)) {
       return res.status(400).json({
         message: "Staff role is not compatible with the scheduled role",
       });
@@ -2933,7 +3172,7 @@ exports.updateSchedule = async (req, res, next) => {
       : currentSchedule.certificationTags || [];
 
     const staff = await User.findById(nextStaffId).select(
-      "role allowedAreas allowedShiftTypes certificationTags",
+      "role roles allowedAreas allowedShiftTypes certificationTags",
     );
 
     if (!staff) {
@@ -2951,7 +3190,7 @@ exports.updateSchedule = async (req, res, next) => {
       });
     }
 
-    if (!isRoleCompatible(staff.role, normalizedNextRole)) {
+    if (!isStaffRoleCompatible(staff, normalizedNextRole, facilityConfig)) {
       return res.status(400).json({
         message: "Staff role is not compatible with this schedule role",
       });
@@ -3062,7 +3301,7 @@ exports.deleteSchedule = async (req, res, next) => {
 // DELETE multiple schedules by ids
 exports.deleteSchedulesByIds = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin") {
+    if (!hasPermission(req.user, "schedule.manage")) {
       return res.status(403).json({ message: "Admins only" });
     }
 

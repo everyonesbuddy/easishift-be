@@ -3,6 +3,7 @@ const Schedule = require("../models/scheduleModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const mongoose = require("mongoose");
 const { DateTime } = require("luxon");
+const { hasPermission } = require("../config/authorization");
 
 // Normalize to UTC midnight
 function normalizeToUTC(date) {
@@ -321,7 +322,7 @@ function buildCoverageMatchKey(item) {
 // CREATE
 exports.createCoverage = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin")
+    if (!hasPermission(req.user, "coverage.manage"))
       return res.status(403).json({ message: "Admins only" });
 
     const { dates, shifts } = req.body;
@@ -589,7 +590,7 @@ exports.getCoverage = async (req, res, next) => {
 // UPDATE
 exports.updateCoverage = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin")
+    if (!hasPermission(req.user, "coverage.manage"))
       return res.status(403).json({ message: "Admins only" });
 
     const id = req.params.id;
@@ -714,7 +715,7 @@ exports.updateCoverage = async (req, res, next) => {
 // DELETE
 exports.deleteCoverage = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin")
+    if (!hasPermission(req.user, "coverage.manage"))
       return res.status(403).json({ message: "Admins only" });
 
     const removed = await Coverage.findOneAndDelete({
@@ -734,7 +735,7 @@ exports.deleteCoverage = async (req, res, next) => {
 // DELETE multiple coverages by ids
 exports.deleteCoveragesByIds = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin")
+    if (!hasPermission(req.user, "coverage.manage"))
       return res.status(403).json({ message: "Admins only" });
 
     const ids = Array.isArray(req.body.ids) ? req.body.ids : null;

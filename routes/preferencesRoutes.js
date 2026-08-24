@@ -10,7 +10,7 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // All preference routes require user auth + tenant context
 router.use(auth);
@@ -32,7 +32,15 @@ router.post("/me", upsertMyPreferences);
  * Admin can view preferences of any staff member
  */
 
-router.get("/:staffId", restrictTo("admin"), getPreferencesForStaff);
-router.post("/:staffId", restrictTo("admin"), upsertPreferencesForStaff);
+router.get(
+  "/:staffId",
+  requirePermission("staff.view"),
+  getPreferencesForStaff,
+);
+router.post(
+  "/:staffId",
+  requirePermission("staff.manage"),
+  upsertPreferencesForStaff,
+);
 
 module.exports = router;

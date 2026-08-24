@@ -1,5 +1,9 @@
 const jwt = require("jsonwebtoken");
 const User = require("../models/userModel");
+const {
+  getEffectivePermissions,
+  getUserRoles,
+} = require("../config/authorization");
 
 module.exports = async (req, res, next) => {
   try {
@@ -20,6 +24,9 @@ module.exports = async (req, res, next) => {
 
     if (!req.user)
       return res.status(401).json({ message: "Invalid authentication" });
+
+    req.user.roles = getUserRoles(req.user);
+    req.user.permissions = getEffectivePermissions(req.user);
 
     next();
   } catch (err) {

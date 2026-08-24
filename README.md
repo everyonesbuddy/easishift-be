@@ -46,7 +46,7 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 ## Current Domain Model
 
 - **Tenant**: organization account, subscription status, seat limits, billing IDs
-- **User**: staff user under tenant with dynamic role (`role`) and optional capability arrays (`allowedAreas`, `allowedShiftTypes`, `certificationTags`)
+- **User**: tenant user with multi-role access (`roles`) and optional capability arrays (`allowedAreas`, `allowedShiftTypes`, `certificationTags`)
 - **Coverage**: required staffing slots by role/date/time and required headcount
 - **Schedule**: assigned shifts per staff member
 - **Preferences**: staff preferred weekdays + notification toggles
@@ -63,16 +63,19 @@ All tenant data is isolated using `tenantId`.
 
 - `authMiddleware`: verifies JWT and attaches `req.user` + `req.tenantId`
 - `tenantMiddleware`: validates tenant exists and attaches `req.tenant`
-- `roleMiddleware`: route-level role restrictions (for example `admin`, `superadmin`)
+- `roleMiddleware`: compatibility role checks and permission-based route restrictions
 
 ### Auth Endpoints
 
-- `POST /api/v1/auth/signup/tenant` - create tenant + initial admin
+- `POST /api/v1/auth/signup/tenant` - create tenant + initial owner
 - `POST /api/v1/auth/signup/staff` - create staff (admin only)
 - `POST /api/v1/auth/login/staff` - staff/admin login
 - `PATCH /api/v1/auth/change-password` - authenticated password change
 - `POST /api/v1/auth/forgot-password` - issue reset token
+- `POST /api/v1/auth/users/:id/send-password-reset` - send a fresh reset link for a tenant user (admin only)
 - `POST /api/v1/auth/reset-password` - reset with token
+- `GET /api/v1/schedules/open-for-me` - list future published open shifts compatible with the current user
+- `POST /api/v1/schedules/pick-up` - claim a future open shift for the current user
 - `GET /api/v1/auth/users` - list tenant users
 - `GET /api/v1/auth/:id` - get user by id
 - `PUT /api/v1/auth/:id` - update user
@@ -87,7 +90,7 @@ All tenant data is isolated using `tenantId`.
 - `GET /api/v1/tenants` - list tenants (`superadmin`)
 - `POST /api/v1/tenants` - create tenant (`superadmin`)
 - `GET /api/v1/tenants/:id` - get single tenant
-- `DELETE /api/v1/tenants/:id` - delete tenant account and all tenant data (`admin` for own tenant, `superadmin` for any tenant)
+- `DELETE /api/v1/tenants/:id` - delete tenant account and all tenant data (owner for own tenant)
 
 ### Schedules
 
@@ -349,9 +352,9 @@ Timezone behavior for scheduling is standardized to UTC in the backend. Any loca
 
 ### Facility Preferences
 
-- `GET /api/v1/facility-preferences` - get current facility scheduling policy (admin gets full config; authenticated non-admin users get a limited read-only view)
-- `POST /api/v1/facility-preferences` - create/update facility scheduling policy (admin)
-- `DELETE /api/v1/facility-preferences/reset` - reset facility scheduling policy to defaults (admin)
+- `GET /api/v1/facility-preferences` - get current facility preferences (admins/owners get full config; schedulers get scheduling fields; other users get a limited view)
+- `POST /api/v1/facility-preferences` - create/update facility scheduling policy (`facility_preferences.manage`)
+- `DELETE /api/v1/facility-preferences/reset` - reset facility scheduling policy to defaults (`facility_preferences.manage`)
 
 Non-admin users receive only a limited subset of facility preferences, primarily the fields needed by the UI to determine whether time tracking is available and how it behaves:
 

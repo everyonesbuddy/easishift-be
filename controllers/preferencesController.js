@@ -1,4 +1,5 @@
 const Preferences = require("../models/preferencesModel");
+const { hasPermission } = require("../config/authorization");
 
 const pickAllowedPreferenceFields = (payload) => ({
   preferredDaysOfWeek: Array.isArray(payload.preferredDaysOfWeek)
@@ -59,7 +60,7 @@ exports.upsertPreferencesForStaff = async (req, res, next) => {
 // ADMIN: View preferences for any staff member
 exports.getPreferencesForStaff = async (req, res, next) => {
   try {
-    if (req.user.role !== "admin")
+    if (!hasPermission(req.user, "staff.view"))
       return res.status(403).json({ message: "Admins only" });
 
     const prefs = await Preferences.findOne({

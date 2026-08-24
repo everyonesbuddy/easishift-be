@@ -9,20 +9,21 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
-// All routes require auth + tenant context + admin role
+// All routes require authentication and tenant context.
 router.use(auth);
 router.use(tenant);
 
 // GET    /api/v1/facility-preferences       — fetch current (or default) config
-//                                           limited view for non-admin users
+//                                           scheduling view for schedulers;
+//                                           limited view for other staff
 router.get("/", getFacilityPreferences);
 
-// Admin-only management actions
+// Admin/owner management actions
 // POST   /api/v1/facility-preferences       — create or update config
 // DELETE /api/v1/facility-preferences/reset — wipe back to defaults
-router.use(restrictTo("admin"));
+router.use(requirePermission("facility_preferences.manage"));
 router.post("/", upsertFacilityPreferences);
 router.delete("/reset", resetFacilityPreferences);
 

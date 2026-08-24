@@ -6,12 +6,16 @@ const summaryCtrl = require("../controllers/summaryController");
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // Must be logged in + tenant-scoped
 router.use(auth, tenant);
 
-router.get("/admin/:adminId", restrictTo("admin"), summaryCtrl.getAdminSummary);
+router.get(
+  "/admin/:adminId",
+  requirePermission("staff.view"),
+  summaryCtrl.getAdminSummary,
+);
 
 router.get("/staff/:staffId", summaryCtrl.getStaffSummary);
 

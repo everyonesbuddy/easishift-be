@@ -14,6 +14,7 @@ const Preferences = require("../models/preferencesModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
+const { hasPermission } = require("../config/authorization");
 
 /**
  * Create a new tenant (used internally or for onboarding)
@@ -66,20 +67,20 @@ exports.deleteTenantAccount = async (req, res, next) => {
   try {
     const targetTenantId = String(req.params.id || "");
     const requesterTenantId = String(req.tenantId || "");
-    const isSuperAdmin = req.user && req.user.role === "superadmin";
-    const isAdmin = req.user && req.user.role === "admin";
+    const canDeleteTenant =
+      req.user && hasPermission(req.user, "tenant.delete");
 
     if (!targetTenantId) {
       return res.status(400).json({ message: "Tenant id is required" });
     }
 
-    if (!isSuperAdmin && !isAdmin) {
+    if (!canDeleteTenant) {
       return res.status(403).json({
         message: "Access denied. Only admin or superadmin can delete account.",
       });
     }
 
-    if (!isSuperAdmin && requesterTenantId !== targetTenantId) {
+    if (requesterTenantId !== targetTenantId) {
       return res.status(403).json({
         message: "Access denied. You can only delete your own tenant account.",
       });

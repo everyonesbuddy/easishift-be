@@ -18,11 +18,13 @@ const {
   requestShiftSwap,
   getShiftSwapRequests,
   respondToShiftSwapRequest,
+  getOpenCoverageForMe,
+  pickUpSchedule,
 } = require("../controllers/scheduleController");
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware"); // optional
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 router.use(auth, tenant);
 
@@ -30,32 +32,50 @@ router.use(auth, tenant);
 router.get("/", getSchedules);
 
 // POST /api/v1/schedules  (admin only ideally, maybe)
-router.post("/", createSchedule);
+router.post("/", requirePermission("schedule.manage"), createSchedule);
+router.get(
+  "/open-for-me",
+  requirePermission("schedule.pick_up"),
+  getOpenCoverageForMe,
+);
+router.post("/pick-up", requirePermission("schedule.pick_up"), pickUpSchedule);
 
 // AUTO GENERATE Draft (admin only)
-router.post("/auto-generate", restrictTo("admin"), autoGenerateSchedule);
+router.post(
+  "/auto-generate",
+  requirePermission("schedule.manage"),
+  autoGenerateSchedule,
+);
 
 // AUTO-SCHEDULE DRAFTS (admin only)
-router.get("/draft-schedules", getAutoScheduleDrafts);
-router.get("/draft-schedules/:draftId", getAutoScheduleDraftById);
+router.get(
+  "/draft-schedules",
+  requirePermission("schedule.view"),
+  getAutoScheduleDrafts,
+);
+router.get(
+  "/draft-schedules/:draftId",
+  requirePermission("schedule.view"),
+  getAutoScheduleDraftById,
+);
 router.patch(
   "/draft-schedules/:draftId/assignments/:assignmentId",
-  restrictTo("admin"),
+  requirePermission("schedule.manage"),
   updateAutoScheduleDraftAssignment,
 );
 router.post(
   "/draft-schedules/:draftId/assignments/:assignmentId/fill-ai",
-  restrictTo("admin"),
+  requirePermission("schedule.manage"),
   fillAutoScheduleDraftAssignmentWithAI,
 );
 router.post(
   "/draft-schedules/:draftId/publish",
-  restrictTo("admin"),
+  requirePermission("schedule.manage"),
   publishAutoScheduleDraft,
 );
 router.post(
   "/draft-schedules/:draftId/discard",
-  restrictTo("admin"),
+  requirePermission("schedule.manage"),
   discardAutoScheduleDraft,
 );
 
@@ -67,12 +87,16 @@ router.post("/:id/swap-requests", requestShiftSwap);
 router.get("/:id", getScheduleById);
 
 // PUT /api/v1/schedules/:id  (admin or schedule owner -> allow update)
-router.put("/:id", updateSchedule);
+router.put("/:id", requirePermission("schedule.manage"), updateSchedule);
 
 // DELETE /api/v1/schedules/bulk
-router.delete("/bulk", restrictTo("admin"), deleteSchedulesByIds);
+router.delete(
+  "/bulk",
+  requirePermission("schedule.manage"),
+  deleteSchedulesByIds,
+);
 
 // DELETE /api/v1/schedules/:id
-router.delete("/:id", restrictTo("admin"), deleteSchedule);
+router.delete("/:id", requirePermission("schedule.manage"), deleteSchedule);
 
 module.exports = router;

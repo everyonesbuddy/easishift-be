@@ -11,6 +11,14 @@ const Message = require("../models/messageModel");
 const Preferences = require("../models/preferencesModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
+const {
+  SYSTEM_ROLES,
+  getEffectivePermissions,
+  getFacilityRoles,
+  getUserRoles,
+  hasPermission,
+  normalizeRole,
+} = require("../config/authorization");
 
 const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
 const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
@@ -57,8 +65,18 @@ const getPasswordSetupTtlLabel = () => getTtlLabel(getPasswordSetupTtlMs());
 const getPasswordResetTtlLabel = () => getTtlLabel(getPasswordResetTtlMs());
 
 // Helper: Create JWT
-const signToken = (id, role, tenantId) =>
-  jwt.sign({ id, role, tenantId }, process.env.JWT_SECRET, { expiresIn: "7d" });
+const signToken = (id, roles, tenantId) => {
+  const normalizedRoles = Array.isArray(roles)
+    ? roles.map(normalizeRole).filter(Boolean)
+    : [normalizeRole(roles)].filter(Boolean);
+  const legacyRole = normalizedRoles[0] || "staff";
+
+  return jwt.sign(
+    { id, roles: normalizedRoles, role: legacyRole, tenantId },
+    process.env.JWT_SECRET,
+    { expiresIn: "7d" },
+  );
+};
 
 // Helper: Send cookie + response
 const sendTokenResponse = (res, token, data) => {
@@ -89,8 +107,6 @@ const resolveRole = (role) =>
     .trim()
     .toLowerCase();
 
-const SYSTEM_ROLES = new Set(["user", "admin", "superadmin", "staff", "other"]);
-
 const getAllowedRolesForTenant = async (tenantId) => {
   const prefs = await FacilityPreferences.findOne({ tenantId })
     .select("roleFamilies")
@@ -100,6 +116,22 @@ const getAllowedRolesForTenant = async (tenantId) => {
     .map(resolveRole)
     .filter(Boolean);
   return new Set([...SYSTEM_ROLES, ...facilityRoles]);
+};
+
+const normalizeAssignedRoles = (roles, legacyRole) => {
+  const values = Array.isArray(roles) ? roles : legacyRole ? [legacyRole] : [];
+  return Array.from(new Set(values.map(normalizeRole).filter(Boolean)));
+};
+
+const getPrimaryFacilityRole = (roles, facilityRoleFamilies) => {
+  return getFacilityRoles({ roles }, facilityRoleFamilies)[0] || null;
+};
+
+const getUserResponse = (user) => {
+  const response = user.toObject ? user.toObject() : { ...user };
+  response.roles = getUserRoles(user);
+  response.permissions = getEffectivePermissions(user);
+  return response;
 };
 
 const normalizeStringArray = (values) =>
@@ -249,7 +281,7 @@ exports.registerTenant = async (req, res, next) => {
         : null,
     });
 
-    // Create admin user
+    // Create the tenant owner. Additional facility roles can be added later.
     const passwordHash = await bcrypt.hash(password, 12);
     const adminUser = await User.create({
       tenantId: tenant._id,
@@ -262,7 +294,8 @@ exports.registerTenant = async (req, res, next) => {
       allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
       certificationTags: normalizeStringArray(certificationTags),
       passwordHash,
-      role: "admin",
+      role: "owner",
+      roles: ["owner"],
     });
 
     // Notify the admin about account creation (best-effort)
@@ -299,12 +332,16 @@ exports.registerTenant = async (req, res, next) => {
     }
 
     // Generate token
-    const token = signToken(adminUser._id, adminUser.role, adminUser.tenantId);
+    const token = signToken(
+      adminUser._id,
+      getUserRoles(adminUser),
+      adminUser.tenantId,
+    );
 
     sendTokenResponse(res, token, {
-      message: "Tenant and admin created successfully",
+      message: "Tenant and owner created successfully",
       tenant,
-      user: adminUser,
+      user: getUserResponse(adminUser),
     });
   } catch (err) {
     next(err);
@@ -322,6 +359,7 @@ exports.registerStaff = async (req, res, next) => {
       name,
       email,
       role,
+      roles,
       userPhone,
       userPhoneCountryCode,
       profilePicture,
@@ -329,18 +367,39 @@ exports.registerStaff = async (req, res, next) => {
       allowedShiftTypes,
       certificationTags,
     } = req.body;
-    const normalizedRole = resolveRole(role);
+    const assignedRoles = normalizeAssignedRoles(roles, role);
 
     if (!name || !email) {
       return res.status(400).json({ message: "Name and email are required" });
     }
 
     const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
-    if (!allowedRoles.has(normalizedRole)) {
+    if (
+      !assignedRoles.length ||
+      assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
+    ) {
       return res.status(400).json({
-        message: `invalid role '${role || ""}'`,
+        message: `invalid role assignment '${roles || role || ""}'`,
       });
     }
+    if (
+      assignedRoles.includes("owner") &&
+      !hasPermission(req.user, "roles.manage")
+    ) {
+      return res.status(403).json({
+        message: "Only an owner can assign the owner role",
+      });
+    }
+
+    const facilityPreferences = await FacilityPreferences.findOne({
+      tenantId: req.tenantId,
+    })
+      .select("roleFamilies")
+      .lean();
+    const facilityRole = getPrimaryFacilityRole(
+      assignedRoles,
+      facilityPreferences?.roleFamilies || [],
+    );
 
     const generatedPassword = crypto.randomBytes(24).toString("hex");
     const passwordHash = await bcrypt.hash(generatedPassword, 12);
@@ -356,7 +415,8 @@ exports.registerStaff = async (req, res, next) => {
       allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
       certificationTags: normalizeStringArray(certificationTags),
       passwordHash,
-      role: normalizedRole,
+      role: facilityRole || assignedRoles[0],
+      roles: assignedRoles,
     });
 
     const setupUrl = await createPasswordSetupLink(req, user);
@@ -373,7 +433,7 @@ exports.registerStaff = async (req, res, next) => {
           <p>An account has been added for you in ${tenantName}.</p>
           <ul>
             <li><strong>Login email:</strong> ${user.email}</li>
-            <li><strong>Role:</strong> ${user.role}</li>
+            <li><strong>Roles:</strong> ${assignedRoles.join(", ")}</li>
           </ul>
           <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
           <p><a href="${setupUrl}">${setupUrl}</a></p>
@@ -396,7 +456,10 @@ exports.registerStaff = async (req, res, next) => {
       );
     }
 
-    res.status(201).json({ message: "Staff created successfully", user });
+    res.status(201).json({
+      message: "Staff created successfully",
+      user: getUserResponse(user),
+    });
   } catch (err) {
     next(err);
   }
@@ -449,7 +512,10 @@ exports.bulkRegisterStaff = async (req, res, next) => {
     for (const row of rows) {
       const name = String(row.name || "").trim();
       const email = normalizeEmail(row.email);
-      const role = resolveRole(row.role);
+      const assignedRoles = normalizeAssignedRoles(
+        typeof row.roles === "string" ? row.roles.split(/[|,]/) : row.roles,
+        row.role,
+      );
       const userPhone = row.userPhone ? String(row.userPhone).trim() : null;
       const userPhoneCountryCode = row.userPhoneCountryCode
         ? String(row.userPhoneCountryCode).trim()
@@ -472,13 +538,29 @@ exports.bulkRegisterStaff = async (req, res, next) => {
         continue;
       }
 
-      if (!allowedRoles.has(role)) {
+      if (
+        !assignedRoles.length ||
+        assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
+      ) {
         result.failed += 1;
         result.rows.push({
           rowNumber: row.rowNumber,
           email,
           status: "failed_validation",
-          reason: `invalid role '${row.role || ""}'`,
+          reason: `invalid role assignment '${row.roles || row.role || ""}'`,
+        });
+        continue;
+      }
+      if (
+        assignedRoles.includes("owner") &&
+        !hasPermission(req.user, "roles.manage")
+      ) {
+        result.failed += 1;
+        result.rows.push({
+          rowNumber: row.rowNumber,
+          email,
+          status: "failed_authorization",
+          reason: "only an owner can assign the owner role",
         });
         continue;
       }
@@ -520,7 +602,8 @@ exports.bulkRegisterStaff = async (req, res, next) => {
           allowedShiftTypes,
           certificationTags,
           passwordHash,
-          role,
+          role: assignedRoles[0],
+          roles: assignedRoles,
         });
 
         const setupUrl = await createPasswordSetupLink(req, user);
@@ -534,7 +617,7 @@ exports.bulkRegisterStaff = async (req, res, next) => {
             <p>Your account has been added.</p>
             <ul>
               <li><strong>Login email:</strong> ${user.email}</li>
-              <li><strong>Role:</strong> ${user.role}</li>
+              <li><strong>Roles:</strong> ${assignedRoles.join(", ")}</li>
             </ul>
             <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
             <p><a href="${setupUrl}">${setupUrl}</a></p>
@@ -604,8 +687,9 @@ exports.loginStaff = async (req, res, next) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ message: "Invalid credentials" });
 
-    const token = signToken(user._id, user.role, user.tenantId);
-    sendTokenResponse(res, token, { user });
+    const roles = getUserRoles(user);
+    const token = signToken(user._id, roles, user.tenantId);
+    sendTokenResponse(res, token, { user: getUserResponse(user) });
   } catch (err) {
     next(err);
   }
@@ -717,6 +801,49 @@ exports.forgotPassword = async (req, res, next) => {
 };
 
 /**
+ * SEND PASSWORD RESET (ADMIN ONLY)
+ * --------------------------------
+ * Issues a fresh reset token for a user in the admin's tenant.
+ */
+exports.sendPasswordReset = async (req, res, next) => {
+  try {
+    const user = await User.findOne({
+      _id: req.params.id,
+      tenantId: req.tenantId,
+    });
+
+    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user.email) {
+      return res.status(400).json({
+        message: "User does not have an email address",
+      });
+    }
+
+    const setupUrl = await createPasswordSetupLink(req, user);
+    const subject = "Password reset link";
+    const html = `
+      <p>Hi ${user.name || "there"},</p>
+      <p>Your administrator requested a new password reset link for your account.</p>
+      <p>Use the link below to set a new password (${getPasswordSetupValidityText()}):</p>
+      <p><a href="${setupUrl}">${setupUrl}</a></p>
+      <p>If you did not expect this email, please contact your administrator.</p>
+    `;
+
+    const result = await sendEmail(user.email, subject, html);
+    if (!result || !result.success) {
+      user.passwordResetToken = undefined;
+      user.passwordResetExpires = undefined;
+      await user.save({ validateBeforeSave: false });
+      return res.status(500).json({ message: "Email send failed" });
+    }
+
+    res.status(200).json({ message: "Password reset link sent" });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * RESET PASSWORD
  * --------------
  * Resets password using reset token.
@@ -791,7 +918,7 @@ exports.getAllUsers = async (req, res, next) => {
     if (req.query.role) query.role = req.query.role;
 
     const users = await User.find(query).select("-passwordHash");
-    res.status(200).json(users);
+    res.status(200).json(users.map(getUserResponse));
   } catch (err) {
     next(err);
   }
@@ -809,7 +936,7 @@ exports.getUserById = async (req, res, next) => {
 
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    res.status(200).json(user);
+    res.status(200).json(getUserResponse(user));
   } catch (err) {
     next(err);
   }
@@ -824,6 +951,7 @@ exports.updateUser = async (req, res, next) => {
       name,
       email,
       role,
+      roles,
       userPhone,
       userPhoneCountryCode,
       profilePicture,
@@ -831,13 +959,27 @@ exports.updateUser = async (req, res, next) => {
       allowedShiftTypes,
       certificationTags,
     } = req.body;
-    const normalizedRole = role !== undefined ? resolveRole(role) : undefined;
+    const hasRolesUpdate = roles !== undefined || role !== undefined;
+    const assignedRoles = hasRolesUpdate
+      ? normalizeAssignedRoles(roles, role)
+      : null;
 
-    if (normalizedRole !== undefined) {
+    if (hasRolesUpdate) {
       const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
-      if (!allowedRoles.has(normalizedRole)) {
+      if (
+        !assignedRoles.length ||
+        assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
+      ) {
         return res.status(400).json({
-          message: `invalid role '${role || ""}'`,
+          message: `invalid role assignment '${roles || role || ""}'`,
+        });
+      }
+      if (
+        assignedRoles.includes("owner") &&
+        !hasPermission(req.user, "roles.manage")
+      ) {
+        return res.status(403).json({
+          message: "Only an owner can assign the owner role",
         });
       }
     }
@@ -853,8 +995,18 @@ exports.updateUser = async (req, res, next) => {
       certificationTags: normalizeStringArray(certificationTags),
     };
 
-    if (normalizedRole !== undefined) {
-      updatePayload.role = normalizedRole;
+    if (hasRolesUpdate) {
+      const facilityPreferences = await FacilityPreferences.findOne({
+        tenantId: req.tenantId,
+      })
+        .select("roleFamilies")
+        .lean();
+      updatePayload.roles = assignedRoles;
+      updatePayload.role =
+        getPrimaryFacilityRole(
+          assignedRoles,
+          facilityPreferences?.roleFamilies || [],
+        ) || assignedRoles[0];
     }
 
     const updated = await User.findOneAndUpdate(
@@ -865,7 +1017,10 @@ exports.updateUser = async (req, res, next) => {
 
     if (!updated) return res.status(404).json({ message: "User not found" });
 
-    res.status(200).json({ message: "User updated", user: updated });
+    res.status(200).json({
+      message: "User updated",
+      user: getUserResponse(updated),
+    });
   } catch (err) {
     next(err);
   }
@@ -878,9 +1033,9 @@ exports.deleteUser = async (req, res, next) => {
   try {
     const isSelfDelete =
       req.params.id === "me" || req.params.id === req.user.id;
-    const isAdmin = req.user && req.user.role === "admin";
+    const canManageStaff = req.user && hasPermission(req.user, "staff.manage");
 
-    if (!isSelfDelete && !isAdmin) {
+    if (!isSelfDelete && !canManageStaff) {
       return res.status(403).json({
         message: "Access denied. You can only delete your own account.",
       });

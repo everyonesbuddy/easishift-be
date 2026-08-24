@@ -15,7 +15,7 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 router.use(auth, tenant);
 
@@ -28,8 +28,12 @@ router.post("/clock-out", clockOut);
 
 // Admin operations
 router.get("/qr-token/current", getCurrentQrClockToken);
-router.post("/qr-token", restrictTo("admin"), generateQrClockToken);
-router.get("/", restrictTo("admin"), listTimeEntries);
-router.patch("/:id/adjust", restrictTo("admin"), adjustTimeEntry);
+router.post(
+  "/qr-token",
+  requirePermission("schedule.manage"),
+  generateQrClockToken,
+);
+router.get("/", requirePermission("staff.view"), listTimeEntries);
+router.patch("/:id/adjust", requirePermission("staff.manage"), adjustTimeEntry);
 
 module.exports = router;

@@ -14,7 +14,7 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
+const { requirePermission } = require("../middleware/roleMiddleware");
 
 // All coverage routes require authentication + tenant context
 router.use(auth);
@@ -35,12 +35,20 @@ router.use(tenant);
 router.get("/", getCoverage);
 router.get("/unfilled", getUnfilledCoverage);
 // Admin-only route to get unfilled coverages for auto-generation
-router.get("/unfilled-auto", restrictTo("admin"), getUnfilledCoverageForAuto);
+router.get(
+  "/unfilled-auto",
+  requirePermission("coverage.view"),
+  getUnfilledCoverageForAuto,
+);
 
 // Admin only
-router.post("/", restrictTo("admin"), createCoverage);
-router.delete("/bulk", restrictTo("admin"), deleteCoveragesByIds);
-router.put("/:id", restrictTo("admin"), updateCoverage);
-router.delete("/:id", restrictTo("admin"), deleteCoverage);
+router.post("/", requirePermission("coverage.manage"), createCoverage);
+router.delete(
+  "/bulk",
+  requirePermission("coverage.manage"),
+  deleteCoveragesByIds,
+);
+router.put("/:id", requirePermission("coverage.manage"), updateCoverage);
+router.delete("/:id", requirePermission("coverage.manage"), deleteCoverage);
 
 module.exports = router;

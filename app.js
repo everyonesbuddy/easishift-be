@@ -26,8 +26,11 @@ const facilityPreferencesRoutes = require("./routes/facilityPreferencesRoutes");
 const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
+const swaggerUi = require("swagger-ui-express");
+const buildOpenApiSpec = require("./docs/openapiSpec");
 
 const app = express();
+const openApiSpec = buildOpenApiSpec();
 
 // ✅ Dev logging
 if (process.env.NODE_ENV === "development") {
@@ -258,6 +261,12 @@ cron.schedule("0 */2 * * *", async () => {
     console.error("🚫 Error updating schedules status:", err);
   }
 });
+
+// API docs
+app.get("/openapi.json", (req, res) => {
+  res.json(openApiSpec);
+});
+app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(openApiSpec));
 
 // ✅ API Routes
 app.use("/api/v1/tenants", tenantRouter);

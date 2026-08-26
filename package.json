@@ -4,7 +4,8 @@
   "description": "WiserShifts Backend: AI Workforce Scheduling Made For Your Business - Built with Node.js, Express, and MongoDB",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "migrate:coverage-index": "node scripts/migrate-coverage-unique-index.js"
   },
   "author": "",
   "license": "ISC",
@@ -30,6 +31,8 @@
     "nodemailer": "^7.0.10",
     "pkg.json": "^2.0.9",
     "postmark": "^4.0.5",
+    "swagger-ui-express": "^5.0.1",
+    "swagger-jsdoc": "^6.2.8",
     "stripe": "^19.3.1",
     "twilio": "^5.10.5",
     "validator": "^13.15.23"

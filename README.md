@@ -26,6 +26,17 @@ This service powers:
 
 ---
 
+## API Documentation
+
+Swagger UI and raw OpenAPI JSON are now served by the backend:
+
+- `GET /api-docs` - interactive Swagger UI
+- `GET /openapi.json` - raw OpenAPI 3.0.3 document
+
+The OpenAPI spec source is maintained in `docs/openapiSpec.js`.
+
+---
+
 ## 2026 Scheduling Architecture Updates
 
 The scheduling domain now uses tenant-configurable taxonomy instead of hard-coded AL/IL/MC-prefixed role enums.

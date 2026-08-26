@@ -18,22 +18,8 @@ const COVERAGE_UNIQUE_KEYS = [
 ];
 
 const LEGACY_KEY_SETS = [
-  [
-    "tenantId",
-    "date",
-    "role",
-    "startTime",
-    "endTime",
-  ],
-  [
-    "tenantId",
-    "date",
-    "role",
-    "unitArea",
-    "shiftType",
-    "startTime",
-    "endTime",
-  ],
+  ["tenantId", "date", "role", "startTime", "endTime"],
+  ["tenantId", "date", "role", "unitArea", "shiftType", "startTime", "endTime"],
 ];
 
 function hasSameKeys(index, keys) {
@@ -59,7 +45,9 @@ async function run() {
       throw new Error("DB_URL is required in config.env");
     }
 
-    console.log(`Connecting to database: ${mongoose.connection.name || "configured DB_URL"}`);
+    console.log(
+      `Connecting to database: ${mongoose.connection.name || "configured DB_URL"}`,
+    );
     await mongoose.connect(process.env.DB_URL);
     console.log(
       `Connected to database '${mongoose.connection.name}' on '${mongoose.connection.host}'.`,
@@ -93,7 +81,9 @@ async function run() {
       console.error(
         "MongoDB found duplicate coverage records while creating the corrected index. Resolve duplicate records, then rerun the migration.",
       );
-    } else if (["Unauthorized", "AuthenticationFailed"].includes(err?.codeName)) {
+    } else if (
+      ["Unauthorized", "AuthenticationFailed"].includes(err?.codeName)
+    ) {
       console.error(
         "The configured MongoDB user may not have permission to list or drop indexes in this database.",
       );

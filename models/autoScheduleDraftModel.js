@@ -95,6 +95,13 @@ const draftAssignmentSchema = new mongoose.Schema(
       ref: "Schedule",
       default: null,
     },
+    // Set when this assignment was auto-removed because a live schedule was
+    // created for its coverage; lets a later schedule deletion restore it.
+    autoRemovedBySchedule: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Schedule",
+      default: null,
+    },
   },
   { _id: false },
 );

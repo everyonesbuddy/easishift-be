@@ -955,6 +955,109 @@ const buildCoverageMatchKey = (item) =>
     new Date(item.endTime).toISOString(),
   ].join("-");
 
+// Schedule docs have no coverageId, so matching a draft assignment to a
+// newly created schedule falls back to the same signature used elsewhere
+// (role/unitArea/shiftType/shiftTag/startTime/endTime).
+const findMatchingDraftAssignment = (draft, schedule) =>
+  (draft.assignments || []).find((item) => {
+    if (!["proposed", "locked"].includes(item.state)) return false;
+    if (item.coverageId && schedule.coverageId) {
+      return item.coverageId.toString() === schedule.coverageId.toString();
+    }
+    return (
+      normalizeRoleFamily(item.role) === normalizeRoleFamily(schedule.role) &&
+      normalizeAreaTag(item.unitArea || "") ===
+        normalizeAreaTag(schedule.unitArea || "") &&
+      normalizeShiftType(item.shiftType || "") ===
+        normalizeShiftType(schedule.shiftType || "") &&
+      normalizeShiftTag(item.shiftTag || "") ===
+        normalizeShiftTag(schedule.shiftTag || "") &&
+      new Date(item.startTime).getTime() ===
+        new Date(schedule.startTime).getTime() &&
+      new Date(item.endTime).getTime() === new Date(schedule.endTime).getTime()
+    );
+  });
+
+// Best-effort reconciliation: if a live schedule now covers a proposed/locked
+// draft slot, mark that slot removed so it stops double-counting the gap.
+// Failures are logged only — the schedule itself is the source of truth.
+const autoRemoveDraftAssignmentForSchedule = async ({ tenantId, schedule }) => {
+  try {
+    const candidateDrafts = await AutoScheduleDraft.find({
+      tenantId,
+      status: { $in: ["draft", "partially_published"] },
+      assignments: {
+        $elemMatch: {
+          state: { $in: ["proposed", "locked"] },
+          startTime: schedule.startTime,
+          endTime: schedule.endTime,
+        },
+      },
+    });
+
+    for (const draft of candidateDrafts) {
+      const assignment = findMatchingDraftAssignment(draft, schedule);
+      if (!assignment) continue;
+
+      assignment.state = "removed";
+      assignment.autoRemovedBySchedule = schedule._id;
+      draft.lastEditedBy = schedule.meta?.createdBy || draft.lastEditedBy;
+      await draft.save();
+      return { draftId: draft._id, assignmentId: assignment.assignmentId };
+    }
+
+    return null;
+  } catch (err) {
+    console.error(
+      `Failed to auto-remove draft assignment for schedule ${schedule._id}:`,
+      err && err.message ? err.message : err,
+    );
+    return null;
+  }
+};
+
+// Reverse of autoRemoveDraftAssignmentForSchedule: reopen a draft slot that
+// was auto-removed once the schedule that removed it is deleted. Only
+// touches assignments this reconciliation removed (never manual removals).
+const restoreAutoRemovedDraftAssignment = async ({ tenantId, schedule }) => {
+  try {
+    const draft = await AutoScheduleDraft.findOne({
+      tenantId,
+      "assignments.autoRemovedBySchedule": schedule._id,
+    });
+    if (!draft) return null;
+
+    const assignment = draft.assignments.find(
+      (item) =>
+        item.state === "removed" &&
+        item.autoRemovedBySchedule &&
+        item.autoRemovedBySchedule.toString() === schedule._id.toString(),
+    );
+    if (!assignment) return null;
+
+    assignment.autoRemovedBySchedule = null;
+    if (assignment.staffId) {
+      assignment.state = "proposed";
+      assignment.unfilledReason = null;
+    } else {
+      assignment.state = "unfilled";
+      assignment.unfilledReason = buildUnfilledReason({
+        reasonCode: "STAFF_UNASSIGNED",
+        message: "Coverage reopened after the linked schedule was deleted.",
+      });
+    }
+
+    await draft.save();
+    return { draftId: draft._id, assignmentId: assignment.assignmentId };
+  } catch (err) {
+    console.error(
+      `Failed to restore draft assignment for deleted schedule ${schedule._id}:`,
+      err && err.message ? err.message : err,
+    );
+    return null;
+  }
+};
+
 const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
   const now = new Date();
   const coverages = await Coverage.find({
@@ -966,27 +1069,14 @@ const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
 
   if (!coverages.length) return [];
 
-  const activeDrafts = await AutoScheduleDraft.find({
-    tenantId,
-    status: { $in: ["draft", "partially_published"] },
-    coverageIds: { $in: coverages.map((coverage) => coverage._id) },
-  })
-    .select("coverageIds")
-    .lean();
-  const draftedCoverageIds = new Set(
-    activeDrafts.flatMap((draft) =>
-      (draft.coverageIds || []).map((coverageId) => coverageId.toString()),
-    ),
-  );
-
-  const eligibleCoverages = coverages.filter(
-    (coverage) =>
-      !draftedCoverageIds.has(coverage._id.toString()) &&
-      isStaffCompatibleWithCoverage({
-        staff,
-        coverage,
-        facilityConfig,
-      }),
+  // Coverage tied to an in-progress AI draft is still open for pickup until a
+  // live Schedule exists for it (see remaining/assignedCount below).
+  const eligibleCoverages = coverages.filter((coverage) =>
+    isStaffCompatibleWithCoverage({
+      staff,
+      coverage,
+      facilityConfig,
+    }),
   );
   if (!eligibleCoverages.length) return [];
 
@@ -1122,6 +1212,11 @@ exports.pickUpSchedule = async (req, res, next) => {
       notes: "Picked up by staff member",
       status: "scheduled",
       meta: { createdBy: req.user._id, source: "staff_pickup" },
+    });
+
+    await autoRemoveDraftAssignmentForSchedule({
+      tenantId: req.tenantId,
+      schedule,
     });
 
     res.status(201).json({ message: "Shift picked up successfully", schedule });
@@ -3083,6 +3178,11 @@ exports.createSchedule = async (req, res, next) => {
       );
     }
 
+    await autoRemoveDraftAssignmentForSchedule({
+      tenantId: req.tenantId,
+      schedule,
+    });
+
     res.status(201).json(schedule);
   } catch (err) {
     next(err);
@@ -3291,6 +3391,11 @@ exports.deleteSchedule = async (req, res, next) => {
 
     if (!deleted)
       return res.status(404).json({ message: "Schedule not found" });
+
+    await restoreAutoRemovedDraftAssignment({
+      tenantId: req.tenantId,
+      schedule: deleted,
+    });
 
     res.json({ message: "Schedule deleted" });
   } catch (err) {

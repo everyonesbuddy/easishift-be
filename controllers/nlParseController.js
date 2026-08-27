@@ -10,6 +10,10 @@ const {
   callAnthropicTool,
   AnthropicParseError,
 } = require("../utils/anthropicClient");
+const {
+  parseCoverageCopyRequest,
+  buildCoverageCopyDraft,
+} = require("../config/nlFormParsers");
 
 // POST /api/v1/nl/parse
 // Never writes to the database — returns a draft the client submits through
@@ -38,6 +42,45 @@ exports.parseForm = async (req, res, next) => {
         code: "unknown_form_type",
         message: `Unknown formType '${formType}'`,
         supportedFormTypes: Object.keys(FORM_PARSERS),
+      });
+    }
+
+    const copyRequest =
+      formType === "coverage" ? parseCoverageCopyRequest(message) : null;
+
+    if (copyRequest) {
+      const history = req.body?.coverageHistory || req.body?.history || [];
+      if (!Array.isArray(history) || !history.length) {
+        return res.status(400).json({
+          code: "missing_coverage_history",
+          message:
+            "To copy coverage from last week/month, send prior coverage data in coverageHistory or history.",
+          period: copyRequest.period,
+        });
+      }
+
+      const context = config.buildContext({
+        ...(req.body?.facilityPrefs || {}),
+        tenantId: req.tenantId,
+      });
+      const draft = buildCoverageCopyDraft(message, context, history);
+
+      if (!draft) {
+        return res.status(400).json({
+          code: "invalid_coverage_copy_request",
+          message:
+            "That coverage-copy request couldn’t be turned into a valid draft.",
+        });
+      }
+
+      return res.json({
+        formType,
+        draft,
+        meta: {
+          generatedAt: new Date().toISOString(),
+          model: process.env.ANTHROPIC_MODEL || "claude-haiku-4-5",
+          source: "coverage-copy",
+        },
       });
     }
 

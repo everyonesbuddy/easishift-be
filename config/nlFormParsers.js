@@ -19,6 +19,20 @@ function normalizeLower(value) {
 const HH_MM_PATTERN = /^([01]\d|2[0-3]):[0-5]\d$/;
 const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 const REPEAT_MODES = ["daily", "weekdays", "weekends", "custom"];
+const MONTH_NAMES = [
+  "january",
+  "february",
+  "march",
+  "april",
+  "may",
+  "june",
+  "july",
+  "august",
+  "september",
+  "october",
+  "november",
+  "december",
+];
 // Manual startTime/endTime within this many minutes of a configured slot's
 // start/end still counts as a match, so small rounding drift in the model's
 // output doesn't stop it from snapping to the tenant's real shift slot.
@@ -85,6 +99,289 @@ function normalizeCoverageDraft(draft, context) {
   });
 
   return { ...draft, shifts };
+}
+
+function parseCoverageCopyRequest(message) {
+  if (typeof message !== "string") return null;
+
+  const text = message.trim().toLowerCase();
+  if (!text) return null;
+
+  const dateRangeMatches = [
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(\d{4}-\d{2}-\d{2})\s+(?:to|through|into|for)\s+(\d{4}-\d{2}-\d{2})/i,
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(\d{4}-\d{2}-\d{2})\s*[-–]\s*(\d{4}-\d{2}-\d{2})/i,
+  ];
+
+  for (const pattern of dateRangeMatches) {
+    const match = text.match(pattern);
+    if (match) {
+      return {
+        kind: "coverage-copy",
+        period: "date-range",
+        sourceDate: match[1],
+        targetDate: match[2],
+        source: `from ${match[1]}`,
+        target: `to ${match[2]}`,
+      };
+    }
+  }
+
+  const monthRangeMatches = [
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s+(?:to|through|into|for)\s+(january|february|march|april|may|june|july|august|september|october|november|december)/i,
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(january|february|march|april|may|june|july|august|september|october|november|december)\s*[-–]\s*(january|february|march|april|may|june|july|august|september|october|november|december)/i,
+  ];
+
+  for (const pattern of monthRangeMatches) {
+    const match = text.match(pattern);
+    if (match) {
+      const sourceMonth = match[1].toLowerCase();
+      const targetMonth = match[2].toLowerCase();
+      return {
+        kind: "coverage-copy",
+        period: "month-range",
+        sourceMonth,
+        targetMonth,
+        source: `from ${sourceMonth}`,
+        target: `to ${targetMonth}`,
+      };
+    }
+  }
+
+  const weekRangeMatches = [
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(last|previous)\s+week\s+(?:to|through|into|for)\s+(this|next)\s+week/i,
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(last|previous)\s+week\s*[-–]\s*(this|next)\s+week/i,
+  ];
+
+  for (const pattern of weekRangeMatches) {
+    const match = text.match(pattern);
+    if (match) {
+      return {
+        kind: "coverage-copy",
+        period: "week",
+        source: `${match[1]} week`,
+        target: `${match[2]} week`,
+      };
+    }
+  }
+
+  const generalWeekPatterns = [
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(?:last|previous)\s+week/i,
+    /(?:copy|repeat|reuse|duplicate)\s+(?:coverage|staffing|shifts?)\s+from\s+(?:last|previous)\s+month/i,
+  ];
+
+  if (generalWeekPatterns.some((pattern) => pattern.test(text))) {
+    const isMonth = /month/.test(text);
+    return {
+      kind: "coverage-copy",
+      period: isMonth ? "month" : "week",
+      source: isMonth ? "last month" : "last week",
+      target: isMonth ? "this month" : "this week",
+    };
+  }
+
+  return null;
+}
+
+function getMonthIndex(monthName) {
+  const index = MONTH_NAMES.indexOf(
+    String(monthName || "")
+      .trim()
+      .toLowerCase(),
+  );
+  return index === -1 ? null : index + 1;
+}
+
+function getMonthStartForTarget(monthName, referenceDate) {
+  const monthIndex = getMonthIndex(monthName);
+  if (monthIndex === null) return null;
+
+  const dt = referenceDate || DateTime.local();
+  let year = dt.year;
+  const currentMonth = dt.month;
+  if (monthIndex < currentMonth) year += 1;
+
+  return DateTime.fromObject(
+    { year, month: monthIndex, day: 1 },
+    { zone: dt.zoneName || "UTC" },
+  );
+}
+
+function toWeekdayIndex(dateLike, facilityTimezone) {
+  if (!dateLike) return null;
+
+  const dt = DateTime.fromISO(dateLike, { zone: facilityTimezone || "UTC" });
+  if (!dt.isValid) return null;
+
+  return dt.weekday % 7;
+}
+
+function buildCoverageCopyDraft(message, context, history) {
+  const request = parseCoverageCopyRequest(message);
+  if (!request) return null;
+
+  const records = Array.isArray(history) ? history.filter(Boolean) : [];
+  const sorted = [...records].sort((a, b) => {
+    const aDate = new Date(a?.date || a?.startTime || 0).getTime();
+    const bDate = new Date(b?.date || b?.startTime || 0).getTime();
+    return bDate - aDate;
+  });
+
+  const referenceDate = DateTime.local().setZone(
+    context?.facilityTimezone || "UTC",
+  );
+
+  let selected = sorted.slice(0, 30);
+  let periodDays = request.period === "month" ? 30 : 7;
+  let startDate = referenceDate.toISODate();
+
+  if (request.period === "month-range") {
+    const targetMonthStart = getMonthStartForTarget(
+      request.targetMonth,
+      referenceDate,
+    );
+    const sourceMonthStart = getMonthStartForTarget(
+      request.sourceMonth,
+      referenceDate,
+    );
+
+    if (!targetMonthStart || !sourceMonthStart) {
+      return {
+        shifts: [],
+        datePattern: {
+          startDate: referenceDate.toISODate(),
+          horizonDays: 30,
+          repeatMode: "custom",
+        },
+        unresolved: [
+          "The requested month range couldn’t be mapped to a valid calendar date.",
+        ],
+      };
+    }
+
+    startDate = targetMonthStart.toISODate();
+    periodDays = targetMonthStart.daysInMonth;
+    selected = sorted.filter((entry) => {
+      const dateValue = entry?.date || entry?.startTime;
+      if (!dateValue) return false;
+      const dt = DateTime.fromJSDate(new Date(dateValue), {
+        zone: context?.facilityTimezone || "UTC",
+      });
+      return (
+        dt.isValid &&
+        dt.month === sourceMonthStart.month &&
+        dt.year === sourceMonthStart.year
+      );
+    });
+
+    if (!selected.length) {
+      selected = sorted.slice(0, 30);
+    }
+  } else if (request.period === "month") {
+    const monthStart = getMonthStartForTarget(
+      DateTime.local()
+        .setZone(context?.facilityTimezone || "UTC")
+        .monthLong.toLowerCase(),
+      referenceDate,
+    );
+    startDate = (monthStart || referenceDate).toISODate();
+    periodDays = (monthStart || referenceDate).daysInMonth;
+  }
+
+  if (!selected.length) {
+    return {
+      shifts: [],
+      datePattern: {
+        startDate,
+        horizonDays: periodDays,
+        repeatMode:
+          request.period === "month" || request.period === "month-range"
+            ? "custom"
+            : "weekdays",
+      },
+      unresolved: ["No recent coverage was provided to copy from."],
+    };
+  }
+
+  const uniqueWeekdays = dedupeStrings(
+    selected
+      .map((entry) => {
+        const dateKey = entry?.date || entry?.startTime;
+        const weekday = toWeekdayIndex(dateKey, context?.facilityTimezone);
+        return weekday === null || weekday === undefined
+          ? null
+          : String(weekday);
+      })
+      .filter(Boolean),
+  ).map(Number);
+
+  const repeatMode =
+    uniqueWeekdays.length === 5 &&
+    uniqueWeekdays.every((day) => day >= 1 && day <= 5)
+      ? "weekdays"
+      : uniqueWeekdays.length === 2 &&
+          uniqueWeekdays.every((day) => [0, 6].includes(day))
+        ? "weekends"
+        : "custom";
+
+  const shifts = selected
+    .map((entry) => {
+      const role = String(entry?.role || "").trim();
+      const unitArea = entry?.unitArea ? String(entry.unitArea).trim() : null;
+      const shiftType = entry?.shiftType
+        ? String(entry.shiftType).trim()
+        : null;
+      const shiftTag = entry?.shiftTag ? String(entry.shiftTag).trim() : null;
+      const requiredCount = Number.isInteger(entry?.requiredCount)
+        ? entry.requiredCount
+        : 1;
+
+      const startTime = entry?.startTime
+        ? DateTime.fromJSDate(new Date(entry.startTime), {
+            zone: context?.facilityTimezone || "UTC",
+          }).toFormat("HH:mm")
+        : null;
+
+      const endTime = entry?.endTime
+        ? DateTime.fromJSDate(new Date(entry.endTime), {
+            zone: context?.facilityTimezone || "UTC",
+          }).toFormat("HH:mm")
+        : null;
+
+      const requiredCertificationTags = Array.isArray(
+        entry?.requiredCertificationTags,
+      )
+        ? entry.requiredCertificationTags
+            .map((tag) => String(tag || "").trim())
+            .filter(Boolean)
+        : [];
+
+      return {
+        role,
+        unitArea,
+        shiftType,
+        shiftTag,
+        requiredCount,
+        requiredCertificationTags,
+        startTime,
+        endTime,
+      };
+    })
+    .filter((shift) => shift.role);
+
+  const draft = {
+    shifts,
+    datePattern: {
+      startDate,
+      horizonDays: periodDays,
+      repeatMode,
+      ...(repeatMode === "custom" && uniqueWeekdays.length
+        ? { customWeekdays: uniqueWeekdays }
+        : {}),
+    },
+    unresolved: [],
+  };
+
+  return draft;
 }
 
 // ─── coverage ───────────────────────────────────────────────────────────────
@@ -532,4 +829,6 @@ module.exports = {
   isFormParserImplemented,
   getTodayInfo,
   normalizeCoverageDraft,
+  parseCoverageCopyRequest,
+  buildCoverageCopyDraft,
 };

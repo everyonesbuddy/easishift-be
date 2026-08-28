@@ -138,6 +138,15 @@ const tenantSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+
+    /**
+     * Set the first time this tenant starts a trial. Used to make sure a
+     * tenant only ever gets one free trial, across any plan or resubscribe.
+     */
+    trialUsedAt: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );

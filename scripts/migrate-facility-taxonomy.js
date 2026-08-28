@@ -12,7 +12,7 @@ const ShiftSwap = require("../models/shiftSwapModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
 
-const DEFAULT_UNIT_AREAS = ["AL", "IL", "MC"];
+const DEFAULT_UNIT_AREAS = ["al", "il", "mc"];
 const DEFAULT_SHIFT_TYPES = ["day", "evening", "night"];
 
 const SILVER_COMET_ROLE_FAMILIES = [
@@ -57,9 +57,9 @@ const getLegacyArea = (role) => {
   const value = String(role || "")
     .trim()
     .toLowerCase();
-  if (value.startsWith("al_")) return "AL";
-  if (value.startsWith("il_")) return "IL";
-  if (value.startsWith("mc_")) return "MC";
+  if (value.startsWith("al_")) return "al";
+  if (value.startsWith("il_")) return "il";
+  if (value.startsWith("mc_")) return "mc";
   return null;
 };
 
@@ -70,7 +70,7 @@ const normalizeShiftType = (value) =>
 const normalizeAreaTag = (value) =>
   String(value || "")
     .trim()
-    .toUpperCase();
+    .toLowerCase();
 
 const inferShiftTypeFromTime = (startTime, endTime) => {
   const start = new Date(startTime);

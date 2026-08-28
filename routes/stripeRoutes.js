@@ -5,6 +5,8 @@ const {
   createCheckoutSession,
   handleWebhook,
   cancelSubscription,
+  getPlans,
+  changePlan,
 } = require("../controllers/stripeController");
 
 const auth = require("../middleware/authMiddleware");
@@ -20,12 +22,29 @@ router.post(
 
 // Protected routes: require authentication + tenant context
 // Apply middleware per-route (keeps webhook public)
+router.get(
+  "/plans",
+  auth,
+  tenant,
+  requirePermission("billing.manage"),
+  getPlans,
+);
+
 router.post(
   "/create-checkout-session",
   auth,
   tenant,
   requirePermission("billing.manage"),
   createCheckoutSession,
+);
+
+// Switch plans on an existing subscription (admin)
+router.post(
+  "/change-plan",
+  auth,
+  tenant,
+  requirePermission("billing.manage"),
+  changePlan,
 );
 
 // Cancel subscription (admin)

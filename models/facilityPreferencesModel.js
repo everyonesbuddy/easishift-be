@@ -106,11 +106,12 @@ const facilityPreferencesSchema = new mongoose.Schema(
     },
 
     /**
-     * Facility areas / units such as AL, IL, MC, or tenant-defined units.
+     * Facility areas / units such as al, il, mc, or tenant-defined units.
+     * Stored lowercase snake_case.
      */
     unitAreas: {
       type: [String],
-      default: ["AL", "IL", "MC"],
+      default: ["al", "il", "mc"],
     },
 
     /**

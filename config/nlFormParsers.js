@@ -326,7 +326,9 @@ function buildCoverageCopyDraft(message, context, history) {
   const shifts = selected
     .map((entry) => {
       const role = String(entry?.role || "").trim();
-      const unitArea = entry?.unitArea ? String(entry.unitArea).trim() : null;
+      const unitArea = entry?.unitArea
+        ? String(entry.unitArea).trim().toLowerCase()
+        : null;
       const shiftType = entry?.shiftType
         ? String(entry.shiftType).trim()
         : null;

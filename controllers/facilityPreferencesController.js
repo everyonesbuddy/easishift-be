@@ -120,6 +120,20 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       }
     }
 
+    if (Array.isArray(updates.unitAreas)) {
+      updates.unitAreas = Array.from(
+        new Set(
+          updates.unitAreas
+            .map((value) =>
+              String(value || "")
+                .trim()
+                .toLowerCase(),
+            )
+            .filter(Boolean),
+        ),
+      );
+    }
+
     const prefs = await FacilityPreferences.findOneAndUpdate(
       { tenantId: req.tenantId },
       { $set: updates },

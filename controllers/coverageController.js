@@ -39,7 +39,7 @@ function normalizeShiftWindow(startTime, endTime) {
 function normalizeAreaTag(value) {
   return String(value || "")
     .trim()
-    .toUpperCase();
+    .toLowerCase();
 }
 
 function normalizeShiftType(value) {
@@ -68,16 +68,6 @@ function parseClockTime(value) {
     hour: Number(match[1]),
     minute: Number(match[2]),
   };
-}
-
-function getLegacyAreaFromRole(role) {
-  const value = String(role || "")
-    .trim()
-    .toLowerCase();
-  if (value.startsWith("al_")) return "AL";
-  if (value.startsWith("il_")) return "IL";
-  if (value.startsWith("mc_")) return "MC";
-  return null;
 }
 
 function dedupeStrings(values) {
@@ -201,9 +191,7 @@ function buildWindowFromShiftSlot({
 }
 
 function getCoverageArea(coverage) {
-  return normalizeAreaTag(
-    coverage?.unitArea || getLegacyAreaFromRole(coverage?.role) || "",
-  );
+  return normalizeAreaTag(coverage?.unitArea);
 }
 
 function getCoverageShiftType(coverage) {
@@ -435,7 +423,7 @@ exports.createCoverage = async (req, res, next) => {
 
       normalizedShifts.push({
         role: normalizedRole,
-        unitArea: normalizeAreaTag(unitArea || getLegacyAreaFromRole(role)),
+        unitArea: normalizeAreaTag(unitArea),
         shiftType: normalizedShiftType || null,
         shiftTag: normalizedShiftTag || null,
         requiredCertificationTags: dedupeStrings(requiredCertificationTags),
@@ -610,6 +598,10 @@ exports.updateCoverage = async (req, res, next) => {
         });
       }
       update.role = normalizedRole;
+    }
+
+    if (update.unitArea !== undefined) {
+      update.unitArea = normalizeAreaTag(update.unitArea) || null;
     }
 
     if (update.shiftType !== undefined) {

@@ -7,7 +7,16 @@ const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
-const { hasConflict } = require("../utils/scheduleUtils");
+const {
+  hasConflict,
+  countAssignmentsByCoverage,
+} = require("../utils/scheduleUtils");
+const {
+  formatRangeInFacilityZone,
+  formatInFacilityZone,
+  normalizeZone,
+} = require("../utils/timezoneUtils");
+const { DateTime } = require("luxon");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
 const mongoose = require("mongoose");
@@ -35,30 +44,29 @@ const DEFAULT_FACILITY_POLICY = Object.freeze({
 const minutesBetween = (start, end) =>
   (new Date(end) - new Date(start)) / 60000;
 
-const addUtcDays = (dateLike, days) => {
-  const date = new Date(dateLike);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() + days);
-  return date;
+// Scheduling instants are stored in UTC; calendar questions ("which day?",
+// "is this a weekend?") must be answered in the facility's local zone.
+const toZoned = (dateLike, timezone) =>
+  DateTime.fromJSDate(new Date(dateLike)).setZone(normalizeZone(timezone));
+
+const addDays = (dateLike, days, timezone) =>
+  toZoned(dateLike, timezone).startOf("day").plus({ days }).toJSDate();
+
+const getDayKey = (dateLike, timezone) =>
+  toZoned(dateLike, timezone).toFormat("yyyy-MM-dd");
+
+// 0 = Sunday ... 6 = Saturday, matching the stored preference format.
+const getWeekdayIndex = (dateLike, timezone) =>
+  toZoned(dateLike, timezone).weekday % 7;
+
+// Weeks start on Sunday.
+const getWeekStart = (dateLike, timezone) => {
+  const zoned = toZoned(dateLike, timezone).startOf("day");
+  return zoned.minus({ days: zoned.weekday % 7 }).toJSDate();
 };
 
-const getUtcDayKey = (dateLike) => {
-  const date = new Date(dateLike);
-  const year = date.getUTCFullYear();
-  const month = String(date.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(date.getUTCDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
-};
-
-const getUtcWeekStart = (dateLike) => {
-  const date = new Date(dateLike);
-  date.setUTCHours(0, 0, 0, 0);
-  date.setUTCDate(date.getUTCDate() - date.getUTCDay());
-  return date;
-};
-
-const buildWeekKey = (staffId, dateLike) =>
-  `${staffId.toString()}|${getUtcWeekStart(dateLike).toISOString()}`;
+const buildWeekKey = (staffId, dateLike, timezone) =>
+  `${staffId.toString()}|${getWeekStart(dateLike, timezone).toISOString()}`;
 
 const stableHash = (value) => {
   const text = String(value);
@@ -310,19 +318,15 @@ const getEffectiveFacilityPolicy = (facilityPreferences) => {
   };
 };
 
-const isWeekendDate = (dateLike) => {
-  const weekday = new Date(dateLike).getUTCDay();
+const isWeekendDate = (dateLike, timezone) => {
+  const weekday = getWeekdayIndex(dateLike, timezone);
   return weekday === 0 || weekday === 6;
 };
 
-const isNightShift = (startTime, endTime) => {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-  return (
-    end.getUTCDate() !== start.getUTCDate() ||
-    start.getUTCHours() >= 19 ||
-    start.getUTCHours() < 6
-  );
+const isNightShift = (startTime, endTime, timezone) => {
+  const start = toZoned(startTime, timezone);
+  const end = toZoned(endTime, timezone);
+  return !start.hasSame(end, "day") || start.hour >= 19 || start.hour < 6;
 };
 
 const parseTimeToMinutes = (value) => {
@@ -354,35 +358,41 @@ const getEffectiveOvertimeThresholdMinutes = ({ facilityPolicy }) => {
   return facilityPolicy.weeklyOvertimeThresholdMinutes;
 };
 
-const getConsecutiveDaysIfAssigned = (assignedDaySet, dateLike) => {
+const getConsecutiveDaysIfAssigned = (assignedDaySet, dateLike, timezone) => {
   const dayKeys = new Set(assignedDaySet || []);
-  const targetDate = addUtcDays(dateLike, 0);
-  dayKeys.add(getUtcDayKey(targetDate));
+  const targetDate = addDays(dateLike, 0, timezone);
+  dayKeys.add(getDayKey(targetDate, timezone));
 
   let total = 1;
-  let cursor = addUtcDays(targetDate, -1);
-  while (dayKeys.has(getUtcDayKey(cursor))) {
+  let cursor = addDays(targetDate, -1, timezone);
+  while (dayKeys.has(getDayKey(cursor, timezone))) {
     total += 1;
-    cursor = addUtcDays(cursor, -1);
+    cursor = addDays(cursor, -1, timezone);
   }
 
-  cursor = addUtcDays(targetDate, 1);
-  while (dayKeys.has(getUtcDayKey(cursor))) {
+  cursor = addDays(targetDate, 1, timezone);
+  while (dayKeys.has(getDayKey(cursor, timezone))) {
     total += 1;
-    cursor = addUtcDays(cursor, 1);
+    cursor = addDays(cursor, 1, timezone);
   }
 
   return total;
 };
 
-const countAssignedDaysInWeekIfAssigned = (assignedDaySet, dateLike) => {
+const countAssignedDaysInWeekIfAssigned = (
+  assignedDaySet,
+  dateLike,
+  timezone,
+) => {
   const dayKeys = new Set(assignedDaySet || []);
-  dayKeys.add(getUtcDayKey(dateLike));
+  dayKeys.add(getDayKey(dateLike, timezone));
 
   let total = 0;
-  const weekStart = getUtcWeekStart(dateLike);
+  const weekStart = getWeekStart(dateLike, timezone);
   for (let offset = 0; offset < 7; offset += 1) {
-    if (dayKeys.has(getUtcDayKey(addUtcDays(weekStart, offset)))) {
+    if (
+      dayKeys.has(getDayKey(addDays(weekStart, offset, timezone), timezone))
+    ) {
       total += 1;
     }
   }
@@ -396,14 +406,15 @@ const getPatternPenalty = ({
   assignedDaySet,
   consecutiveDaysIfAssigned,
   projectedAssignedDaysThisWeek,
+  timezone,
 }) => {
   const previousDayAssigned = assignedDaySet?.has(
-    getUtcDayKey(addUtcDays(coverageStart, -1)),
+    getDayKey(addDays(coverageStart, -1, timezone), timezone),
   );
   const nextDayAssigned = assignedDaySet?.has(
-    getUtcDayKey(addUtcDays(coverageStart, 1)),
+    getDayKey(addDays(coverageStart, 1, timezone), timezone),
   );
-  const isWeekend = isWeekendDate(coverageStart);
+  const isWeekend = isWeekendDate(coverageStart, timezone);
 
   switch (schedulingPattern) {
     case "balance":
@@ -440,6 +451,7 @@ const addTrackedSchedule = ({
   staffAssignedDaySets,
   weekendShiftCounts,
   nightShiftCounts,
+  timezone,
 }) => {
   if (!schedule || schedule.status === "call_out") return;
 
@@ -452,36 +464,148 @@ const addTrackedSchedule = ({
   if (!staffAssignedDaySets[staffId]) {
     staffAssignedDaySets[staffId] = new Set();
   }
-  staffAssignedDaySets[staffId].add(getUtcDayKey(schedule.startTime));
+  staffAssignedDaySets[staffId].add(getDayKey(schedule.startTime, timezone));
 
-  if (isWeekendDate(schedule.startTime)) {
+  if (isWeekendDate(schedule.startTime, timezone)) {
     weekendShiftCounts[staffId] = (weekendShiftCounts[staffId] || 0) + 1;
   }
 
-  if (isNightShift(schedule.startTime, schedule.endTime)) {
+  if (isNightShift(schedule.startTime, schedule.endTime, timezone)) {
     nightShiftCounts[staffId] = (nightShiftCounts[staffId] || 0) + 1;
   }
+};
+
+// Relative cost of violating each soft preference. Tuned so a single hard-ish
+// violation (avoided day, off-week rotation) outweighs a mild one.
+const PREFERENCE_WEIGHTS = Object.freeze({
+  nonPreferredDay: 2,
+  avoidedDay: 4,
+  nonPreferredShiftType: 3,
+  overMaxConsecutiveDays: 5,
+  overMaxShiftsPerWeek: 5,
+  perHourOverTarget: 1,
+  unwantedOvertime: 4,
+  rotationOffWeek: 5,
+  rotationNonWeekend: 3,
+});
+
+const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
+
+/**
+ * Rotation is cadence x scope:
+ *   weekly + all_days      -> every week (no penalty, always "on")
+ *   weekly + weekends_only -> every weekend
+ *   biweekly + all_days    -> every other week
+ *   biweekly + weekends_only -> every other weekend
+ */
+const getRotationPenalty = ({ staffPreferences, coverageStart, timezone }) => {
+  const cadence = staffPreferences?.rotationCadence;
+  if (!cadence || cadence === "none") return 0;
+
+  let penalty = 0;
+
+  if (
+    staffPreferences.rotationScope === "weekends_only" &&
+    !isWeekendDate(coverageStart, timezone)
+  ) {
+    penalty += PREFERENCE_WEIGHTS.rotationNonWeekend;
+  }
+
+  if (cadence === "biweekly") {
+    const anchor = staffPreferences.rotationAnchorDate;
+    // Without an anchor there is no way to tell an on-week from an off-week.
+    if (!anchor) return penalty;
+
+    const anchorWeek = getWeekStart(anchor, timezone);
+    const shiftWeek = getWeekStart(coverageStart, timezone);
+    const weeksApart = Math.round((shiftWeek - anchorWeek) / MS_PER_WEEK);
+
+    if (Math.abs(weeksApart % 2) === 1) {
+      penalty += PREFERENCE_WEIGHTS.rotationOffWeek;
+    }
+  }
+
+  return penalty;
 };
 
 const getPreferencePenalty = ({
   staffPreferences,
   coverage,
-  assignedDaySet,
+  coverageMinutes,
+  projectedWeekMinutes,
+  projectedAssignedDaysThisWeek,
+  consecutiveDaysIfAssigned,
+  overtimeMinutes,
+  timezone,
 }) => {
   if (!staffPreferences) return 0;
 
   let penalty = 0;
-  const weekday = new Date(coverage.date).getUTCDay();
+  const coverageStart = coverage.startTime || coverage.date;
+  const weekday = getWeekdayIndex(coverageStart, timezone);
 
+  const preferredDays = staffPreferences.preferredDaysOfWeek;
   if (
-    Array.isArray(staffPreferences.preferredDaysOfWeek) &&
-    staffPreferences.preferredDaysOfWeek.length > 0 &&
-    !staffPreferences.preferredDaysOfWeek.includes(weekday)
+    Array.isArray(preferredDays) &&
+    preferredDays.length > 0 &&
+    !preferredDays.includes(weekday)
   ) {
-    penalty += 1;
+    penalty += PREFERENCE_WEIGHTS.nonPreferredDay;
   }
 
-  return penalty;
+  if ((staffPreferences.avoidDaysOfWeek || []).includes(weekday)) {
+    penalty += PREFERENCE_WEIGHTS.avoidedDay;
+  }
+
+  const preferredShiftTypes = (staffPreferences.preferredShiftTypes || []).map(
+    normalizeShiftType,
+  );
+  const coverageShiftType = getCoverageShiftType(coverage);
+  if (
+    preferredShiftTypes.length > 0 &&
+    coverageShiftType &&
+    !preferredShiftTypes.includes(coverageShiftType)
+  ) {
+    penalty += PREFERENCE_WEIGHTS.nonPreferredShiftType;
+  }
+
+  const { maxConsecutiveDays, maxShiftsPerWeek, targetHoursPerWeek } =
+    staffPreferences;
+
+  if (maxConsecutiveDays && consecutiveDaysIfAssigned > maxConsecutiveDays) {
+    penalty +=
+      PREFERENCE_WEIGHTS.overMaxConsecutiveDays *
+      (consecutiveDaysIfAssigned - maxConsecutiveDays);
+  }
+
+  if (maxShiftsPerWeek && projectedAssignedDaysThisWeek > maxShiftsPerWeek) {
+    penalty +=
+      PREFERENCE_WEIGHTS.overMaxShiftsPerWeek *
+      (projectedAssignedDaysThisWeek - maxShiftsPerWeek);
+  }
+
+  // Only over-target is penalized; being under target is already favoured by
+  // the projectedWeekMinutes sort key.
+  if (targetHoursPerWeek) {
+    const targetMinutes = targetHoursPerWeek * HOURS_TO_MINUTES;
+    const overMinutes = Math.max(0, projectedWeekMinutes - targetMinutes);
+    if (overMinutes > 0) {
+      penalty +=
+        PREFERENCE_WEIGHTS.perHourOverTarget * (overMinutes / HOURS_TO_MINUTES);
+    }
+  }
+
+  if (!staffPreferences.wantsOvertime && overtimeMinutes > 0) {
+    penalty += PREFERENCE_WEIGHTS.unwantedOvertime;
+  }
+
+  penalty += getRotationPenalty({
+    staffPreferences,
+    coverageStart,
+    timezone,
+  });
+
+  return Math.round(penalty * 100) / 100;
 };
 
 const getTagSpecificityScore = ({ staff, coverage }) => {
@@ -541,12 +665,14 @@ const buildRankingMetrics = ({
   weekendShiftCounts,
   nightShiftCounts,
   staffAssignedDaySets,
+  timezone,
 }) => {
-  const weekKey = buildWeekKey(staffId, coverage.startTime);
+  const weekKey = buildWeekKey(staffId, coverage.startTime, timezone);
   const projectedWeekMinutes = (weeklyWorkload[weekKey] || 0) + coverageMinutes;
   const projectedAssignedDaysThisWeek = countAssignedDaysInWeekIfAssigned(
     staffAssignedDaySets[staffId],
     coverage.startTime,
+    timezone,
   );
   const effectiveOvertimeThresholdMinutes =
     getEffectiveOvertimeThresholdMinutes({
@@ -561,11 +687,17 @@ const buildRankingMetrics = ({
   const consecutiveDaysIfAssigned = getConsecutiveDaysIfAssigned(
     staffAssignedDaySets[staffId],
     coverage.startTime,
+    timezone,
   );
   const preferencePenalty = getPreferencePenalty({
     staffPreferences,
     coverage,
-    assignedDaySet: staffAssignedDaySets[staffId],
+    coverageMinutes,
+    projectedWeekMinutes,
+    projectedAssignedDaysThisWeek,
+    consecutiveDaysIfAssigned,
+    overtimeMinutes,
+    timezone,
   });
   const patternPenalty = getPatternPenalty({
     schedulingPattern: facilityPolicy.schedulingPattern,
@@ -573,11 +705,16 @@ const buildRankingMetrics = ({
     assignedDaySet: staffAssignedDaySets[staffId],
     consecutiveDaysIfAssigned,
     projectedAssignedDaysThisWeek,
+    timezone,
   });
-  const weekendShiftCount = isWeekendDate(coverage.startTime)
+  const weekendShiftCount = isWeekendDate(coverage.startTime, timezone)
     ? weekendShiftCounts[staffId] || 0
     : 0;
-  const nightShiftCount = isNightShift(coverage.startTime, coverage.endTime)
+  const nightShiftCount = isNightShift(
+    coverage.startTime,
+    coverage.endTime,
+    timezone,
+  )
     ? nightShiftCounts[staffId] || 0
     : 0;
   const tagSpecificityScore = getTagSpecificityScore({
@@ -627,6 +764,12 @@ const compareRankingMetrics = (a, b) => {
     return a.patternPenalty - b.patternPenalty;
   }
 
+  // Staff preferences rank below safety/cost and facility policy, but above
+  // pure fairness counters so they can actually influence an assignment.
+  if (a.preferencePenalty !== b.preferencePenalty) {
+    return a.preferencePenalty - b.preferencePenalty;
+  }
+
   if (a.weekendShiftCount !== b.weekendShiftCount) {
     return a.weekendShiftCount - b.weekendShiftCount;
   }
@@ -641,10 +784,6 @@ const compareRankingMetrics = (a, b) => {
 
   if (a.recentMinutes !== b.recentMinutes) {
     return a.recentMinutes - b.recentMinutes;
-  }
-
-  if (a.preferencePenalty !== b.preferencePenalty) {
-    return a.preferencePenalty - b.preferencePenalty;
   }
 
   return a.tieBreaker - b.tieBreaker;
@@ -674,6 +813,10 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
     return `less favorable ${candidateMetrics.patternPenalty > 0 ? "pattern" : "rotation"} fit (${candidateMetrics.patternPenalty} > ${cutoffMetrics.patternPenalty})`;
   }
 
+  if (candidateMetrics.preferencePenalty > cutoffMetrics.preferencePenalty) {
+    return `higher preference mismatch score (${candidateMetrics.preferencePenalty} > ${cutoffMetrics.preferencePenalty})`;
+  }
+
   if (candidateMetrics.weekendShiftCount > cutoffMetrics.weekendShiftCount) {
     return `higher weekend assignment count (${candidateMetrics.weekendShiftCount} > ${cutoffMetrics.weekendShiftCount})`;
   }
@@ -690,10 +833,6 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
 
   if (candidateMetrics.recentMinutes > cutoffMetrics.recentMinutes) {
     return `higher recent workload (${candidateMetrics.recentMinutes}m > ${cutoffMetrics.recentMinutes}m)`;
-  }
-
-  if (candidateMetrics.preferencePenalty > cutoffMetrics.preferencePenalty) {
-    return `higher preference mismatch score (${candidateMetrics.preferencePenalty} > ${cutoffMetrics.preferencePenalty})`;
   }
 
   if (candidateMetrics.tieBreaker > cutoffMetrics.tieBreaker) {
@@ -740,7 +879,12 @@ const formatCoverageForMessage = (coverage) => ({
   requiredCertificationTags: coverage.requiredCertificationTags || [],
 });
 
-const toUtcString = (value) => new Date(value).toUTCString();
+const getFacilityTimezone = async (tenantId) => {
+  const prefs = await FacilityPreferences.findOne({ tenantId })
+    .select("facilityTimezone")
+    .lean();
+  return prefs?.facilityTimezone || "UTC";
+};
 
 const notifyUsersBestEffort = async ({
   tenantId,
@@ -936,6 +1080,19 @@ const buildCoverageMatchKey = (item) =>
     new Date(item.endTime).toISOString(),
   ].join("-");
 
+// Falls back to the time window for schedules created before coverageId existed.
+const isSameCoverageSlot = (schedule, coverage) => {
+  if (schedule?.coverageId && coverage?._id) {
+    return schedule.coverageId.toString() === coverage._id.toString();
+  }
+  return (
+    new Date(schedule.startTime).getTime() ===
+      new Date(coverage.startTime).getTime() &&
+    new Date(schedule.endTime).getTime() ===
+      new Date(coverage.endTime).getTime()
+  );
+};
+
 // Schedule docs have no coverageId, so matching a draft assignment to a
 // newly created schedule falls back to the same signature used elsewhere
 // (role/unitArea/shiftType/shiftTag/startTime/endTime).
@@ -970,8 +1127,9 @@ const autoRemoveDraftAssignmentForSchedule = async ({ tenantId, schedule }) => {
       assignments: {
         $elemMatch: {
           state: { $in: ["proposed", "locked"] },
-          startTime: schedule.startTime,
-          endTime: schedule.endTime,
+          ...(schedule.coverageId
+            ? { coverageId: schedule.coverageId }
+            : { startTime: schedule.startTime, endTime: schedule.endTime }),
         },
       },
     });
@@ -1061,31 +1219,16 @@ const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
   );
   if (!eligibleCoverages.length) return [];
 
-  const schedules = await Schedule.find({
+  const assignedByCoverage = await countAssignmentsByCoverage({
     tenantId,
-    status: { $in: PICKUP_ACTIVE_STATUSES },
-    $or: eligibleCoverages.map((coverage) => ({
-      role: coverage.role,
-      unitArea: coverage.unitArea,
-      shiftType: coverage.shiftType,
-      shiftTag: coverage.shiftTag,
-      startTime: coverage.startTime,
-      endTime: coverage.endTime,
-    })),
-  })
-    .select("staffId role unitArea shiftType shiftTag startTime endTime")
-    .lean();
-
-  const assignedCountByKey = new Map();
-  schedules.forEach((schedule) => {
-    const key = buildCoverageMatchKey(schedule);
-    assignedCountByKey.set(key, (assignedCountByKey.get(key) || 0) + 1);
+    coverageIds: eligibleCoverages.map((coverage) => coverage._id),
+    statuses: PICKUP_ACTIVE_STATUSES,
   });
 
   return eligibleCoverages
     .map((coverage) => {
       const assignedCount =
-        assignedCountByKey.get(buildCoverageMatchKey(coverage)) || 0;
+        assignedByCoverage.get(coverage._id.toString()) || 0;
       return {
         ...coverage,
         assignedCount,
@@ -1152,16 +1295,8 @@ exports.pickUpSchedule = async (req, res, next) => {
       tenantId: req.tenantId,
       staffId: req.user._id,
       status: "approved",
-      $or: [
-        {
-          start: { $lte: coverage.endTime },
-          end: { $gte: coverage.startTime },
-        },
-        {
-          startDate: { $lte: coverage.endTime },
-          endDate: { $gte: coverage.startTime },
-        },
-      ],
+      startTime: { $lte: coverage.endTime },
+      endTime: { $gte: coverage.startTime },
     });
     if (timeOff) {
       return res.status(409).json({
@@ -1182,6 +1317,7 @@ exports.pickUpSchedule = async (req, res, next) => {
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
       staffId: req.user._id,
+      coverageId: coverage._id,
       role: coverage.role,
       unitArea: coverage.unitArea,
       shiftType: coverage.shiftType,
@@ -1227,6 +1363,9 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     }).lean();
     const facilityPolicy = getEffectiveFacilityPolicy(facilityPreferences);
     const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+    const facilityTimezone = normalizeZone(
+      facilityPreferences?.facilityTimezone,
+    );
 
     // 1) GET COVERAGE DETAILS
     const coverageList = await Coverage.find({
@@ -1253,18 +1392,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     fairnessWindowStart.setUTCDate(
       fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
     );
-    const firstCoverageWeekStart = getUtcWeekStart(start);
-    const lastCoverageWeekStart = getUtcWeekStart(end);
+    const firstCoverageWeekStart = getWeekStart(start, facilityTimezone);
+    const lastCoverageWeekStart = getWeekStart(end, facilityTimezone);
     const weeklyWindowEnd = new Date(lastCoverageWeekStart);
     weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
 
     const timeOff = await TimeOff.find({
       tenantId,
       status: "approved",
-      $or: [
-        { start: { $lte: end }, end: { $gte: start } },
-        { startDate: { $lte: end }, endDate: { $gte: start } },
-      ],
+      startTime: { $lte: end },
+      endTime: { $gte: start },
     });
 
     const timeOffMap = {};
@@ -1310,12 +1447,15 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
       recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
 
-      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      const scheduleWeekStart = getWeekStart(
+        schedule.startTime,
+        facilityTimezone,
+      );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
         scheduleWeekStart < weeklyWindowEnd
       ) {
-        const key = buildWeekKey(staffId, schedule.startTime);
+        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone);
         weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
       }
 
@@ -1325,6 +1465,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         staffAssignedDaySets,
         weekendShiftCounts,
         nightShiftCounts,
+        timezone: facilityTimezone,
       });
     });
 
@@ -1335,6 +1476,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         staffAssignedDaySets,
         weekendShiftCounts,
         nightShiftCounts,
+        timezone: facilityTimezone,
       });
     });
 
@@ -1363,15 +1505,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       const coverageMinutes = minutesBetween(cov.startTime, cov.endTime);
 
       const alreadyAssigned = existingSchedules.filter(
-        (s) =>
-          s.status !== "call_out" &&
-          isStaffCompatibleWithCoverage({
-            staff: s,
-            coverage: cov,
-            facilityConfig,
-          }) &&
-          s.startTime.getTime() === cov.startTime.getTime() &&
-          s.endTime.getTime() === cov.endTime.getTime(),
+        (s) => s.status !== "call_out" && isSameCoverageSlot(s, cov),
       );
 
       const needed = cov.requiredCount - alreadyAssigned.length;
@@ -1462,23 +1596,15 @@ exports.autoGenerateSchedule = async (req, res, next) => {
 
         if (
           currentStaffSchedules.some(
-            (s) =>
-              s.status === "call_out" &&
-              isStaffCompatibleWithCoverage({
-                staff: s,
-                coverage: cov,
-                facilityConfig,
-              }) &&
-              s.startTime.getTime() === cov.startTime.getTime() &&
-              s.endTime.getTime() === cov.endTime.getTime(),
+            (s) => s.status === "call_out" && isSameCoverageSlot(s, cov),
           )
         ) {
           skipReason = `called out for this shift`;
         } else if (
           timeOffMap[id]?.some(
             (to) =>
-              new Date(to.start) <= cov.endTime &&
-              new Date(to.end) >= cov.startTime,
+              new Date(to.startTime) <= cov.endTime &&
+              new Date(to.endTime) >= cov.startTime,
           )
         ) {
           skipReason = `has approved time off overlapping coverage`;
@@ -1564,6 +1690,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
               weekendShiftCounts,
               nightShiftCounts,
               staffAssignedDaySets,
+              timezone: facilityTimezone,
             }),
           };
         })
@@ -1618,7 +1745,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         const staffId = staff._id.toString();
         recentWorkload[staffId] =
           (recentWorkload[staffId] || 0) + coverageMinutes;
-        const weekKey = buildWeekKey(staffId, cov.startTime);
+        const weekKey = buildWeekKey(staffId, cov.startTime, facilityTimezone);
         weeklyWorkload[weekKey] =
           (weeklyWorkload[weekKey] || 0) + coverageMinutes;
 
@@ -1631,6 +1758,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
           staffAssignedDaySets,
           weekendShiftCounts,
           nightShiftCounts,
+          timezone: facilityTimezone,
         });
       }
 
@@ -2145,6 +2273,9 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
     }).lean();
     const facilityPolicy = getEffectiveFacilityPolicy(facilityPreferences);
     const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+    const facilityTimezone = normalizeZone(
+      facilityPreferences?.facilityTimezone,
+    );
 
     if (!isEnabledScheduleRole(coverageTarget.role, facilityConfig)) {
       return res.status(400).json({
@@ -2159,8 +2290,8 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
     fairnessWindowStart.setUTCDate(
       fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
     );
-    const firstCoverageWeekStart = getUtcWeekStart(targetStart);
-    const lastCoverageWeekStart = getUtcWeekStart(targetEnd);
+    const firstCoverageWeekStart = getWeekStart(targetStart, facilityTimezone);
+    const lastCoverageWeekStart = getWeekStart(targetEnd, facilityTimezone);
     const weeklyWindowEnd = new Date(lastCoverageWeekStart);
     weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
 
@@ -2169,10 +2300,8 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         TimeOff.find({
           tenantId,
           status: "approved",
-          $or: [
-            { start: { $lte: targetEnd }, end: { $gte: targetStart } },
-            { startDate: { $lte: targetEnd }, endDate: { $gte: targetStart } },
-          ],
+          startTime: { $lte: targetEnd },
+          endTime: { $gte: targetStart },
         }),
         Schedule.find({
           tenantId,
@@ -2220,12 +2349,15 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
 
       recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
 
-      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      const scheduleWeekStart = getWeekStart(
+        schedule.startTime,
+        facilityTimezone,
+      );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
         scheduleWeekStart < weeklyWindowEnd
       ) {
-        const key = buildWeekKey(staffId, schedule.startTime);
+        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone);
         weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
       }
 
@@ -2235,6 +2367,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         staffAssignedDaySets,
         weekendShiftCounts,
         nightShiftCounts,
+        timezone: facilityTimezone,
       });
     });
 
@@ -2245,6 +2378,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         staffAssignedDaySets,
         weekendShiftCounts,
         nightShiftCounts,
+        timezone: facilityTimezone,
       });
     });
 
@@ -2270,12 +2404,19 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
       const minutes = minutesBetween(schedule.startTime, schedule.endTime);
       recentWorkload[staffId] = (recentWorkload[staffId] || 0) + minutes;
 
-      const scheduleWeekStart = getUtcWeekStart(schedule.startTime);
+      const scheduleWeekStart = getWeekStart(
+        schedule.startTime,
+        facilityTimezone,
+      );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
         scheduleWeekStart < weeklyWindowEnd
       ) {
-        const weekKey = buildWeekKey(staffId, schedule.startTime);
+        const weekKey = buildWeekKey(
+          staffId,
+          schedule.startTime,
+          facilityTimezone,
+        );
         weeklyWorkload[weekKey] = (weeklyWorkload[weekKey] || 0) + minutes;
       }
 
@@ -2285,6 +2426,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         staffAssignedDaySets,
         weekendShiftCounts,
         nightShiftCounts,
+        timezone: facilityTimezone,
       });
     });
 
@@ -2337,8 +2479,8 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
         skipReason = "called out for this shift";
       } else if (
         timeOffMap[staffId]?.some((timeOff) => {
-          const timeOffStart = new Date(timeOff.start || timeOff.startDate);
-          const timeOffEnd = new Date(timeOff.end || timeOff.endDate);
+          const timeOffStart = new Date(timeOff.startTime);
+          const timeOffEnd = new Date(timeOff.endTime);
           return timeOffStart <= targetEnd && timeOffEnd >= targetStart;
         })
       ) {
@@ -2392,6 +2534,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
             weekendShiftCounts,
             nightShiftCounts,
             staffAssignedDaySets,
+            timezone: facilityTimezone,
           }),
         };
       })
@@ -2508,6 +2651,7 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
     const schedulePayload = assignments.map((assignment) => ({
       tenantId: req.tenantId,
       staffId: assignment.staffId,
+      coverageId: assignment.coverageId || null,
       role: assignment.role,
       unitArea: assignment.unitArea,
       shiftType: assignment.shiftType,
@@ -2698,7 +2842,12 @@ exports.requestShiftSwap = async (req, res, next) => {
       receiver._id,
     ]);
     const recipients = [receiver, requester, ...admins];
-    const shiftWindow = `${toUtcString(schedule.startTime)} - ${toUtcString(schedule.endTime)}`;
+    const facilityTimezone = await getFacilityTimezone(req.tenantId);
+    const shiftWindow = formatRangeInFacilityZone(
+      schedule.startTime,
+      schedule.endTime,
+      facilityTimezone,
+    );
 
     await notifyUsersBestEffort({
       tenantId: req.tenantId,
@@ -2711,7 +2860,7 @@ exports.requestShiftSwap = async (req, res, next) => {
           <li><strong>Role:</strong> ${schedule.role}</li>
           <li><strong>Current staff:</strong> ${requester.name || requester.email || requester._id}</li>
           <li><strong>Requested receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
-          <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+          <li><strong>Shift:</strong> ${shiftWindow}</li>
           <li><strong>Status:</strong> pending admin approval</li>
         </ul>
         ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
@@ -2818,7 +2967,11 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
       requester._id,
       receiver._id,
     ]);
-    const shiftWindow = `${toUtcString(swapRequest.shiftStartTime)} - ${toUtcString(swapRequest.shiftEndTime)}`;
+    const shiftWindow = formatRangeInFacilityZone(
+      swapRequest.shiftStartTime,
+      swapRequest.shiftEndTime,
+      await getFacilityTimezone(req.tenantId),
+    );
     let decisionWord = "";
     let scheduleUpdated = false;
 
@@ -2861,7 +3014,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Role:</strong> ${swapRequest.role}</li>
             <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
             <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
-            <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+            <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Status:</strong> ${swapRequest.status}</li>
           </ul>
           ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
@@ -2946,7 +3099,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Role:</strong> ${swapRequest.role}</li>
             <li><strong>Requester:</strong> ${requester.name || requester.email || requester._id}</li>
             <li><strong>Receiver:</strong> ${receiver.name || receiver.email || receiver._id}</li>
-            <li><strong>Shift (UTC):</strong> ${shiftWindow}</li>
+            <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Decision:</strong> ${decisionWord}</li>
           </ul>
           ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
@@ -2981,6 +3134,7 @@ exports.createSchedule = async (req, res, next) => {
     const {
       staffId,
       role,
+      coverageId,
       unitArea,
       shiftType,
       shiftTag,
@@ -2995,6 +3149,21 @@ exports.createSchedule = async (req, res, next) => {
       return res.status(400).json({
         message: "staffId, role, startTime, endTime are required",
       });
+
+    if (coverageId && !mongoose.isValidObjectId(coverageId)) {
+      return res.status(400).json({ message: "Invalid coverageId" });
+    }
+
+    const linkedCoverage = coverageId
+      ? await Coverage.findOne({
+          _id: coverageId,
+          tenantId: req.tenantId,
+        }).select("_id")
+      : null;
+
+    if (coverageId && !linkedCoverage) {
+      return res.status(404).json({ message: "Coverage not found" });
+    }
 
     const staff = await User.findById(staffId).select(
       "role roles allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
@@ -3082,6 +3251,7 @@ exports.createSchedule = async (req, res, next) => {
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
       staffId,
+      coverageId: linkedCoverage ? linkedCoverage._id : null,
       role: schedulePayload.role,
       unitArea: schedulePayload.unitArea,
       shiftType: schedulePayload.shiftType,
@@ -3097,6 +3267,12 @@ exports.createSchedule = async (req, res, next) => {
 
     // Notify assigned staff (best-effort)
     try {
+      const facilityTimezone = facilityPreferences?.facilityTimezone || "UTC";
+      const shiftWindow = formatRangeInFacilityZone(
+        startTime,
+        endTime,
+        facilityTimezone,
+      );
       const staffPref = staff
         ? await Preferences.findOne({
             tenantId: req.tenantId,
@@ -3107,14 +3283,13 @@ exports.createSchedule = async (req, res, next) => {
         : null;
 
       if (staff && staff.email && isEmailNotificationEnabled(staffPref)) {
-        const subject = `New shift assigned: ${role} - ${new Date(startTime).toUTCString()}`;
+        const subject = `New shift assigned: ${role} - ${formatInFacilityZone(startTime, facilityTimezone)}`;
         const html = `
           <p>Hi ${staff.name || "team member"},</p>
           <p>You have been assigned a new shift:</p>
           <ul>
             <li><strong>Role:</strong> ${role}</li>
-            <li><strong>Start (UTC):</strong> ${new Date(startTime).toUTCString()}</li>
-            <li><strong>End (UTC):</strong> ${new Date(endTime).toUTCString()}</li>
+            <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Notes:</strong> ${notes || ""}</li>
           </ul>
           <p>Please contact your admin if you have any questions.</p>
@@ -3138,7 +3313,7 @@ exports.createSchedule = async (req, res, next) => {
           ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
           : null;
       if (to) {
-        const smsBody = `New shift assigned: ${role}. Start (UTC): ${new Date(startTime).toUTCString()}. End (UTC): ${new Date(endTime).toUTCString()}.`;
+        const smsBody = `New shift assigned: ${role}. ${shiftWindow}.`;
         const smsResult = await sendSMS(to, smsBody);
         if (smsResult && smsResult.success) {
           console.log(
@@ -3170,13 +3345,29 @@ exports.createSchedule = async (req, res, next) => {
 };
 
 // LIST SCHEDULES
+const SCHEDULE_STAFF_FIELDS =
+  "name email role roles profilePicture userPhone userPhoneCountryCode allowedAreas allowedShiftTypes certificationTags";
+
 exports.getSchedules = async (req, res, next) => {
   try {
-    const { staffId, role, from, to } = req.query;
+    const {
+      staffId,
+      role,
+      unitArea,
+      shiftType,
+      status,
+      from,
+      to,
+      page,
+      limit,
+    } = req.query;
 
     const filter = { tenantId: req.tenantId };
     if (staffId) filter.staffId = staffId;
     if (role) filter.role = role;
+    if (unitArea) filter.unitArea = normalizeAreaTag(unitArea);
+    if (shiftType) filter.shiftType = normalizeShiftType(shiftType);
+    if (status) filter.status = { $in: String(status).split(",") };
 
     if (from || to) {
       filter.$and = [];
@@ -3184,11 +3375,40 @@ exports.getSchedules = async (req, res, next) => {
       if (to) filter.$and.push({ startTime: { $lte: new Date(to) } });
     }
 
-    const schedules = await Schedule.find(filter)
-      .populate("staffId", "-passwordHash")
-      .sort({ startTime: 1 });
+    const isPaginated = page !== undefined || limit !== undefined;
 
-    res.json(schedules);
+    if (!isPaginated) {
+      const schedules = await Schedule.find(filter)
+        .populate("staffId", SCHEDULE_STAFF_FIELDS)
+        .sort({ startTime: 1 })
+        .lean();
+
+      return res.json(schedules);
+    }
+
+    const safeLimit = Math.min(Math.max(Number(limit) || 100, 1), 500);
+    const safePage = Math.max(Number(page) || 1, 1);
+
+    const [schedules, total] = await Promise.all([
+      Schedule.find(filter)
+        .populate("staffId", SCHEDULE_STAFF_FIELDS)
+        .sort({ startTime: 1 })
+        .skip((safePage - 1) * safeLimit)
+        .limit(safeLimit)
+        .lean(),
+      Schedule.countDocuments(filter),
+    ]);
+
+    res.json({
+      data: schedules,
+      pagination: {
+        page: safePage,
+        limit: safeLimit,
+        total,
+        totalPages: Math.ceil(total / safeLimit),
+        hasMore: safePage * safeLimit < total,
+      },
+    });
   } catch (err) {
     next(err);
   }
@@ -3435,4 +3655,17 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+};
+
+// Pure ranking helpers, exported for unit tests.
+exports._scoring = {
+  PREFERENCE_WEIGHTS,
+  getRotationPenalty,
+  getPreferencePenalty,
+  compareRankingMetrics,
+  getWeekdayIndex,
+  getWeekStart,
+  getDayKey,
+  isWeekendDate,
+  isNightShift,
 };

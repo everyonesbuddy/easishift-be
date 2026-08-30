@@ -15,6 +15,13 @@ const scheduleSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
+    // Links the schedule back to the coverage slot it fills. Null for ad-hoc
+    // shifts created outside any coverage requirement.
+    coverageId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: "Coverage",
+      default: null,
+    },
     role: {
       type: String,
       required: true,
@@ -25,17 +32,14 @@ const scheduleSchema = new mongoose.Schema(
     unitArea: {
       type: String,
       default: null,
-      index: true,
     },
     shiftType: {
       type: String,
       default: null,
-      index: true,
     },
     shiftTag: {
       type: String,
       default: null,
-      index: true,
     },
     startTime: {
       type: Date,
@@ -45,7 +49,6 @@ const scheduleSchema = new mongoose.Schema(
     endTime: {
       type: Date,
       required: true,
-      index: true,
     },
     status: {
       type: String,
@@ -84,5 +87,12 @@ scheduleSchema.pre("validate", function (next) {
   }
   next();
 });
+
+// Counting assignments per coverage slot.
+scheduleSchema.index({ tenantId: 1, coverageId: 1, status: 1 });
+// Calendar/date-range reads and conflict checks.
+scheduleSchema.index({ tenantId: 1, startTime: 1, endTime: 1 });
+scheduleSchema.index({ tenantId: 1, staffId: 1, startTime: 1 });
+scheduleSchema.index({ tenantId: 1, status: 1, startTime: 1 });
 
 module.exports = mongoose.model("Schedule", scheduleSchema);

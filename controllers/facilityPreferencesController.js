@@ -1,5 +1,9 @@
 const FacilityPreferences = require("../models/facilityPreferencesModel");
+const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
+
+const isValidIanaZone = (value) =>
+  DateTime.local().setZone(String(value || "").trim()).isValid;
 
 const buildLimitedFacilityPreferencesView = (prefs) => {
   if (!prefs) return null;
@@ -9,6 +13,7 @@ const buildLimitedFacilityPreferencesView = (prefs) => {
   return {
     tenantId: prefs.tenantId,
     facilityTimezone: prefs.facilityTimezone,
+    facilityTimezoneConfirmed: Boolean(prefs.facilityTimezoneConfirmed),
     timeTracking: {
       enabled: Boolean(timeTracking.enabled),
       mode: timeTracking.mode || "open",
@@ -27,6 +32,7 @@ const buildSchedulingFacilityPreferencesView = (prefs) => {
   return {
     tenantId: prefs.tenantId,
     facilityTimezone: prefs.facilityTimezone,
+    facilityTimezoneConfirmed: Boolean(prefs.facilityTimezoneConfirmed),
     roleFamilies: prefs.roleFamilies || [],
     unitAreas: prefs.unitAreas || [],
     shiftTypes: prefs.shiftTypes || [],
@@ -79,6 +85,8 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       _id: _i,
       createdAt: _c,
       updatedAt: _u,
+      // Derived from an explicit facilityTimezone save, never client-supplied.
+      facilityTimezoneConfirmed: _tzc,
       ...updates
     } = req.body;
 
@@ -132,6 +140,21 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
             .filter(Boolean),
         ),
       );
+    }
+
+    // An explicit save is what flips the field from "never configured".
+    if (updates.facilityTimezone !== undefined) {
+      const timezone = String(updates.facilityTimezone || "").trim();
+
+      if (!isValidIanaZone(timezone)) {
+        return res.status(400).json({
+          message: `Invalid timezone '${updates.facilityTimezone}'. Expected an IANA timezone such as 'America/New_York'.`,
+          errorCode: "INVALID_TIMEZONE",
+        });
+      }
+
+      updates.facilityTimezone = timezone;
+      updates.facilityTimezoneConfirmed = true;
     }
 
     const prefs = await FacilityPreferences.findOneAndUpdate(

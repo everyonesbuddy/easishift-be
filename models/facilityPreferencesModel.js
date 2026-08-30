@@ -95,6 +95,15 @@ const facilityPreferencesSchema = new mongoose.Schema(
       trim: true,
     },
 
+    /**
+     * True only once an admin explicitly saves a timezone. Distinguishes
+     * "never configured" from "admin deliberately chose UTC".
+     */
+    facilityTimezoneConfirmed: {
+      type: Boolean,
+      default: false,
+    },
+
     // ─── FACILITY TAXONOMY ──────────────────────────────────────────────────
     /**
      * Role families the facility uses. Keep these as base roles only

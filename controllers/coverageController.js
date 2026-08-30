@@ -1,9 +1,9 @@
 const Coverage = require("../models/coverageModel");
-const Schedule = require("../models/scheduleModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const mongoose = require("mongoose");
 const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
+const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
 
 // Normalize to UTC midnight
 function normalizeToUTC(date) {
@@ -296,17 +296,6 @@ function buildDuplicateSummary(duplicates) {
     : preview.join(", ");
 }
 
-function buildCoverageMatchKey(item) {
-  return [
-    item.role || "",
-    item.unitArea || "",
-    item.shiftType || "",
-    item.shiftTag || "",
-    new Date(item.startTime).toISOString(),
-    new Date(item.endTime).toISOString(),
-  ].join("-");
-}
-
 // CREATE
 exports.createCoverage = async (req, res, next) => {
   try {
@@ -569,7 +558,24 @@ exports.getCoverage = async (req, res, next) => {
       filter.shiftTag = normalizeShiftTag(req.query.shiftTag);
 
     const list = await Coverage.find(filter).sort({ date: 1, startTime: 1 });
-    res.json(list.map(withOvernightFlag));
+
+    if (!list.length) return res.json([]);
+
+    const assignedByCoverage = await countAssignmentsByCoverage({
+      tenantId: req.tenantId,
+      coverageIds: list.map((coverage) => coverage._id),
+    });
+
+    const result = list.map((cov) => {
+      const assigned = assignedByCoverage.get(cov._id.toString()) || 0;
+      return {
+        ...withOvernightFlag(cov),
+        assignedCount: assigned,
+        remaining: Math.max(0, cov.requiredCount - assigned),
+      };
+    });
+
+    res.json(result);
   } catch (err) {
     next(err);
   }
@@ -802,37 +808,13 @@ exports.getUnfilledCoverage = async (req, res, next) => {
 
     if (!coverages.length) return res.json([]);
 
-    // 2. Get schedules that match these coverage times
-    const coverageIds = coverages.map((c) => c._id.toString());
-
-    const schedules = await Schedule.find({
+    const assignedByCoverage = await countAssignmentsByCoverage({
       tenantId,
-      role,
-      ...(unitArea ? { unitArea: normalizeAreaTag(unitArea) } : {}),
-      ...(shiftType ? { shiftType: normalizeShiftType(shiftType) } : {}),
-      ...(shiftTag ? { shiftTag: normalizeShiftTag(shiftTag) } : {}),
-      status: {
-        $nin: ["completed", "left_early", "no_show", "call_out", "cancelled"],
-      },
-      $or: coverages.map((c) => ({
-        startTime: c.startTime,
-        endTime: c.endTime,
-      })),
+      coverageIds: coverages.map((coverage) => coverage._id),
     });
 
-    // 3. Count how many staff are assigned per coverage
-    const scheduleCountMap = {};
-
-    schedules.forEach((s) => {
-      const key = buildCoverageMatchKey(s);
-      if (!scheduleCountMap[key]) scheduleCountMap[key] = 0;
-      scheduleCountMap[key]++;
-    });
-
-    // 4. Build response
     const result = coverages.map((cov) => {
-      const key = buildCoverageMatchKey(cov);
-      const assigned = scheduleCountMap[key] || 0;
+      const assigned = assignedByCoverage.get(cov._id.toString()) || 0;
 
       return {
         ...withOvernightFlag(cov),
@@ -867,38 +849,13 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
 
     if (!coverages.length) return res.json([]);
 
-    // 2. Find schedules that match these coverage times.
-    // If a role was provided, include it so we only count schedules for that role.
-    const scheduleQuery = {
+    const assignedByCoverage = await countAssignmentsByCoverage({
       tenantId,
-      status: { $nin: ["completed", "left_early", "no_show", "call_out"] },
-      $or: coverages.map((c) => ({
-        startTime: c.startTime,
-        endTime: c.endTime,
-      })),
-    };
-
-    if (role) scheduleQuery.role = role;
-    if (unitArea) scheduleQuery.unitArea = normalizeAreaTag(unitArea);
-    if (shiftType) scheduleQuery.shiftType = normalizeShiftType(shiftType);
-    if (shiftTag) scheduleQuery.shiftTag = normalizeShiftTag(shiftTag);
-
-    const schedules = await Schedule.find(scheduleQuery);
-
-    // 3. Count how many staff are assigned per coverage.
-    // Use a composite key that includes role so schedules for different roles
-    // but the same times don't get mixed together when `role` query is absent.
-    const scheduleCountMap = {};
-    schedules.forEach((s) => {
-      const key = buildCoverageMatchKey(s);
-      if (!scheduleCountMap[key]) scheduleCountMap[key] = 0;
-      scheduleCountMap[key]++;
+      coverageIds: coverages.map((coverage) => coverage._id),
     });
 
-    // 4. Build response
     const result = coverages.map((cov) => {
-      const key = buildCoverageMatchKey(cov);
-      const assigned = scheduleCountMap[key] || 0;
+      const assigned = assignedByCoverage.get(cov._id.toString()) || 0;
       return {
         ...withOvernightFlag(cov),
         assignedCount: assigned,

@@ -27,19 +27,16 @@ const coverageSchema = new mongoose.Schema(
     unitArea: {
       type: String,
       default: null,
-      index: true,
     },
 
     shiftType: {
       type: String,
       default: null,
-      index: true,
     },
 
     shiftTag: {
       type: String,
       default: null,
-      index: true,
     },
 
     startTime: {
@@ -82,5 +79,9 @@ coverageSchema.index(
   },
   { unique: true },
 );
+
+// Calendar reads and open-coverage lookups.
+coverageSchema.index({ tenantId: 1, date: 1 });
+coverageSchema.index({ tenantId: 1, startTime: 1 });
 
 module.exports = mongoose.model("Coverage", coverageSchema);

@@ -2,6 +2,7 @@ const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 const { parse } = require("csv-parse/sync");
+const { DateTime } = require("luxon");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
@@ -254,6 +255,7 @@ exports.registerTenant = async (req, res, next) => {
       termsAccepted,
       termsVersion,
       termsAcceptedAt,
+      facilityTimezone,
     } = req.body;
     const hasAcceptedTerms = parseBoolean(termsAccepted);
     const parsedTermsAcceptedAt = termsAcceptedAt
@@ -297,6 +299,23 @@ exports.registerTenant = async (req, res, next) => {
       role: "owner",
       roles: ["owner"],
     });
+
+    // Best-effort starting guess only; stays unconfirmed until an admin saves it.
+    const signupTimezone = String(facilityTimezone || "").trim();
+    if (signupTimezone && DateTime.local().setZone(signupTimezone).isValid) {
+      try {
+        await FacilityPreferences.create({
+          tenantId: tenant._id,
+          facilityTimezone: signupTimezone,
+          facilityTimezoneConfirmed: false,
+        });
+      } catch (err) {
+        console.error(
+          `Failed to seed facility timezone for tenant ${tenant._id}:`,
+          err && err.message ? err.message : err,
+        );
+      }
+    }
 
     // Notify the admin about account creation (best-effort)
     try {

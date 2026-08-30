@@ -2,9 +2,18 @@
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const Preferences = require("../models/preferencesModel");
+const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const { sendSMS } = require("../utils/sendSMS");
+const { formatRangeInFacilityZone } = require("../utils/timezoneUtils");
 const { hasPermission } = require("../config/authorization");
+
+const getFacilityTimezone = async (tenantId) => {
+  const prefs = await FacilityPreferences.findOne({ tenantId })
+    .select("facilityTimezone")
+    .lean();
+  return prefs?.facilityTimezone || "UTC";
+};
 
 const buildE164Number = (countryCode, phone) => {
   if (!phone) return null;
@@ -49,6 +58,12 @@ exports.requestTimeOff = async (req, res, next) => {
 
     // Notify tenant admins about the new time-off request (best-effort)
     try {
+      const facilityTimezone = await getFacilityTimezone(req.tenantId);
+      const timeOffWindow = formatRangeInFacilityZone(
+        startTime,
+        endTime,
+        facilityTimezone,
+      );
       const admins = await User.find({
         tenantId: req.tenantId,
         $or: [
@@ -68,8 +83,7 @@ exports.requestTimeOff = async (req, res, next) => {
             <p>${req.user.name || "A staff member"} has requested time off:</p>
             <ul>
               <li><strong>Staff:</strong> ${req.user.name || "(unknown)"} &lt;${req.user.email || ""}&gt;</li>
-              <li><strong>Start (UTC):</strong> ${new Date(startTime).toUTCString()}</li>
-              <li><strong>End (UTC):</strong> ${new Date(endTime).toUTCString()}</li>
+              <li><strong>When:</strong> ${timeOffWindow}</li>
               <li><strong>Reason:</strong> ${reason || "(none)"}</li>
             </ul>
             <p>Please review the request in the admin dashboard.</p>
@@ -95,7 +109,7 @@ exports.requestTimeOff = async (req, res, next) => {
           );
           if (!adminPhone) continue;
 
-          const smsBody = `${req.user.name || "A staff member"} requested time off. Start (UTC): ${new Date(startTime).toUTCString()}. End (UTC): ${new Date(endTime).toUTCString()}.`;
+          const smsBody = `${req.user.name || "A staff member"} requested time off: ${timeOffWindow}.`;
           const smsResult = await sendSMS(adminPhone, smsBody);
           if (smsResult && smsResult.success) {
             console.log(
@@ -156,6 +170,12 @@ exports.reviewTimeOff = async (req, res, next) => {
 
     // Notify staff about the decision (best-effort)
     try {
+      const facilityTimezone = await getFacilityTimezone(req.tenantId);
+      const timeOffWindow = formatRangeInFacilityZone(
+        updated.startTime,
+        updated.endTime,
+        facilityTimezone,
+      );
       const updatedStaffId =
         updated.staffId && updated.staffId._id
           ? updated.staffId._id
@@ -177,8 +197,7 @@ exports.reviewTimeOff = async (req, res, next) => {
           <p>Hi ${staff.name || "team member"},</p>
           <p>Your time-off request has been <strong>${status}</strong>.</p>
           <ul>
-            <li><strong>Start (UTC):</strong> ${new Date(updated.startTime).toUTCString()}</li>
-            <li><strong>End (UTC):</strong> ${new Date(updated.endTime).toUTCString()}</li>
+            <li><strong>When:</strong> ${timeOffWindow}</li>
             <li><strong>Reviewed by:</strong> ${req.user.name || req.user._id}</li>
           </ul>
           <p>Please contact your admin if you have questions.</p>
@@ -202,7 +221,7 @@ exports.reviewTimeOff = async (req, res, next) => {
           ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
           : null;
       if (to) {
-        const smsBody = `Your time-off request has been ${status}. Start (UTC): ${new Date(updated.startTime).toUTCString()}. End (UTC): ${new Date(updated.endTime).toUTCString()}.`;
+        const smsBody = `Your time-off request has been ${status}: ${timeOffWindow}.`;
         const smsResult = await sendSMS(to, smsBody);
         if (smsResult && smsResult.success) {
           console.log(

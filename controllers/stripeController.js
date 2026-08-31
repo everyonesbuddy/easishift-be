@@ -21,10 +21,9 @@ const TRIAL_DAYS_BY_INTERVAL = {
 };
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due"];
-const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(
-  /\/+$/,
-  "",
-);
+const frontendUrl = (
+  process.env.FRONTEND_URL || "http://localhost:5173"
+).replace(/\/+$/, "");
 
 const PLANS = {
   starterYearly: {
@@ -203,8 +202,7 @@ exports.createCheckoutSession = async (req, res, next) => {
         ...(trialPeriodDays > 0 ? { trial_period_days: trialPeriodDays } : {}),
         metadata: { tenantId, planKey },
       },
-      success_url:
-        `${frontendUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      success_url: `${frontendUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/billing/cancel`,
     });
 

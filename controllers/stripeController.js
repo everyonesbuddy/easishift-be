@@ -10,9 +10,9 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 const yearlyStarterPriceCents = 400000;
 const yearlyGrowthPriceCents = 700000;
 const yearlyPremiumPriceCents = 900000;
-const monthlyStarterPriceCents = 40000;
-const monthlyGrowthPriceCents = 70000;
-const monthlyPremiumPriceCents = 90000;
+const monthlyStarterPriceCents = 50000;
+const monthlyGrowthPriceCents = 80000;
+const monthlyPremiumPriceCents = 100000;
 
 // Trial length per billing interval. Set to 0 to disable a trial for that interval.
 const TRIAL_DAYS_BY_INTERVAL = {
@@ -21,6 +21,10 @@ const TRIAL_DAYS_BY_INTERVAL = {
 };
 
 const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due"];
+const frontendUrl = (process.env.FRONTEND_URL || "http://localhost:5173").replace(
+  /\/+$/,
+  "",
+);
 
 const PLANS = {
   starterYearly: {
@@ -199,12 +203,9 @@ exports.createCheckoutSession = async (req, res, next) => {
         ...(trialPeriodDays > 0 ? { trial_period_days: trialPeriodDays } : {}),
         metadata: { tenantId, planKey },
       },
-      success_url: `${
-        process.env.FRONTEND_URL || "http://localhost:5173"
-      }/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${
-        process.env.FRONTEND_URL || "http://localhost:5173"
-      }/billing/cancel`,
+      success_url:
+        `${frontendUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/billing/cancel`,
     });
 
     res.status(200).json({

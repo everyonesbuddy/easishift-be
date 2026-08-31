@@ -43,6 +43,7 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 
 - Roles are validated against `FacilityPreferences.roleFamilies` (plus system roles like `admin`).
 - Coverage and schedule compatibility is enforced using role + unit area + shift type + certification tags.
+- Unit areas are stored as lowercase values (normally lowercase snake_case, such as `front_office`) across facility preferences, coverage, schedules, and draft assignments.
 - Compatibility semantics now distinguish explicit staff tags from floating staff:
   - staff with explicit `allowedAreas` / `allowedShiftTypes` are restricted to matching coverage tags
   - staff without explicit area/shift tags can float within compatible role coverage
@@ -50,7 +51,9 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 - Coverage responses include a computed `spansOvernight` boolean.
 - Coverage now enforces strict shift slot pairing: `shiftType` and `shiftTag` must be provided together (or both omitted).
 - Manual coverage windows do not auto-infer `shiftType`; when using manual `startTime`/`endTime`, keep `shiftType` and `shiftTag` unset.
-- Staff preferences were simplified to preferred days + notification toggles only.
+- Staff preferences provide soft ranking guidance for days, target workload, biweekly rotation, and overtime interest, alongside notification toggles.
+- A `Schedule` can now link directly to its `Coverage` requirement through `coverageId`; schedules created from pickup and published auto-schedule drafts always carry this link.
+- Coverage read endpoints compute `assignedCount` and `remaining` server-side using `coverageId`, avoiding client-side schedule/coverage joins.
 
 ---
 
@@ -59,8 +62,8 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 - **Tenant**: organization account, subscription status, seat limits, billing IDs
 - **User**: tenant user with multi-role access (`roles`) and optional capability arrays (`allowedAreas`, `allowedShiftTypes`, `certificationTags`)
 - **Coverage**: required staffing slots by role/date/time and required headcount
-- **Schedule**: assigned shifts per staff member
-- **Preferences**: staff preferred weekdays + notification toggles
+- **Schedule**: assigned shifts per staff member, optionally linked to the coverage slot it fills through `coverageId`
+- **Preferences**: staff soft scheduling preferences, rotation guidance, and notification toggles
 - **FacilityPreferences**: tenant-level scheduling policy and taxonomy (`roleFamilies`, `unitAreas`, `shiftTypes`, `certificationTags`)
 - **TimeEntry**: tenant-scoped attendance records with clock-in/out, mode (`open`/`geofence`), and multi-break logs
 - **TimeOff**: staff PTO/leave requests with admin approval flow
@@ -105,8 +108,8 @@ All tenant data is isolated using `tenantId`.
 
 ### Schedules
 
-- `GET /api/v1/schedules` - list schedules (query by `staffId`, `from`, `to`)
-- `POST /api/v1/schedules` - create shift
+- `GET /api/v1/schedules` - list schedules (query by `staffId`, `role`, `unitArea`, `shiftType`, `status`, `from`, `to`)
+- `POST /api/v1/schedules` - create shift; accepts optional `coverageId` for a shift that fills an existing coverage requirement
 - `POST /api/v1/schedules/auto-generate` - auto-generate draft shifts from coverage (admin)
 - `GET /api/v1/schedules/draft-schedules` - list auto-schedule drafts (admin)
 - `GET /api/v1/schedules/draft-schedules/:draftId` - get one draft with assignments (admin)
@@ -125,7 +128,7 @@ The auto-scheduler is a rule-based engine (not a black-box model). It processes 
 
 1. It gets each selected coverage ID from `coverageIds`.
 2. For each ID, it reads the coverage details (especially role, start time, end time, required headcount).
-3. It finds existing schedules that match that same role + exact time window.
+3. It finds existing schedules linked to that coverage through `coverageId`.
 4. It calculates how many are still needed:
    - `needed = requiredCount - alreadyAssignedCount`
 5. If `needed <= 0`, that coverage is marked already full.
@@ -319,6 +322,8 @@ Coverage behavior notes:
 - If `shiftType` + `shiftTag` are omitted, manual `startTime`/`endTime` are used as provided.
 - Overnight windows are normalized automatically when `endTime <= startTime`.
 - Duplicate batch-create requests are rejected with detailed duplicate summaries.
+- All coverage listing endpoints return computed `assignedCount` and `remaining` values. Counts include schedules with `scheduled`, `in_progress`, `completed`, or `left_early` status.
+- `assignedCount` uses the schedule's `coverageId`, not a role/time signature. A schedule filling coverage should therefore always be created with `coverageId` or published from an auto-schedule draft.
 
 ### Time Off
 
@@ -354,12 +359,35 @@ Time tracking behavior:
 Current staff preference fields include:
 
 - `preferredDaysOfWeek`
+- `avoidDaysOfWeek`
+- `targetHoursPerWeek`
+- `maxShiftsPerWeek`
+- `maxConsecutiveDays`
+- `wantsOvertime`
+- `worksEveryOtherWeek`
+- `rotationAnchorDate` (required when `worksEveryOtherWeek` is true)
 - `emailNotificationsEnabled`
 - `smsNotificationsEnabled`
 
+These are soft ranking inputs used only by auto-schedule draft generation and the per-assignment AI-fill endpoint. They do not block manual schedule creation, updates, pickups, or draft publication. Role, authorized areas/shift types, certification requirements, approved time off, and scheduling conflicts remain hard rules.
+
+`worksEveryOtherWeek` is a soft biweekly preference. When it is false, no rotation logic applies. When it is true, `rotationAnchorDate` identifies the first working week and alternate facility-local weeks receive a ranking penalty. Staff use preferred and avoided day lists for weekday/weekend choices and other fine-grained scheduling preferences; there are no separate rotation-scope or shift-type preference fields.
+
 Recurring hard day-of-week unavailability is not stored in preferences. Hard availability blocking is handled through approved time-off requests.
 
-Timezone behavior for scheduling is standardized to UTC in the backend. Any local timezone display/conversion should be handled in the frontend.
+### Timezone Contract
+
+All schedule, coverage, and time-off timestamps are stored as MongoDB `Date` values: UTC instants. The database never stores a naive local time. For example, a New York `07:00` shift in daylight time is stored as `11:00:00.000Z`; during standard time, the same local `07:00` is stored as `12:00:00.000Z`. This is intentional and preserves correct ordering, duration, overlap checks, and daylight-saving transitions.
+
+`FacilityPreferences.facilityTimezone` is the facility's IANA zone (for example, `America/New_York`). `facilityTimezoneConfirmed` is false until an administrator explicitly saves a valid zone, distinguishing the default `UTC` value from an intentional UTC choice. Facility preference writes reject invalid timezone names with `400 INVALID_TIMEZONE`.
+
+The timezone is used in three places:
+
+- **Slot creation:** coverage created from `shiftType` + `shiftTag` interprets slot times in the facility timezone, then stores the resulting UTC instants.
+- **Calendar interpretation:** auto-schedule ranking evaluates weekday preferences, rotation parity, weeks, weekends, night shifts, consecutive days, and weekly workload in the facility timezone. This ensures a Monday 9 PM New York shift remains Monday for preference and fairness decisions even though its UTC start occurs on Tuesday.
+- **Human messages:** schedule, swap, and time-off notifications render instants in the facility timezone with DST-aware abbreviations such as `EDT`, `EST`, or `CDT`.
+
+UTC instants are used directly for sorting, duration calculations, overlap/conflict checks, and time-off conflict checks. Those calculations do not need a timezone because they compare absolute moments. The frontend should render timestamps using the confirmed facility zone and must not reinterpret a UTC instant as a naive local time.
 
 ### Facility Preferences
 
@@ -386,6 +414,7 @@ Current facility preference fields include:
 - `shiftReminderLeadHours`
 - `notifyStaffOnCoveragePost`
 - `facilityTimezone` (IANA timezone; used for local slot conversion)
+- `facilityTimezoneConfirmed` (whether an admin explicitly confirmed the timezone)
 - `roleFamilies`
 - `unitAreas`
 - `shiftTypes`
@@ -419,9 +448,20 @@ For easier admin setup, you can store `timeTracking.geofenceAddress` as a human-
 
 ### Billing (Stripe)
 
+- `GET /api/v1/stripe/plans` - return the tenant-specific plan catalog, seat availability, and applicable trial duration (admin)
 - `POST /api/v1/stripe/create-checkout-session` - create subscription checkout (admin)
+- `POST /api/v1/stripe/change-plan` - change an existing subscription in place (admin)
 - `POST /api/v1/stripe/cancel-subscription` - cancel active subscription (admin)
 - `POST /api/v1/stripe/webhook` - Stripe webhook receiver (public)
+
+Billing behavior:
+
+- New tenants receive a one-time trial: 30 days for yearly plans and 7 days for monthly plans.
+- `Tenant.trialUsedAt` prevents a tenant from receiving another trial after cancellation, resubscription, or a plan change.
+- Checkout reuses the saved Stripe customer when available.
+- Checkout and plan changes reject plans with fewer seats than the tenant's current user count (`409 PLAN_SEATS_BELOW_USAGE`).
+- `GET /stripe/plans` returns `available`, `seatsOverLimit`, and `trialPeriodDays` for each plan so the frontend can disable invalid choices before checkout.
+- Active/trialing/past-due Stripe subscriptions must use `/stripe/change-plan` instead of creating a second checkout session. Updating a subscription in place preserves any active Stripe trial end date.
 
 ---
 
@@ -522,6 +562,9 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 - `node scripts/migrate-facility-taxonomy.js` - migrates legacy role prefixes, backfills facility taxonomy, and removes deprecated preference fields
 - `node scripts/extend-expired-password-resets.js` - extends currently expired password reset windows by 14 days (supports `DRY_RUN=true` and optional `TENANT_ID=<id>`)
 - `node scripts/normalize-coverage-shift-pairs.js` - normalizes legacy coverage rows where only one of `shiftType`/`shiftTag` is set by clearing both to manual mode (supports `DRY_RUN=true` and optional `TENANT_ID=<id>`)
+- `node scripts/migrate-unit-area-lowercase.js` - normalizes uppercase legacy unit areas in coverage, schedules, draft assignments, and facility preferences
+- `node scripts/backfill-schedule-coverage-id.js --dry-run` - preview links from legacy schedules to coverage requirements; rerun without `--dry-run` to write links and sync indexes
+- `node scripts/backfill-tenant-trial-used.js --dry-run` - preview trial-use stamps for tenants that already had access; rerun without `--dry-run` to apply
 
 NPM shortcuts:
 

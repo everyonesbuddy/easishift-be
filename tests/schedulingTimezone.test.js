@@ -76,10 +76,10 @@ test("preferring Monday is honoured for a Monday night shift", () => {
   );
 });
 
-test("weekend-only rotation accepts a Sunday night shift", () => {
+test("biweekly parity for a Sunday night follows the local week", () => {
   const staffPreferences = {
-    rotationCadence: "weekly",
-    rotationScope: "weekends_only",
+    worksEveryOtherWeek: true,
+    rotationAnchorDate: new Date("2026-09-06T04:00:00.000Z"),
   };
 
   assert.equal(
@@ -89,14 +89,6 @@ test("weekend-only rotation accepts a Sunday night shift", () => {
       timezone: NY,
     }),
     0,
-  );
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences,
-      coverageStart: SUN_NIGHT_LOCAL,
-      timezone: "UTC",
-    }),
-    PREFERENCE_WEIGHTS.rotationNonWeekend,
   );
 });
 

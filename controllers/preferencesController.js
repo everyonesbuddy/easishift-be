@@ -1,9 +1,6 @@
 const Preferences = require("../models/preferencesModel");
 const { hasPermission } = require("../config/authorization");
 
-const ROTATION_CADENCES = ["none", "weekly", "biweekly"];
-const ROTATION_SCOPES = ["all_days", "weekends_only"];
-
 const normalizeDayList = (value) =>
   Array.isArray(value)
     ? Array.from(
@@ -11,21 +8,6 @@ const normalizeDayList = (value) =>
           value
             .map((day) => Number(day))
             .filter((day) => Number.isInteger(day) && day >= 0 && day <= 6),
-        ),
-      )
-    : undefined;
-
-const normalizeTagList = (value) =>
-  Array.isArray(value)
-    ? Array.from(
-        new Set(
-          value
-            .map((item) =>
-              String(item || "")
-                .trim()
-                .toLowerCase(),
-            )
-            .filter(Boolean),
         ),
       )
     : undefined;
@@ -40,7 +22,6 @@ const normalizeNullableNumber = (value) => {
 const pickAllowedPreferenceFields = (payload) => ({
   preferredDaysOfWeek: normalizeDayList(payload.preferredDaysOfWeek),
   avoidDaysOfWeek: normalizeDayList(payload.avoidDaysOfWeek),
-  preferredShiftTypes: normalizeTagList(payload.preferredShiftTypes),
   targetHoursPerWeek: normalizeNullableNumber(payload.targetHoursPerWeek),
   maxShiftsPerWeek: normalizeNullableNumber(payload.maxShiftsPerWeek),
   maxConsecutiveDays: normalizeNullableNumber(payload.maxConsecutiveDays),
@@ -48,8 +29,10 @@ const pickAllowedPreferenceFields = (payload) => ({
     payload.wantsOvertime === undefined
       ? undefined
       : Boolean(payload.wantsOvertime),
-  rotationCadence: payload.rotationCadence,
-  rotationScope: payload.rotationScope,
+  worksEveryOtherWeek:
+    payload.worksEveryOtherWeek === undefined
+      ? undefined
+      : Boolean(payload.worksEveryOtherWeek),
   rotationAnchorDate:
     payload.rotationAnchorDate === undefined
       ? undefined
@@ -66,29 +49,15 @@ const validatePreferenceUpdates = (updates, existing = {}) => {
   const merged = { ...existing, ...stripUndefined(updates) };
 
   if (
-    updates.rotationCadence !== undefined &&
-    !ROTATION_CADENCES.includes(updates.rotationCadence)
-  ) {
-    return `rotationCadence must be one of: ${ROTATION_CADENCES.join(", ")}`;
-  }
-
-  if (
-    updates.rotationScope !== undefined &&
-    !ROTATION_SCOPES.includes(updates.rotationScope)
-  ) {
-    return `rotationScope must be one of: ${ROTATION_SCOPES.join(", ")}`;
-  }
-
-  if (
     updates.rotationAnchorDate instanceof Date &&
     Number.isNaN(updates.rotationAnchorDate.getTime())
   ) {
     return "rotationAnchorDate must be a valid date";
   }
 
-  // Parity has no meaning without an anchor week.
-  if (merged.rotationCadence === "biweekly" && !merged.rotationAnchorDate) {
-    return "rotationAnchorDate is required when rotationCadence is 'biweekly'";
+  // Alternation has no meaning without a starting working week.
+  if (merged.worksEveryOtherWeek && !merged.rotationAnchorDate) {
+    return "rotationAnchorDate is required when worksEveryOtherWeek is true";
   }
 
   const preferredDays = merged.preferredDaysOfWeek || [];

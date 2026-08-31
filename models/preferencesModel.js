@@ -32,14 +32,6 @@ const preferencesSchema = new mongoose.Schema(
       default: [],
     },
 
-    // Soft counterpart to User.allowedShiftTypes (which is a hard capability).
-    preferredShiftTypes: {
-      type: [String],
-      default: [],
-      lowercase: true,
-      trim: true,
-    },
-
     targetHoursPerWeek: {
       type: Number,
       default: null,
@@ -67,28 +59,13 @@ const preferencesSchema = new mongoose.Schema(
       default: false,
     },
 
-    // ─── ROTATION ────────────────────────────────────────────────────────────
-    /**
-     * cadence + scope combine into the four supported rhythms:
-     *   weekly   + all_days      -> every week
-     *   weekly   + weekends_only -> every weekend
-     *   biweekly + all_days      -> every other week
-     *   biweekly + weekends_only -> every other weekend
-     */
-    rotationCadence: {
-      type: String,
-      enum: ["none", "weekly", "biweekly"],
-      default: "none",
+    // ─── BIWEEKLY PREFERENCE ─────────────────────────────────────────────────
+    worksEveryOtherWeek: {
+      type: Boolean,
+      default: false,
     },
 
-    rotationScope: {
-      type: String,
-      enum: ["all_days", "weekends_only"],
-      default: "all_days",
-    },
-
-    // Defines which week is "on" for biweekly cadence. Parity is meaningless
-    // without it, so biweekly rotation is ignored when this is unset.
+    // Defines the first working week when worksEveryOtherWeek is enabled.
     rotationAnchorDate: {
       type: Date,
       default: null,

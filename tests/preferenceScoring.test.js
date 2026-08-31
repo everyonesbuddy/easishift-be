@@ -13,48 +13,9 @@ const MONDAY_WEEK_2 = new Date("2026-09-21T14:00:00.000Z");
 
 const anchor = MONDAY_WEEK_0;
 
-test("every week rotation never penalizes", () => {
-  const prefs = { rotationCadence: "weekly", rotationScope: "all_days" };
-
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: MONDAY_WEEK_0,
-    }),
-    0,
-  );
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: MONDAY_WEEK_1,
-    }),
-    0,
-  );
-});
-
-test("every weekend rotation penalizes weekdays only", () => {
-  const prefs = { rotationCadence: "weekly", rotationScope: "weekends_only" };
-
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: SATURDAY_WEEK_0,
-    }),
-    0,
-  );
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: MONDAY_WEEK_0,
-    }),
-    PREFERENCE_WEIGHTS.rotationNonWeekend,
-  );
-});
-
 test("every other week penalizes off-weeks and repeats every 2 weeks", () => {
   const prefs = {
-    rotationCadence: "biweekly",
-    rotationScope: "all_days",
+    worksEveryOtherWeek: true,
     rotationAnchorDate: anchor,
   };
 
@@ -83,8 +44,7 @@ test("every other week penalizes off-weeks and repeats every 2 weeks", () => {
 
 test("every other week parity works for dates before the anchor", () => {
   const prefs = {
-    rotationCadence: "biweekly",
-    rotationScope: "all_days",
+    worksEveryOtherWeek: true,
     rotationAnchorDate: MONDAY_WEEK_2,
   };
 
@@ -104,46 +64,25 @@ test("every other week parity works for dates before the anchor", () => {
   );
 });
 
-test("every other weekend stacks both penalties on an off-week weekday", () => {
+test("every-other-week preference is ignored when no anchor is set", () => {
   const prefs = {
-    rotationCadence: "biweekly",
-    rotationScope: "weekends_only",
-    rotationAnchorDate: anchor,
-  };
-
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: SATURDAY_WEEK_0,
-    }),
-    0,
-  );
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: SATURDAY_WEEK_1,
-    }),
-    PREFERENCE_WEIGHTS.rotationOffWeek,
-  );
-  assert.equal(
-    getRotationPenalty({
-      staffPreferences: prefs,
-      coverageStart: MONDAY_WEEK_1,
-    }),
-    PREFERENCE_WEIGHTS.rotationOffWeek + PREFERENCE_WEIGHTS.rotationNonWeekend,
-  );
-});
-
-test("biweekly rotation is ignored when no anchor is set", () => {
-  const prefs = {
-    rotationCadence: "biweekly",
-    rotationScope: "all_days",
+    worksEveryOtherWeek: true,
     rotationAnchorDate: null,
   };
 
   assert.equal(
     getRotationPenalty({
       staffPreferences: prefs,
+      coverageStart: MONDAY_WEEK_1,
+    }),
+    0,
+  );
+});
+
+test("a staff member without the preference has no rotation penalty", () => {
+  assert.equal(
+    getRotationPenalty({
+      staffPreferences: { worksEveryOtherWeek: false },
       coverageStart: MONDAY_WEEK_1,
     }),
     0,
@@ -245,17 +184,4 @@ test("wantsOvertime removes the overtime penalty", () => {
     }),
     0,
   );
-});
-
-test("non-preferred shift type is penalized", () => {
-  const penalty = getPreferencePenalty({
-    staffPreferences: { preferredShiftTypes: ["day"], wantsOvertime: true },
-    coverage: { startTime: MONDAY_WEEK_0, shiftType: "night" },
-    projectedWeekMinutes: 0,
-    projectedAssignedDaysThisWeek: 1,
-    consecutiveDaysIfAssigned: 1,
-    overtimeMinutes: 0,
-  });
-
-  assert.equal(penalty, PREFERENCE_WEIGHTS.nonPreferredShiftType);
 });

@@ -480,52 +480,28 @@ const addTrackedSchedule = ({
 const PREFERENCE_WEIGHTS = Object.freeze({
   nonPreferredDay: 2,
   avoidedDay: 4,
-  nonPreferredShiftType: 3,
   overMaxConsecutiveDays: 5,
   overMaxShiftsPerWeek: 5,
   perHourOverTarget: 1,
   unwantedOvertime: 4,
   rotationOffWeek: 5,
-  rotationNonWeekend: 3,
 });
 
 const MS_PER_WEEK = 7 * 24 * 60 * 60 * 1000;
 
-/**
- * Rotation is cadence x scope:
- *   weekly + all_days      -> every week (no penalty, always "on")
- *   weekly + weekends_only -> every weekend
- *   biweekly + all_days    -> every other week
- *   biweekly + weekends_only -> every other weekend
- */
 const getRotationPenalty = ({ staffPreferences, coverageStart, timezone }) => {
-  const cadence = staffPreferences?.rotationCadence;
-  if (!cadence || cadence === "none") return 0;
+  if (!staffPreferences?.worksEveryOtherWeek) return 0;
 
-  let penalty = 0;
+  const anchor = staffPreferences.rotationAnchorDate;
+  if (!anchor) return 0;
 
-  if (
-    staffPreferences.rotationScope === "weekends_only" &&
-    !isWeekendDate(coverageStart, timezone)
-  ) {
-    penalty += PREFERENCE_WEIGHTS.rotationNonWeekend;
-  }
+  const anchorWeek = getWeekStart(anchor, timezone);
+  const shiftWeek = getWeekStart(coverageStart, timezone);
+  const weeksApart = Math.round((shiftWeek - anchorWeek) / MS_PER_WEEK);
 
-  if (cadence === "biweekly") {
-    const anchor = staffPreferences.rotationAnchorDate;
-    // Without an anchor there is no way to tell an on-week from an off-week.
-    if (!anchor) return penalty;
-
-    const anchorWeek = getWeekStart(anchor, timezone);
-    const shiftWeek = getWeekStart(coverageStart, timezone);
-    const weeksApart = Math.round((shiftWeek - anchorWeek) / MS_PER_WEEK);
-
-    if (Math.abs(weeksApart % 2) === 1) {
-      penalty += PREFERENCE_WEIGHTS.rotationOffWeek;
-    }
-  }
-
-  return penalty;
+  return Math.abs(weeksApart % 2) === 1
+    ? PREFERENCE_WEIGHTS.rotationOffWeek
+    : 0;
 };
 
 const getPreferencePenalty = ({
@@ -555,18 +531,6 @@ const getPreferencePenalty = ({
 
   if ((staffPreferences.avoidDaysOfWeek || []).includes(weekday)) {
     penalty += PREFERENCE_WEIGHTS.avoidedDay;
-  }
-
-  const preferredShiftTypes = (staffPreferences.preferredShiftTypes || []).map(
-    normalizeShiftType,
-  );
-  const coverageShiftType = getCoverageShiftType(coverage);
-  if (
-    preferredShiftTypes.length > 0 &&
-    coverageShiftType &&
-    !preferredShiftTypes.includes(coverageShiftType)
-  ) {
-    penalty += PREFERENCE_WEIGHTS.nonPreferredShiftType;
   }
 
   const { maxConsecutiveDays, maxShiftsPerWeek, targetHoursPerWeek } =

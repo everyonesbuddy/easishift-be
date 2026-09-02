@@ -299,6 +299,18 @@ const buildOpenApiSpec = () => {
           },
         },
       },
+      "/api/v1/auth/users/directory": {
+        get: {
+          tags: ["Users", "Scheduling"],
+          security: [{ bearerAuth: [] }],
+          summary: "Get tenant staff directory for shift swaps",
+          responses: {
+            200: {
+              description: "Minimal staff profiles for compatible swap selection",
+            },
+          },
+        },
+      },
       "/api/v1/auth/{id}": {
         get: {
           tags: ["Users"],
@@ -529,6 +541,19 @@ const buildOpenApiSpec = () => {
             content: { "application/json": { schema: { type: "object" } } },
           },
           responses: { 201: { description: "Requested" } },
+        },
+      },
+      "/api/v1/schedules/{id}/status": {
+        patch: {
+          tags: ["Schedules"],
+          security: [{ bearerAuth: [] }],
+          summary: "Update own schedule status",
+          parameters: [idParam],
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object" } } },
+          },
+          responses: { 200: { description: "Status updated" } },
         },
       },
       "/api/v1/schedules/bulk": {

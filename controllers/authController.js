@@ -944,6 +944,25 @@ exports.getAllUsers = async (req, res, next) => {
 };
 
 /**
+ * GET SWAP DIRECTORY
+ * ------------------
+ * Returns only the fields required to find compatible shift-swap recipients.
+ */
+exports.getSwapDirectory = async (req, res, next) => {
+  try {
+    const users = await User.find({ tenantId: req.tenantId })
+      .select(
+        "name role roles allowedAreas allowedShiftTypes certificationTags",
+      )
+      .lean();
+
+    res.status(200).json(users);
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
  * GET USER BY ID
  */
 exports.getUserById = async (req, res, next) => {

@@ -2,6 +2,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
   staff: [
     "schedule.view_own",
     "schedule.pick_up",
+    "schedule.update_own_status",
     "timeoff.request",
     "shift_swap.use",
     "messages.use",

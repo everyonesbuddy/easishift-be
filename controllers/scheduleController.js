@@ -32,6 +32,7 @@ const HOURS_TO_MINUTES = 60;
 const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
 const SCHEDULE_SYSTEM_ROLES = new Set(["user", "staff", "other"]);
 const PICKUP_ACTIVE_STATUSES = ["scheduled", "in_progress"];
+const SELF_SERVICE_SCHEDULE_STATUSES = new Set(["scheduled", "call_out"]);
 
 const DEFAULT_FACILITY_POLICY = Object.freeze({
   schedulingPattern: "balance",
@@ -2744,9 +2745,10 @@ exports.requestShiftSwap = async (req, res, next) => {
       });
     }
 
-    const [requester, receiver] = await Promise.all([
+    const [requester, receiver, facilityPreferences] = await Promise.all([
       User.findOne({ _id: schedule.staffId, tenantId: req.tenantId }),
       User.findOne({ _id: receiverStaffId, tenantId: req.tenantId }),
+      FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
     ]);
 
     if (!requester || !receiver) {
@@ -2755,7 +2757,8 @@ exports.requestShiftSwap = async (req, res, next) => {
         .json({ message: "Requester or receiver staff not found" });
     }
 
-    if (!isRoleCompatible(receiver.role, schedule.role)) {
+    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+    if (!isStaffRoleCompatible(receiver, schedule.role, facilityConfig)) {
       return res.status(400).json({
         message:
           "Shift swap is allowed only between staff with a compatible role",
@@ -3539,6 +3542,42 @@ exports.updateSchedule = async (req, res, next) => {
       return res.status(404).json({ message: "Schedule not found" });
 
     res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+};
+
+// UPDATE OWN SCHEDULE STATUS
+exports.updateOwnScheduleStatus = async (req, res, next) => {
+  try {
+    const status = String(req.body?.status || "").trim().toLowerCase();
+
+    if (!SELF_SERVICE_SCHEDULE_STATUSES.has(status)) {
+      return res.status(400).json({
+        message: "Staff may only set a shift status to scheduled or call_out",
+      });
+    }
+
+    const schedule = await Schedule.findOne({
+      _id: req.params.id,
+      tenantId: req.tenantId,
+    });
+
+    if (!schedule) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+
+    if (schedule.staffId.toString() !== req.user._id.toString()) {
+      return res.status(403).json({
+        message: "You can only update the status of your own shift",
+      });
+    }
+
+    schedule.status = status;
+    await schedule.save();
+
+    await schedule.populate("staffId", "-passwordHash");
+    res.json(schedule);
   } catch (err) {
     next(err);
   }

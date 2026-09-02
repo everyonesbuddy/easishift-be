@@ -6,6 +6,7 @@ const {
   getSchedules,
   getScheduleById,
   updateSchedule,
+  updateOwnScheduleStatus,
   deleteSchedule,
   deleteSchedulesByIds,
   autoGenerateSchedule,
@@ -83,6 +84,13 @@ router.post(
 router.get("/swap-requests", getShiftSwapRequests);
 router.post("/swap-requests/:swapRequestId/respond", respondToShiftSwapRequest);
 router.post("/:id/swap-requests", requestShiftSwap);
+
+// Staff can only change the status of a shift assigned to themselves.
+router.patch(
+  "/:id/status",
+  requirePermission("schedule.update_own_status"),
+  updateOwnScheduleStatus,
+);
 
 router.get("/:id", getScheduleById);
 

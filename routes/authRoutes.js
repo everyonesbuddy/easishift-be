@@ -35,6 +35,7 @@ const {
   sendPasswordReset,
   resetPassword,
   getAllUsers,
+  getSwapDirectory,
   getUserById,
   updateUser,
   deleteUser,
@@ -88,6 +89,15 @@ router.get(
   tenant,
   requirePermission("staff.view"),
   getAllUsers,
+);
+
+// Minimal tenant staff directory used to select eligible shift-swap recipients.
+router.get(
+  "/users/directory",
+  auth,
+  tenant,
+  requirePermission("shift_swap.use"),
+  getSwapDirectory,
 );
 
 // Get single user by ID

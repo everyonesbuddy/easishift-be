@@ -3550,7 +3550,9 @@ exports.updateSchedule = async (req, res, next) => {
 // UPDATE OWN SCHEDULE STATUS
 exports.updateOwnScheduleStatus = async (req, res, next) => {
   try {
-    const status = String(req.body?.status || "").trim().toLowerCase();
+    const status = String(req.body?.status || "")
+      .trim()
+      .toLowerCase();
 
     if (!SELF_SERVICE_SCHEDULE_STATUSES.has(status)) {
       return res.status(400).json({

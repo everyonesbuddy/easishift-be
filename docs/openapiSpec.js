@@ -306,7 +306,8 @@ const buildOpenApiSpec = () => {
           summary: "Get tenant staff directory for shift swaps",
           responses: {
             200: {
-              description: "Minimal staff profiles for compatible swap selection",
+              description:
+                "Minimal staff profiles for compatible swap selection",
             },
           },
         },

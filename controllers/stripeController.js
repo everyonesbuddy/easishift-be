@@ -7,9 +7,9 @@ const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 
 // Plan mapping: planKey -> price (cents) and seats
 // Prices are in cents: $3000 -> 300000 cents
-const yearlyStarterPriceCents = 400000;
-const yearlyGrowthPriceCents = 700000;
-const yearlyPremiumPriceCents = 900000;
+const yearlyStarterPriceCents = 480000;
+const yearlyGrowthPriceCents = 770000;
+const yearlyPremiumPriceCents = 960000;
 const monthlyStarterPriceCents = 50000;
 const monthlyGrowthPriceCents = 80000;
 const monthlyPremiumPriceCents = 100000;

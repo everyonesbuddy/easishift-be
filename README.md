@@ -342,6 +342,21 @@ Coverage behavior notes:
 - `GET /api/v1/time-tracking` - list tenant time entries (admin)
 - `PATCH /api/v1/time-tracking/:id/adjust` - adjust a time entry (admin)
 
+### Third-Party Payroll Exports
+
+- `GET /api/v1/exports/payroll/:provider?source=actual&from=&to=` - download actual worked-hours CSV for `gusto`, `quickbooks`, or `rippling` (requires time tracking enabled)
+- `GET /api/v1/exports/payroll/:provider?source=scheduled&from=&to=` - download scheduled-hours CSV for `gusto`, `quickbooks`, or `rippling`
+- `GET /api/v1/exports/time-entries?provider=&from=&to=` - download actual worked-hours CSV
+- `GET /api/v1/exports/schedules?provider=&from=&to=` - download scheduled-hours CSV
+
+Export behavior:
+
+- All export endpoints are tenant-scoped and require staff-view permission.
+- Supported providers are `gusto`, `quickbooks`, and `rippling`.
+- Actual-hours exports read completed or adjusted `TimeEntry` records and are blocked when `timeTracking.enabled` is false.
+- Scheduled-hours exports read `Schedule` records and remain available for facilities using WiserShifts mainly for scheduling.
+- Export date ranges require `from` and `to` and are limited to 92 days.
+
 Time tracking behavior:
 
 - Controlled per tenant in facility preferences via `timeTracking.enabled` and `timeTracking.mode`.

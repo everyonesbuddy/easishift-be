@@ -27,6 +27,7 @@ const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
+const exportRoutes = require("./routes/exportRoutes");
 const swaggerUi = require("swagger-ui-express");
 const buildOpenApiSpec = require("./docs/openapiSpec");
 
@@ -283,6 +284,7 @@ app.use("/api/v1/time-tracking", timeTrackingRoutes);
 app.use("/api/v1/stripe", stripeRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
+app.use("/api/v1/exports", exportRoutes);
 
 // ✅ Global Error Handler
 app.use(errorHandler);

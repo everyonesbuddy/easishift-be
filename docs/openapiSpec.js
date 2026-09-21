@@ -24,6 +24,7 @@ const buildOpenApiSpec = () => {
       { name: "Coverage" },
       { name: "Time Off" },
       { name: "Time Tracking" },
+      { name: "Exports" },
       { name: "Preferences" },
       { name: "Facility Preferences" },
       { name: "Messages" },
@@ -791,6 +792,109 @@ const buildOpenApiSpec = () => {
             content: { "application/json": { schema: { type: "object" } } },
           },
           responses: { 200: { description: "Adjusted" } },
+        },
+      },
+
+      "/api/v1/exports/payroll/{provider}": {
+        get: {
+          tags: ["Exports"],
+          security: [{ bearerAuth: [] }],
+          summary: "Download provider-shaped payroll CSV export",
+          parameters: [
+            {
+              name: "provider",
+              in: "path",
+              required: true,
+              schema: {
+                type: "string",
+                enum: ["gusto", "quickbooks", "rippling"],
+              },
+            },
+            {
+              name: "source",
+              in: "query",
+              required: false,
+              schema: { type: "string", enum: ["actual", "scheduled"] },
+            },
+            {
+              name: "from",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "to",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+          ],
+          responses: {
+            200: { description: "CSV file" },
+            409: { description: "Actual-hours export requires time tracking" },
+          },
+        },
+      },
+      "/api/v1/exports/time-entries": {
+        get: {
+          tags: ["Exports"],
+          security: [{ bearerAuth: [] }],
+          summary: "Download actual worked-hours CSV export",
+          parameters: [
+            {
+              name: "provider",
+              in: "query",
+              required: true,
+              schema: {
+                type: "string",
+                enum: ["gusto", "quickbooks", "rippling"],
+              },
+            },
+            {
+              name: "from",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "to",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+          ],
+          responses: { 200: { description: "CSV file" } },
+        },
+      },
+      "/api/v1/exports/schedules": {
+        get: {
+          tags: ["Exports"],
+          security: [{ bearerAuth: [] }],
+          summary: "Download scheduled-hours CSV export",
+          parameters: [
+            {
+              name: "provider",
+              in: "query",
+              required: true,
+              schema: {
+                type: "string",
+                enum: ["gusto", "quickbooks", "rippling"],
+              },
+            },
+            {
+              name: "from",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+            {
+              name: "to",
+              in: "query",
+              required: true,
+              schema: { type: "string", format: "date-time" },
+            },
+          ],
+          responses: { 200: { description: "CSV file" } },
         },
       },
 

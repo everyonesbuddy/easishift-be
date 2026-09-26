@@ -59,8 +59,21 @@ const PLANS = {
   // test: { priceCents: 200, seats: 12, name: "Test" },
 };
 
+exports.PLANS = PLANS;
+
 const intervalFromPlanKey = (planKey) =>
   planKey && planKey.toLowerCase().endsWith("monthly") ? "month" : "year";
+
+const previousMonthLabel = () => {
+  const date = new Date();
+  date.setUTCDate(1);
+  date.setUTCMonth(date.getUTCMonth() - 1);
+  return date.toLocaleString("en-US", {
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+};
 
 // A tenant gets exactly one free trial, ever — not one per plan or per resubscribe.
 const getTrialPeriodDays = (tenant, planKey) => {
@@ -86,6 +99,42 @@ const buildPlanOption = (planKey, seatsInUse, trialAvailable) => {
     seatsOverLimit: Math.max(0, seatsInUse - plan.seats),
   };
 };
+
+const buildCheckoutLineItems = (
+  planKey,
+  includePriorPeriodCharge,
+  priorPeriodLabel,
+) => {
+  const plan = PLANS[planKey];
+  const lineItems = [
+    {
+      price_data: {
+        currency: "usd",
+        product_data: { name: `${plan.name} plan (WiserShifts)` },
+        recurring: { interval: intervalFromPlanKey(planKey) },
+        unit_amount: plan.priceCents,
+      },
+      quantity: 1,
+    },
+  ];
+
+  if (includePriorPeriodCharge) {
+    lineItems.push({
+      price_data: {
+        currency: "usd",
+        product_data: {
+          name: `${plan.name} service - ${priorPeriodLabel}`,
+        },
+        unit_amount: plan.priceCents,
+      },
+      quantity: 1,
+    });
+  }
+
+  return lineItems;
+};
+
+exports.buildCheckoutLineItems = buildCheckoutLineItems;
 
 /**
  * Plan catalog with per-tenant availability so the UI can disable plans that
@@ -126,12 +175,24 @@ exports.getPlans = async (req, res, next) => {
  */
 exports.createCheckoutSession = async (req, res, next) => {
   try {
-    const { tenantId, planKey } = req.body;
+    const {
+      tenantId: requestedTenantId,
+      planKey,
+      includePriorPeriodCharge = false,
+      priorPeriodLabel,
+    } = req.body;
+    const tenantId = req.tenantId || (req.user && req.user.tenantId);
 
     if (!tenantId || !planKey) {
       return res
         .status(400)
-        .json({ message: "tenantId and planKey are required" });
+        .json({ message: "Tenant context and planKey are required" });
+    }
+
+    if (requestedTenantId && String(requestedTenantId) !== String(tenantId)) {
+      return res.status(403).json({
+        message: "Cannot create a checkout session for another tenant",
+      });
     }
 
     const tenant = await Tenant.findById(tenantId);
@@ -139,6 +200,30 @@ exports.createCheckoutSession = async (req, res, next) => {
 
     const plan = PLANS[planKey];
     if (!plan) return res.status(400).json({ message: "Invalid planKey" });
+
+    if (
+      includePriorPeriodCharge !== false &&
+      includePriorPeriodCharge !== true
+    ) {
+      return res
+        .status(400)
+        .json({ message: "includePriorPeriodCharge must be a boolean" });
+    }
+
+    if (includePriorPeriodCharge && intervalFromPlanKey(planKey) !== "month") {
+      return res.status(400).json({
+        message: "Prior-period charges are only supported for monthly plans",
+      });
+    }
+
+    const normalizedPriorPeriodLabel = priorPeriodLabel
+      ? String(priorPeriodLabel).trim()
+      : previousMonthLabel();
+    if (normalizedPriorPeriodLabel.length > 100) {
+      return res
+        .status(400)
+        .json({ message: "priorPeriodLabel must be 100 characters or fewer" });
+    }
 
     if (
       tenant.stripeSubscriptionId &&
@@ -173,20 +258,16 @@ exports.createCheckoutSession = async (req, res, next) => {
       });
     }
 
+    const lineItems = buildCheckoutLineItems(
+      planKey,
+      includePriorPeriodCharge,
+      normalizedPriorPeriodLabel,
+    );
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       payment_method_types: ["card"],
-      line_items: [
-        {
-          price_data: {
-            currency: "usd",
-            product_data: { name: `${plan.name} plan (WiserShifts)` },
-            recurring: { interval: intervalFromPlanKey(planKey) },
-            unit_amount: plan.priceCents,
-          },
-          quantity: 1,
-        },
-      ],
+      line_items: lineItems,
       client_reference_id: tenantId,
       metadata: { tenantId, planKey },
       // Reusing the saved customer keeps billing history on one Stripe customer
@@ -210,6 +291,8 @@ exports.createCheckoutSession = async (req, res, next) => {
       url: session.url,
       id: session.id,
       trialPeriodDays,
+      amountDueNowCents: plan.priceCents * (includePriorPeriodCharge ? 2 : 1),
+      priorPeriodChargeCents: includePriorPeriodCharge ? plan.priceCents : 0,
     });
   } catch (err) {
     next(err);

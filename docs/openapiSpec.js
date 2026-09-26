@@ -1133,9 +1133,49 @@ const buildOpenApiSpec = () => {
           summary: "Create checkout session",
           requestBody: {
             required: true,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  required: ["planKey"],
+                  properties: {
+                    tenantId: {
+                      type: "string",
+                      description:
+                        "Optional confirmation of the authenticated tenant id",
+                    },
+                    planKey: {
+                      type: "string",
+                      enum: [
+                        "starterYearly",
+                        "growthYearly",
+                        "premiumYearly",
+                        "starterMonthly",
+                        "growthMonthly",
+                        "premiumMonthly",
+                      ],
+                    },
+                    includePriorPeriodCharge: {
+                      type: "boolean",
+                      default: false,
+                      description:
+                        "Add one non-recurring charge at the monthly plan price",
+                    },
+                    priorPeriodLabel: {
+                      type: "string",
+                      maxLength: 100,
+                      example: "August 2026",
+                    },
+                  },
+                },
+              },
+            },
           },
-          responses: { 200: { description: "Session created" } },
+          responses: {
+            200: { description: "Session created" },
+            400: { description: "Invalid checkout options" },
+            403: { description: "Tenant context mismatch" },
+          },
         },
       },
       "/api/v1/stripe/cancel-subscription": {

@@ -1,6 +1,7 @@
 const { sendEmail } = require("../utils/sendEmail");
 
 const MAX_EMAIL_LENGTH = 254;
+const MAX_COMPANY_NAME_LENGTH = 120;
 
 const isValidEmail = (value = "") => {
   if (typeof value !== "string") return false;
@@ -36,6 +37,11 @@ const formatNumber = (value, fractionDigits = 2) => {
     maximumFractionDigits: fractionDigits,
   }).format(asNumber(value, 0));
 };
+
+const normalizeCompanyName = (value) =>
+  typeof value === "string"
+    ? value.trim().slice(0, MAX_COMPANY_NAME_LENGTH)
+    : "";
 
 exports.sendTurnoverRoiEmailSummary = async (req, res, next) => {
   try {
@@ -371,6 +377,7 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
         .json({ message: "A valid recipientEmail is required" });
     }
 
+    const companyName = normalizeCompanyName(inputs.companyName);
     const employees = clampNumber(inputs.employees, 50, 10, 1500);
     const hourlyWage = clampNumber(inputs.hourlyWage, 22, 10, 100);
     const callOutsPerWeek = clampNumber(inputs.callOutsPerWeek, 5, 0, 100);
@@ -389,6 +396,12 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
       25,
       10,
       150,
+    );
+    const potentialReductionPercent = clampNumber(
+      inputs.potentialReductionPercent,
+      25,
+      0,
+      50,
     );
     const requestedCoverage = {
       overtimePercent: clampNumber(inputs.overtimePercent, 60, 0, 100),
@@ -423,10 +436,14 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
       WEEKS_PER_YEAR;
     const totalAnnualCost =
       annualOvertimeCost + annualAgencyCost + annualManagerTimeCost;
+    const potentialSavings =
+      (annualOvertimeCost + annualAgencyCost) *
+      (potentialReductionPercent / 100);
     const annualUnfilledShiftCount =
       callOutsPerWeek * (coverage.unfilledPercent / 100) * WEEKS_PER_YEAR;
 
     const inputRows = [
+      ...(companyName ? [["Company or facility", companyName]] : []),
       ["Employees", formatNumber(employees, 0)],
       ["Average hourly wage", formatCurrency(hourlyWage)],
       ["Call-outs per week", formatNumber(callOutsPerWeek, 1)],
@@ -435,6 +452,10 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
       [
         "Coverage mix",
         `${formatNumber(coverage.overtimePercent, 0)}% overtime / ${formatNumber(coverage.agencyPercent, 0)}% agency / ${formatNumber(coverage.unfilledPercent, 0)}% unfilled`,
+      ],
+      [
+        "Illustrative reduction",
+        `${formatNumber(potentialReductionPercent, 0)}% of call-out overtime and agency costs`,
       ],
     ];
     const resultRows = [
@@ -446,13 +467,21 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
         `${formatNumber(annualUnfilledShiftCount, 1)} per year`,
       ],
     ];
+    const savingsRows = [
+      [
+        "Modeled reduction in call-out overtime and agency costs",
+        `${formatNumber(potentialReductionPercent, 0)}%`,
+      ],
+      ["Illustrative annual savings", formatCurrency(potentialSavings)],
+    ];
     const calculatorUrl =
       "https://wisershifts.com/calculators/call-out-cost-calculator";
     const html = buildCalculatorEmail({
       eyebrow: "Call-out cost calculator",
       title: "Your call-out cost summary",
-      intro:
-        "A clear view of what last-minute coverage may be costing your facility each year.",
+      intro: companyName
+        ? `A clear view of what last-minute coverage may be costing ${companyName} each year.`
+        : "A clear view of what last-minute coverage may be costing your facility each year.",
       totalLabel: "Estimated annual cost of covering call-outs",
       totalValue: formatCurrency(totalAnnualCost),
       accent: "#2563eb",
@@ -460,9 +489,11 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
       accentDark: "#1e40af",
       inputRows,
       resultRows,
-      insight: `${formatNumber(annualUnfilledShiftCount, 1)} shifts may go uncovered each year. That operational impact is shown separately and is not assigned a dollar value above.`,
+      extraTitle: "What you could save with WiserShifts",
+      extraRows: savingsRows,
+      insight: `WiserShifts shares open shifts with available staff through push and email notifications, while self-service shift pickup helps teams respond before coverage gaps turn into overtime or agency spend. At the selected ${formatNumber(potentialReductionPercent, 0)}% scenario, the illustrative savings are ${formatCurrency(potentialSavings)} per year. ${formatNumber(annualUnfilledShiftCount, 1)} shifts may still go uncovered annually and are not assigned a dollar value above.`,
       disclaimer:
-        "These estimates use the assumptions you entered and standard overtime and agency calculations. Actual costs may vary.",
+        "These estimates use the assumptions you entered and standard overtime and agency calculations. Savings are illustrative, apply only to call-out overtime and agency costs, exclude manager coordination time, and are not guaranteed. Actual results depend on staffing and coverage patterns.",
       calculatorUrl,
     });
     const text = [
@@ -472,6 +503,11 @@ exports.sendCallOutCostEmailSummary = async (req, res, next) => {
       ...inputRows.map(([label, value]) => `${label}: ${value}`),
       "",
       ...resultRows.map(([label, value]) => `${label}: ${value}`),
+      "",
+      "What you could save with WiserShifts",
+      ...savingsRows.map(([label, value]) => `${label}: ${value}`),
+      "Push and email notifications plus self-service shift pickup help available staff respond to open shifts earlier.",
+      "Savings are illustrative and not guaranteed.",
       "",
       `Review your results: ${calculatorUrl}`,
       "Book your free scheduling audit: https://calendly.com/wisershifts-info/30min",
@@ -499,6 +535,7 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
         .json({ message: "A valid recipientEmail is required" });
     }
 
+    const companyName = normalizeCompanyName(inputs.companyName);
     const employees = clampNumber(inputs.employees, 50, 10, 1500);
     const hourlyWage = clampNumber(inputs.hourlyWage, 22, 10, 100);
     const overtimeHours = clampNumber(inputs.overtimeHours, 40, 0, 1000);
@@ -509,6 +546,12 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
       1,
       3,
     );
+    const potentialReductionPercent = clampNumber(
+      inputs.potentialReductionPercent,
+      25,
+      0,
+      50,
+    );
     const weeklyReactiveHours = overtimeHours * (reactivePercent / 100);
     const weeklyPlannedHours = overtimeHours - weeklyReactiveHours;
     const annualReactiveCost =
@@ -516,13 +559,20 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
     const annualPlannedCost =
       weeklyPlannedHours * hourlyWage * overtimeMultiplier * WEEKS_PER_YEAR;
     const totalAnnualCost = annualReactiveCost + annualPlannedCost;
+    const potentialSavings =
+      annualReactiveCost * (potentialReductionPercent / 100);
 
     const inputRows = [
+      ...(companyName ? [["Company or facility", companyName]] : []),
       ["Employees", formatNumber(employees, 0)],
       ["Average hourly wage", formatCurrency(hourlyWage)],
       ["Total overtime", `${formatNumber(overtimeHours, 1)} hours per week`],
       ["Reactive overtime", `${formatNumber(reactivePercent, 0)}%`],
       ["Overtime multiplier", `${formatNumber(overtimeMultiplier, 1)}x`],
+      [
+        "Illustrative reduction",
+        `${formatNumber(potentialReductionPercent, 0)}% of reactive overtime costs`,
+      ],
     ];
     const resultRows = [
       [
@@ -534,13 +584,21 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
       ["Planned overtime cost", formatCurrency(annualPlannedCost)],
       ["Total overtime spend", formatCurrency(totalAnnualCost)],
     ];
+    const savingsRows = [
+      [
+        "Modeled reduction in reactive overtime",
+        `${formatNumber(potentialReductionPercent, 0)}%`,
+      ],
+      ["Illustrative annual savings", formatCurrency(potentialSavings)],
+    ];
     const calculatorUrl =
       "https://wisershifts.com/calculators/overtime-cost-calculator";
     const html = buildCalculatorEmail({
       eyebrow: "Overtime cost calculator",
       title: "Your reactive overtime summary",
-      intro:
-        "A focused look at the overtime tied to last-minute scheduling and coverage gaps.",
+      intro: companyName
+        ? `A focused look at the overtime tied to last-minute scheduling and coverage gaps for ${companyName}.`
+        : "A focused look at the overtime tied to last-minute scheduling and coverage gaps.",
       totalLabel: "Estimated annual reactive overtime cost",
       totalValue: formatCurrency(annualReactiveCost),
       accent: "#0f766e",
@@ -548,9 +606,11 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
       accentDark: "#115e59",
       inputRows,
       resultRows,
-      insight: `${formatNumber(reactivePercent, 0)}% of the overtime entered is attributed to reactive scheduling. Planned overtime remains visible but is not included in the highlighted amount.`,
+      extraTitle: "What you could save with WiserShifts",
+      extraRows: savingsRows,
+      insight: `AI-generated schedules help teams plan coverage earlier. Push and email notifications, together with self-service shift pickup, help staff respond to open shifts before gaps turn into last-minute overtime. At the selected ${formatNumber(potentialReductionPercent, 0)}% scenario, the illustrative savings are ${formatCurrency(potentialSavings)} per year.`,
       disclaimer:
-        "This estimate reflects the assumptions you entered. It is intended to separate reactive overtime from planned staffing needs, not to represent guaranteed savings.",
+        "This estimate reflects the assumptions you entered. Savings are illustrative, apply only to reactive overtime costs, and are not guaranteed. Actual results depend on staffing and coverage patterns.",
       calculatorUrl,
     });
     const text = [
@@ -560,6 +620,11 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
       ...inputRows.map(([label, value]) => `${label}: ${value}`),
       "",
       ...resultRows.map(([label, value]) => `${label}: ${value}`),
+      "",
+      "What you could save with WiserShifts",
+      ...savingsRows.map(([label, value]) => `${label}: ${value}`),
+      "AI-generated schedules, push and email notifications, and self-service shift pickup help teams respond to open shifts earlier.",
+      "Savings are illustrative and not guaranteed.",
       "",
       `Review your results: ${calculatorUrl}`,
       "Book your free scheduling audit: https://calendly.com/wisershifts-info/30min",

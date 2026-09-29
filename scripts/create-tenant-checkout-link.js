@@ -19,6 +19,10 @@ const notifyEmailArg = args.find((arg) => arg.startsWith("--notify-email="));
 const notifyEmail = notifyEmailArg
   ? notifyEmailArg.slice("--notify-email=".length).trim()
   : null;
+const attemptArg = args.find((arg) => arg.startsWith("--attempt="));
+const attempt = attemptArg
+  ? attemptArg.slice("--attempt=".length).trim()
+  : null;
 const [tenantId, planKey, priorPeriodLabel] = args.filter(
   (arg) => !arg.startsWith("--"),
 );
@@ -26,7 +30,7 @@ const [tenantId, planKey, priorPeriodLabel] = args.filter(
 const usage =
   "node scripts/create-tenant-checkout-link.js <tenantId> <planKey> " +
   '"<prior period label>" [--create] [--confirm-live] ' +
-  "[--notify-email=<email>]";
+  "[--notify-email=<email>] [--attempt=<id>]";
 
 const formatUsd = (cents) => `$${(cents / 100).toFixed(2)}`;
 
@@ -46,6 +50,12 @@ async function main() {
 
   if (notifyEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(notifyEmail)) {
     throw new Error("--notify-email must contain a valid email address");
+  }
+
+  if (attempt && !/^[a-zA-Z0-9_-]{1,50}$/.test(attempt)) {
+    throw new Error(
+      "--attempt must be 1-50 letters, numbers, dashes, or underscores",
+    );
   }
 
   if (!process.env.DB_URL) throw new Error("DB_URL is missing");
@@ -121,7 +131,15 @@ async function main() {
       cancel_url: `${frontendUrl}/billing/cancel`,
     },
     {
-      idempotencyKey: `operator-checkout:${normalizedTenantId}:${planKey}:${priorPeriodLabel}`,
+      idempotencyKey: [
+        "operator-checkout",
+        normalizedTenantId,
+        planKey,
+        priorPeriodLabel,
+        attempt,
+      ]
+        .filter(Boolean)
+        .join(":"),
     },
   );
 

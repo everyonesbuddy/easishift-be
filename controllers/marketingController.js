@@ -641,3 +641,131 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.sendTimeClockAccuracyEmailSummary = async (req, res, next) => {
+  try {
+    const { recipientEmail, inputs = {} } = req.body || {};
+
+    if (!isValidEmail(recipientEmail)) {
+      return res
+        .status(400)
+        .json({ message: "A valid recipientEmail is required" });
+    }
+
+    const companyName = normalizeCompanyName(inputs.companyName);
+    const employees = clampNumber(inputs.employees, 50, 1, 1500);
+    const hourlyWage = clampNumber(inputs.hourlyWage, 22, 1, 200);
+    const hoursPerWeek = clampNumber(inputs.hoursPerWeek, 40, 1, 100);
+    const unverifiedMinutesPerShift = clampNumber(
+      inputs.unverifiedMinutesPerShift,
+      12,
+      0,
+      60,
+    );
+    const shiftsPerWeek = clampNumber(inputs.shiftsPerWeek, 5, 1, 14);
+    const sharedDevicePercent = clampNumber(
+      inputs.sharedDevicePercent,
+      50,
+      0,
+      100,
+    );
+    const adminHoursPerPayPeriod = clampNumber(
+      inputs.adminHoursPerPayPeriod,
+      4,
+      0,
+      80,
+    );
+    const adminHourlyRate = clampNumber(inputs.adminHourlyRate, 25, 1, 200);
+    const exposureMultiplier = sharedDevicePercent / 50;
+    const weeklyUnverifiedMinutes =
+      unverifiedMinutesPerShift *
+      shiftsPerWeek *
+      employees *
+      exposureMultiplier;
+    const weeklyUnverifiedCost = (weeklyUnverifiedMinutes / 60) * hourlyWage;
+    const annualUnverifiedCost = weeklyUnverifiedCost * WEEKS_PER_YEAR;
+    const annualAdminCorrectionCost =
+      adminHoursPerPayPeriod * adminHourlyRate * 26;
+    const annualUnverifiedHours =
+      (weeklyUnverifiedMinutes * WEEKS_PER_YEAR) / 60;
+    const totalAnnualCost = annualUnverifiedCost + annualAdminCorrectionCost;
+    const inputRows = [
+      ...(companyName ? [["Company or facility", companyName]] : []),
+      ["Employees", formatNumber(employees, 0)],
+      ["Average hourly wage", formatCurrency(hourlyWage)],
+      ["Average hours per week", `${formatNumber(hoursPerWeek, 1)} hours`],
+      [
+        "Unverified time per shift",
+        `${formatNumber(unverifiedMinutesPerShift, 1)} minutes`,
+      ],
+      ["Shifts per week per employee", formatNumber(shiftsPerWeek, 1)],
+      [
+        "Staff using shared or kiosk devices",
+        `${formatNumber(sharedDevicePercent, 0)}%`,
+      ],
+      [
+        "Payroll correction hours per pay period",
+        `${formatNumber(adminHoursPerPayPeriod, 1)} hours`,
+      ],
+      ["Payroll admin hourly rate", formatCurrency(adminHourlyRate)],
+    ];
+    const resultRows = [
+      [
+        "Unverified or unreviewed punch time",
+        formatCurrency(annualUnverifiedCost),
+      ],
+      [
+        "Manual timesheet correction time",
+        formatCurrency(annualAdminCorrectionCost),
+      ],
+      [
+        "Estimated unverified time",
+        `${formatNumber(annualUnverifiedHours)} hours/year`,
+      ],
+    ];
+    const calculatorUrl =
+      "https://wisershifts.com/calculators/time-clock-accuracy-calculator";
+    const html = buildCalculatorEmail({
+      eyebrow: "Time clock accuracy calculator",
+      title: "Your time clock accuracy summary",
+      intro: companyName
+        ? `An estimate of the annual cost of unverified punch time and manual timesheet corrections for ${companyName}.`
+        : "An estimate of the annual cost of unverified punch time and manual timesheet corrections at your facility.",
+      totalLabel: "Estimated annual cost of unverified time entries",
+      totalValue: formatCurrency(totalAnnualCost),
+      accent: "#0f766e",
+      accentSoft: "#ccfbf1",
+      accentDark: "#115e59",
+      inputRows,
+      resultRows,
+      insight:
+        "Geofenced clock-in helps confirm that a punch happens on-site and gives payroll a clearer record to review when a punch falls outside the facility boundary.",
+      disclaimer:
+        "These estimates are based on the assumptions supplied to the calculator. Actual impact depends on your current time-clock process and facility layout.",
+      calculatorUrl,
+    });
+    const text = [
+      "Time Clock Accuracy Summary",
+      "",
+      "Facility Inputs",
+      ...inputRows.map(([label, value]) => `- ${label}: ${value}`),
+      "",
+      "Estimated Annual Impact",
+      ...resultRows.map(([label, value]) => `- ${label}: ${value}`),
+      `- Total annual cost: ${formatCurrency(totalAnnualCost)}`,
+      "",
+      `Review your results: ${calculatorUrl}`,
+      "Book your free scheduling audit: https://calendly.com/wisershifts-info/30min",
+    ].join("\n");
+
+    return await sendCalculatorSummary({
+      recipientEmail,
+      subject: "Your Time Clock Accuracy Summary | WiserShifts",
+      html,
+      text,
+      res,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

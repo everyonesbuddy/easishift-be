@@ -28,6 +28,22 @@ const breakSchema = new mongoose.Schema(
   { _id: false },
 );
 
+const locationCheckSchema = new mongoose.Schema(
+  {
+    latitude: { type: Number, min: -90, max: 90, default: null },
+    longitude: { type: Number, min: -180, max: 180, default: null },
+    accuracyMeters: { type: Number, min: 0, default: null },
+    distanceMeters: { type: Number, min: 0, default: null },
+    result: {
+      type: String,
+      enum: ["inside", "outside", "inaccurate", "unavailable", "invalid"],
+      required: true,
+    },
+    verifiedAt: { type: Date, required: true },
+  },
+  { _id: false },
+);
+
 const timeEntrySchema = new mongoose.Schema(
   {
     tenantId: {
@@ -76,8 +92,16 @@ const timeEntrySchema = new mongoose.Schema(
     },
     mode: {
       type: String,
-      enum: ["open", "qr"],
+      enum: ["open", "geofence"],
       required: true,
+    },
+    clockInLocation: {
+      type: locationCheckSchema,
+      default: null,
+    },
+    clockOutLocation: {
+      type: locationCheckSchema,
+      default: null,
     },
     source: {
       type: String,
@@ -92,10 +116,6 @@ const timeEntrySchema = new mongoose.Schema(
       grossMinutes: { type: Number, default: null },
       unpaidBreakMinutes: { type: Number, default: null },
       workedMinutes: { type: Number, default: null },
-    },
-    qrScan: {
-      tokenId: { type: String, default: null },
-      scannedAt: { type: Date, default: null },
     },
     adjustedBy: {
       type: mongoose.Schema.Types.ObjectId,

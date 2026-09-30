@@ -217,8 +217,39 @@ const facilityPreferencesSchema = new mongoose.Schema(
       },
       mode: {
         type: String,
-        enum: ["open", "qr"],
+        enum: ["open", "geofence"],
         default: "open",
+      },
+      geofence: {
+        address: {
+          type: String,
+          trim: true,
+          default: "",
+        },
+        latitude: {
+          type: Number,
+          min: -90,
+          max: 90,
+          default: null,
+        },
+        longitude: {
+          type: Number,
+          min: -180,
+          max: 180,
+          default: null,
+        },
+        radiusMeters: {
+          type: Number,
+          min: 1,
+          max: 5000,
+          default: 150,
+        },
+        maxAccuracyMeters: {
+          type: Number,
+          min: 1,
+          max: 500,
+          default: 50,
+        },
       },
       requireScheduleMatch: {
         type: Boolean,
@@ -242,18 +273,6 @@ const facilityPreferencesSchema = new mongoose.Schema(
       autoCloseOpenBreakOnClockOut: {
         type: Boolean,
         default: true,
-      },
-      qrTokenHash: {
-        type: String,
-        default: null,
-      },
-      qrTokenValue: {
-        type: String,
-        default: null,
-      },
-      qrTokenVersion: {
-        type: Number,
-        default: 0,
       },
     },
   },

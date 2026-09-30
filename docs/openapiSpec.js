@@ -712,9 +712,47 @@ const buildOpenApiSpec = () => {
           summary: "Clock in",
           requestBody: {
             required: true,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    at: { type: "string", format: "date-time" },
+                    scheduleId: { type: "string" },
+                    source: {
+                      type: "string",
+                      enum: ["mobile", "web", "admin"],
+                    },
+                    note: { type: "string" },
+                    location: {
+                      type: "object",
+                      description:
+                        "Required when facility time tracking mode is geofence.",
+                      required: ["latitude", "longitude", "accuracyMeters"],
+                      properties: {
+                        latitude: { type: "number", minimum: -90, maximum: 90 },
+                        longitude: {
+                          type: "number",
+                          minimum: -180,
+                          maximum: 180,
+                        },
+                        accuracyMeters: { type: "number", minimum: 0 },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
-          responses: { 200: { description: "Clocked in" } },
+          responses: {
+            201: { description: "Clocked in" },
+            400: { description: "Missing or invalid location" },
+            403: { description: "Outside the facility geofence" },
+            409: {
+              description: "Active entry exists or geofence is not configured",
+            },
+            422: { description: "Location accuracy is insufficient" },
+          },
         },
       },
       "/api/v1/time-tracking/breaks/start": {
@@ -748,29 +786,43 @@ const buildOpenApiSpec = () => {
           summary: "Clock out",
           requestBody: {
             required: false,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    at: { type: "string", format: "date-time" },
+                    note: { type: "string" },
+                    location: {
+                      type: "object",
+                      description:
+                        "Recorded as an audit result in geofence mode; an unavailable or outside location does not block clock-out.",
+                      required: ["latitude", "longitude", "accuracyMeters"],
+                      properties: {
+                        latitude: { type: "number", minimum: -90, maximum: 90 },
+                        longitude: {
+                          type: "number",
+                          minimum: -180,
+                          maximum: 180,
+                        },
+                        accuracyMeters: { type: "number", minimum: 0 },
+                      },
+                    },
+                  },
+                },
+              },
+            },
           },
-          responses: { 200: { description: "Clocked out" } },
-        },
-      },
-      "/api/v1/time-tracking/qr-token/current": {
-        get: {
-          tags: ["Time Tracking"],
-          security: [{ bearerAuth: [] }],
-          summary: "Get current QR token",
-          responses: { 200: { description: "Token" } },
-        },
-      },
-      "/api/v1/time-tracking/qr-token": {
-        post: {
-          tags: ["Time Tracking"],
-          security: [{ bearerAuth: [] }],
-          summary: "Generate QR token",
-          requestBody: {
-            required: false,
-            content: { "application/json": { schema: { type: "object" } } },
+          responses: {
+            200: {
+              description:
+                "Clocked out; location result is included on the time entry",
+            },
+            409: {
+              description:
+                "No active entry exists or geofence is not configured",
+            },
           },
-          responses: { 200: { description: "Generated" } },
         },
       },
       "/api/v1/time-tracking": {
@@ -1206,6 +1258,17 @@ const buildOpenApiSpec = () => {
         post: {
           tags: ["Marketing"],
           summary: "Send cost leak summary",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object" } } },
+          },
+          responses: { 200: { description: "Sent" } },
+        },
+      },
+      "/api/v1/marketing/time-clock-accuracy/email-summary": {
+        post: {
+          tags: ["Marketing"],
+          summary: "Send time clock accuracy summary",
           requestBody: {
             required: true,
             content: { "application/json": { schema: { type: "object" } } },

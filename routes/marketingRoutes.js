@@ -6,6 +6,7 @@ const {
   sendCostLeakEmailSummary,
   sendCallOutCostEmailSummary,
   sendOvertimeCostEmailSummary,
+  sendTimeClockAccuracyEmailSummary,
 } = require("../controllers/marketingController");
 
 // Public endpoint for marketing calculator email capture + summary delivery.
@@ -13,5 +14,9 @@ router.post("/turnover-roi/email-summary", sendTurnoverRoiEmailSummary);
 router.post("/cost-leak/email-summary", sendCostLeakEmailSummary);
 router.post("/call-out-cost/email-summary", sendCallOutCostEmailSummary);
 router.post("/overtime-cost/email-summary", sendOvertimeCostEmailSummary);
+router.post(
+  "/time-clock-accuracy/email-summary",
+  sendTimeClockAccuracyEmailSummary,
+);
 
 module.exports = router;

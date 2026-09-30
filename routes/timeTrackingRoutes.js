@@ -8,8 +8,6 @@ const {
   endBreak,
   clockOut,
   listTimeEntries,
-  generateQrClockToken,
-  getCurrentQrClockToken,
   adjustTimeEntry,
 } = require("../controllers/timeTrackingController");
 
@@ -27,12 +25,6 @@ router.post("/breaks/end", endBreak);
 router.post("/clock-out", clockOut);
 
 // Admin operations
-router.get("/qr-token/current", getCurrentQrClockToken);
-router.post(
-  "/qr-token",
-  requirePermission("schedule.manage"),
-  generateQrClockToken,
-);
 router.get("/", requirePermission("staff.view"), listTimeEntries);
 router.patch("/:id/adjust", requirePermission("staff.manage"), adjustTimeEntry);
 

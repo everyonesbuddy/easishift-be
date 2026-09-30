@@ -1,5 +1,4 @@
 const mongoose = require("mongoose");
-const crypto = require("crypto");
 
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Schedule = require("../models/scheduleModel");
@@ -7,6 +6,10 @@ const TimeEntry = require("../models/timeEntryModel");
 const {
   getAttendanceOutcomeForClockOut,
 } = require("../utils/timeTrackingAttendanceUtils");
+const {
+  evaluateGeofenceLocation,
+  isGeofenceConfigured,
+} = require("../utils/timeTrackingGeofenceUtils");
 
 const DEFAULT_TIME_TRACKING = {
   enabled: false,
@@ -15,12 +18,9 @@ const DEFAULT_TIME_TRACKING = {
   clockOutGraceMinutes: 30,
   roundingMinutes: 0,
   autoCloseOpenBreakOnClockOut: true,
+  geofenceRadiusMeters: 150,
+  geofenceMaxAccuracyMeters: 50,
 };
-
-const generateQrTokenValue = () => crypto.randomBytes(24).toString("hex");
-
-const hashQrToken = (value) =>
-  crypto.createHash("sha256").update(String(value)).digest("hex");
 
 const toDateOrNow = (value) => {
   if (!value) return new Date();
@@ -50,9 +50,27 @@ const normalizeTimeTrackingConfig = (prefs) => {
       configured.enabled !== undefined
         ? Boolean(configured.enabled)
         : DEFAULT_TIME_TRACKING.enabled,
-    mode: ["open", "qr"].includes(configured.mode)
+    mode: ["open", "geofence"].includes(configured.mode)
       ? configured.mode
       : DEFAULT_TIME_TRACKING.mode,
+    geofence: {
+      address:
+        typeof configured.geofence?.address === "string"
+          ? configured.geofence.address
+          : "",
+      latitude: Number.isFinite(configured.geofence?.latitude)
+        ? configured.geofence.latitude
+        : null,
+      longitude: Number.isFinite(configured.geofence?.longitude)
+        ? configured.geofence.longitude
+        : null,
+      radiusMeters: Number.isFinite(configured.geofence?.radiusMeters)
+        ? configured.geofence.radiusMeters
+        : DEFAULT_TIME_TRACKING.geofenceRadiusMeters,
+      maxAccuracyMeters: Number.isFinite(configured.geofence?.maxAccuracyMeters)
+        ? configured.geofence.maxAccuracyMeters
+        : DEFAULT_TIME_TRACKING.geofenceMaxAccuracyMeters,
+    },
     // Schedule matching is always enforced for clock-in.
     requireScheduleMatch: true,
     clockInGraceMinutes: clampPositiveMinutes(
@@ -67,8 +85,6 @@ const normalizeTimeTrackingConfig = (prefs) => {
       ? configured.roundingMinutes
       : DEFAULT_TIME_TRACKING.roundingMinutes,
     autoCloseOpenBreakOnClockOut: true,
-    qrTokenHash: configured.qrTokenHash || null,
-    qrTokenVersion: configured.qrTokenVersion ?? 0,
   };
 };
 
@@ -87,71 +103,22 @@ const ensureTrackingEnabled = (config, res) => {
   return false;
 };
 
-const verifyQrToken = (token, config) => {
-  if (!token || typeof token !== "string") {
-    return { ok: false, message: "qrToken is required" };
+const ensureGeofenceConfigured = (config, res) => {
+  if (config.mode !== "geofence" || isGeofenceConfigured(config.geofence)) {
+    return true;
   }
 
-  if (!config?.qrTokenHash) {
-    return {
-      ok: false,
-      message: "QR token is not configured for this facility",
-    };
-  }
-
-  const providedHash = hashQrToken(token);
-  if (providedHash !== config.qrTokenHash) {
-    return { ok: false, message: "Invalid QR token" };
-  }
-
-  return {
-    ok: true,
-    payload: {
-      tokenVersion: config.qrTokenVersion ?? 0,
-      tokenId: String(config.qrTokenVersion ?? 0),
-    },
-  };
+  res.status(409).json({
+    message: "Facility geofence is not configured",
+    errorCode: "GEOFENCE_NOT_CONFIGURED",
+  });
+  return false;
 };
 
-const requireQrTokenWhenNeeded = (config, qrToken, res) => {
-  if (config.mode !== "qr") return null;
-
-  if (!qrToken) {
-    res.status(400).json({
-      message: "qrToken is required while time tracking mode is 'qr'",
-    });
-    return false;
-  }
-
-  const verified = verifyQrToken(qrToken, config);
-  if (!verified.ok) {
-    res.status(400).json({ message: verified.message });
-    return false;
-  }
-
-  return verified.payload;
-};
-
-const rotateFacilityQrToken = async (tenantId) => {
-  const token = generateQrTokenValue();
-  const tokenHash = hashQrToken(token);
-
-  const currentPrefs = await FacilityPreferences.findOne({ tenantId }).lean();
-  const nextVersion = (currentPrefs?.timeTracking?.qrTokenVersion ?? 0) + 1;
-
-  await FacilityPreferences.updateOne(
-    { tenantId },
-    {
-      $set: {
-        "timeTracking.qrTokenHash": tokenHash,
-        "timeTracking.qrTokenValue": token,
-        "timeTracking.qrTokenVersion": nextVersion,
-      },
-    },
-    { upsert: true },
-  );
-
-  return { token, version: nextVersion };
+const getGeofenceFailureStatus = (status) => {
+  if (status === "outside") return 403;
+  if (status === "inaccurate") return 422;
+  return 400;
 };
 
 const syncScheduleAttendanceOutcome = async ({
@@ -348,6 +315,7 @@ exports.clockIn = async (req, res, next) => {
   try {
     const config = await getTimeTrackingConfig(req.tenantId);
     if (!ensureTrackingEnabled(config, res)) return;
+    if (!ensureGeofenceConfigured(config, res)) return;
 
     const existing = await TimeEntry.findOne({
       tenantId: req.tenantId,
@@ -367,8 +335,22 @@ exports.clockIn = async (req, res, next) => {
       return res.status(400).json({ message: "Invalid clock-in time" });
     }
 
-    const qrPayload = requireQrTokenWhenNeeded(config, req.body.qrToken, res);
-    if (qrPayload === false) return;
+    const locationCheck =
+      config.mode === "geofence"
+        ? evaluateGeofenceLocation({
+            location: req.body.location,
+            geofence: config.geofence,
+          })
+        : null;
+    if (locationCheck && !locationCheck.accepted) {
+      return res.status(getGeofenceFailureStatus(locationCheck.status)).json({
+        message: locationCheck.message,
+        errorCode: `GEOFENCE_${locationCheck.status.toUpperCase()}`,
+        locationResult: locationCheck.status,
+        distanceMeters: locationCheck.snapshot.distanceMeters,
+        radiusMeters: config.geofence.radiusMeters,
+      });
+    }
 
     const schedule = await findScheduleForClockAction({
       tenantId: req.tenantId,
@@ -392,18 +374,12 @@ exports.clockIn = async (req, res, next) => {
       scheduleId: schedule ? schedule._id : null,
       clockInAt,
       mode: config.mode,
+      clockInLocation: locationCheck?.snapshot,
       attendanceOutcome: "in_progress",
       source: ["mobile", "web", "admin"].includes(req.body.source)
         ? req.body.source
         : "mobile",
       notes: req.body.note || "",
-      qrScan:
-        config.mode === "qr"
-          ? {
-              tokenId: qrPayload?.tokenId || null,
-              scannedAt: new Date(),
-            }
-          : undefined,
     });
 
     if (schedule && schedule.status === "scheduled") {
@@ -420,15 +396,7 @@ exports.clockIn = async (req, res, next) => {
       "role startTime endTime status",
     );
 
-    let response = populated;
-    if (config.mode === "qr") {
-      const rotation = await rotateFacilityQrToken(req.tenantId);
-      response = populated.toObject ? populated.toObject() : populated;
-      response.nextQrToken = rotation.token;
-      response.nextQrTokenVersion = rotation.version;
-    }
-
-    res.status(201).json(response);
+    res.status(201).json(populated);
   } catch (err) {
     if (err && err.code === 11000) {
       return res
@@ -533,9 +501,7 @@ exports.clockOut = async (req, res, next) => {
   try {
     const config = await getTimeTrackingConfig(req.tenantId);
     if (!ensureTrackingEnabled(config, res)) return;
-
-    const qrPayload = requireQrTokenWhenNeeded(config, req.body.qrToken, res);
-    if (qrPayload === false) return;
+    if (!ensureGeofenceConfigured(config, res)) return;
 
     const entry = await TimeEntry.findOne({
       tenantId: req.tenantId,
@@ -558,6 +524,14 @@ exports.clockOut = async (req, res, next) => {
       });
     }
 
+    const locationCheck =
+      config.mode === "geofence"
+        ? evaluateGeofenceLocation({
+            location: req.body.location,
+            geofence: config.geofence,
+          })
+        : null;
+
     const openBreakIndex = getOpenBreakIndex(entry.breaks);
     if (openBreakIndex >= 0) {
       if (!config.autoCloseOpenBreakOnClockOut) {
@@ -574,6 +548,9 @@ exports.clockOut = async (req, res, next) => {
     }
 
     entry.clockOutAt = clockOutAt;
+    if (locationCheck) {
+      entry.clockOutLocation = locationCheck.snapshot;
+    }
     entry.status = "completed";
     if (req.body.note) {
       entry.notes = entry.notes
@@ -596,13 +573,6 @@ exports.clockOut = async (req, res, next) => {
 
     entry.attendanceOutcome = attendanceOutcome;
 
-    if (config.mode === "qr") {
-      entry.qrScan = {
-        tokenId: qrPayload?.tokenId || entry.qrScan?.tokenId || null,
-        scannedAt: new Date(),
-      };
-    }
-
     await entry.save();
 
     const populated = await TimeEntry.findById(entry._id).populate(
@@ -610,15 +580,7 @@ exports.clockOut = async (req, res, next) => {
       "role startTime endTime status",
     );
 
-    let response = populated;
-    if (config.mode === "qr") {
-      const rotation = await rotateFacilityQrToken(req.tenantId);
-      response = populated.toObject ? populated.toObject() : populated;
-      response.nextQrToken = rotation.token;
-      response.nextQrTokenVersion = rotation.version;
-    }
-
-    res.json(response);
+    res.json(populated);
   } catch (err) {
     next(err);
   }
@@ -771,73 +733,8 @@ exports.adjustTimeEntry = async (req, res, next) => {
       .populate("staffId", "name email role")
       .populate("scheduleId", "role startTime endTime status");
 
-    let response = populated;
-    if (config.mode === "qr") {
-      const rotation = await rotateFacilityQrToken(req.tenantId);
-      response = populated.toObject ? populated.toObject() : populated;
-      response.nextQrToken = rotation.token;
-      response.nextQrTokenVersion = rotation.version;
-    }
-
-    res.json(response);
+    res.json(populated);
   } catch (err) {
     next(err);
   }
 };
-
-exports.getCurrentQrClockToken = async (req, res, next) => {
-  try {
-    const config = await getTimeTrackingConfig(req.tenantId);
-    if (!ensureTrackingEnabled(config, res)) return;
-
-    if (config.mode !== "qr") {
-      return res.status(409).json({
-        message: "Facility time tracking mode is not set to 'qr'",
-      });
-    }
-
-    const prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId })
-      .select("timeTracking.qrTokenValue timeTracking.qrTokenVersion")
-      .lean();
-
-    if (!prefs?.timeTracking?.qrTokenValue) {
-      const rotation = await rotateFacilityQrToken(req.tenantId);
-      return res.json({
-        token: rotation.token,
-        tokenVersion: rotation.version,
-      });
-    }
-
-    res.json({
-      token: prefs.timeTracking.qrTokenValue,
-      tokenVersion: prefs.timeTracking.qrTokenVersion ?? 0,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-exports.generateQrClockToken = async (req, res, next) => {
-  try {
-    const config = await getTimeTrackingConfig(req.tenantId);
-    if (!ensureTrackingEnabled(config, res)) return;
-
-    if (config.mode !== "qr") {
-      return res.status(409).json({
-        message: "Facility time tracking mode is not set to 'qr'",
-      });
-    }
-
-    const rotation = await rotateFacilityQrToken(req.tenantId);
-
-    res.status(201).json({
-      token: rotation.token,
-      tokenVersion: rotation.version,
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-exports.hashQrToken = hashQrToken;
-exports.generateQrTokenValue = generateQrTokenValue;

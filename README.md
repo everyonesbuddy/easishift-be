@@ -338,7 +338,6 @@ Coverage behavior notes:
 - `POST /api/v1/time-tracking/breaks/start` - start a break within active entry
 - `POST /api/v1/time-tracking/breaks/end` - end current break
 - `POST /api/v1/time-tracking/clock-out` - finish active time entry
-- `POST /api/v1/time-tracking/qr-token` - generate short-lived QR clock token (admin; QR mode only)
 - `GET /api/v1/time-tracking` - list tenant time entries (admin)
 - `PATCH /api/v1/time-tracking/:id/adjust` - adjust a time entry (admin)
 
@@ -360,8 +359,10 @@ Export behavior:
 Time tracking behavior:
 
 - Controlled per tenant in facility preferences via `timeTracking.enabled` and `timeTracking.mode`.
-- Supported modes are `open` and `qr`.
-- `qr` mode requires `qrToken` on clock-in and clock-out.
+- Supported modes are `open` and `geofence`.
+- In `geofence` mode, facility preferences store `timeTracking.geofence.address`, `latitude`, `longitude`, `radiusMeters`, and `maxAccuracyMeters`. The frontend geocodes the admin-selected address and submits its coordinates; the backend validates and stores them but does not call a geocoding provider.
+- Geofence clock-in requires `location.latitude`, `location.longitude`, and `location.accuracyMeters`; the backend rejects missing, invalid, inaccurate, or outside-radius fixes. Clock-out records the location result for review but does not block the employee from ending an active shift.
+- `clockInLocation` and `clockOutLocation` on a time entry preserve the coordinates, accuracy, computed distance, result, and server verification time for each punch. Location is checked at punch time only; there is no continuous tracking.
 - Multiple breaks are supported as a break-event array (not a single break duration field).
 - Only one active entry is allowed per staff member at a time.
 
@@ -437,7 +438,7 @@ Current facility preference fields include:
 - `certificationTags`
 - `timeTracking` object:
   - `enabled`
-  - `mode` (`open` or `qr`)
+  - `mode` (`open` or `geofence`)
   - `requireScheduleMatch`
   - `clockInGraceMinutes`
   - `clockOutGraceMinutes`

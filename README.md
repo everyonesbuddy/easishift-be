@@ -124,6 +124,9 @@ White-label behavior:
 - Login and forgot-password requests from a tenant subdomain origin (or with body `tenantSubdomain`, for mobile) only accept users of that tenant. Root-domain login remains allowed and is not workspace-scoped; the login response includes `tenantBranding.appUrl` so the frontend can direct the user to their tenant portal.
 - User email addresses are globally unique, so the same email cannot currently have separate staff accounts in multiple tenants.
 - Password setup/reset links and Stripe checkout redirects use the tenant's subdomain URL.
+- When `NETLIFY_SITE_ID` and `NETLIFY_AUTH_TOKEN` are configured on the backend, tenant signup registers the tenant hostname with Netlify automatically. Owner subdomain changes register the new alias and then remove the old one. Netlify API failures do not undo signup; the signup response includes `tenantDomainProvisioning.status` so the caller can detect when an alias needs syncing.
+- Existing tenant aliases can be synchronized with `scripts/sync-tenant-netlify-domains.js`. The script is idempotent and supports `--dry-run` and `--tenant-ids=<id1>,<id2>`.
+- Netlify's wildcard DNS record and TLS certificate do not themselves attach every hostname to the site. This integration registers one explicit Netlify alias per tenant; confirm your Netlify plan's alias limits before relying on it at large scale.
 - Emails sent with tenant context use the tenant display name as the From name and a branded layout. The sender address remains the configured `POSTMARK_SENDER_EMAIL` (or SMTP sender); an absolute logo URL in email requires `API_PUBLIC_URL`.
 - Logo files are stored in MongoDB in the `TenantAsset` collection, limited to PNG/JPEG/WebP and 512 KB. The public logo endpoint returns the image with a content-type allowlist and `nosniff` protection.
 - Business policies remain in Facility Preferences.
@@ -549,6 +552,8 @@ Create `config.env` in the project root.
 - `TENANT_APP_URL_SCHEME` (optional, default `https`)
 - `TENANT_APP_URL_PORT` (optional, for local dev such as `TENANT_ROOT_DOMAIN=localhost`, `TENANT_APP_URL_SCHEME=http`, `TENANT_APP_URL_PORT=5173`)
 - `API_PUBLIC_URL` (optional public API base used for absolute logo URLs in emails)
+- `NETLIFY_SITE_ID` (optional; enables backend registration of tenant subdomain aliases)
+- `NETLIFY_AUTH_TOKEN` (optional Netlify personal access token; keep it in Heroku Config Vars or another backend-only secret store, never in frontend variables)
 
 ### Stripe
 
@@ -609,12 +614,12 @@ TENANT_APP_URL_PORT=5173
 API_PUBLIC_URL=http://localhost:5000
 ```
 
-Set the frontend root-domain setting to `localhost` (for example, `VITE_ROOT_DOMAIN=localhost`) and keep its API base URL at `http://localhost:5000`. Restart the backend and frontend after changing environment files. Then open `http://<tenant-subdomain>.localhost:5173`, for example `http://test-hospital.localhost:5173`. Browsers resolve `*.localhost` locally; if Vite rejects the host, allow `.localhost` in its `server.allowedHosts` setting.
+Set the frontend root-domain setting to `localhost` (for example, `VITE_ROOT_DOMAIN=localhost`) and keep its API base URL at `http://localhost:5000`. Restart the backend and frontend after changing environment files. Then open `http://<tenant-subdomain>.localhost:5173`, for example `http://olutayo-hospital.localhost:5173`. Browsers resolve `*.localhost` locally; if Vite rejects the host, allow `.localhost` in its `server.allowedHosts` setting.
 
 The backend can be smoke-tested directly:
 
 ```text
-GET http://localhost:5000/api/v1/public/tenant-branding?host=test-hospital.localhost:5173
+GET http://localhost:5000/api/v1/public/tenant-branding?host=olutayo-hospital.localhost:5173
 ```
 
 That public route returns 404 on the root host (`localhost:5173`) because it has no tenant subdomain. The frontend should skip the request on the root site and show default WiserShifts branding instead.
@@ -622,9 +627,9 @@ That public route returns 404 on the root host (`localhost:5173`) because it has
 ## Production Subdomain Setup
 
 1. Add a wildcard DNS record (`*.wisershifts.com`) to the frontend host. Keep explicit records such as `api.wisershifts.com` and `www.wisershifts.com` if they point elsewhere.
-2. Configure the frontend host to serve the same app for `*.wisershifts.com` and issue a wildcard TLS certificate. Follow the provider's wildcard-domain requirements.
-3. Set backend production variables `TENANT_ROOT_DOMAIN=wisershifts.com` and `API_PUBLIC_URL=https://<public-api-host>`, then redeploy.
-4. Backfill tenants without subdomains before directing users to their portals (see Utility Scripts).
+2. Configure the frontend host to serve the same app for tenant hostnames and issue a wildcard TLS certificate. Follow the provider's wildcard-domain requirements.
+3. Set backend production variables `TENANT_ROOT_DOMAIN=wisershifts.com`, `API_PUBLIC_URL=https://<public-api-host>`, `NETLIFY_SITE_ID`, and `NETLIFY_AUTH_TOKEN`, then redeploy.
+4. Run the tenant alias sync script in dry-run mode, then apply it for existing tenants (see Utility Scripts).
 5. Configure the frontend to resolve branding by hostname and scope login by the tenant subdomain. Existing sessions on the root domain do not transfer to subdomains; users sign in once on their tenant portal.
 
 Do not enable `TENANT_ROOT_DOMAIN` in production until the wildcard frontend domain and certificate are ready: password setup/reset links and Stripe checkout return URLs will start using tenant subdomains as soon as the variable is set.
@@ -655,6 +660,7 @@ It also allows localhost/LAN development origins, Expo origins, and tenant subdo
 - `node scripts/backfill-schedule-coverage-id.js --dry-run` - preview links from legacy schedules to coverage requirements; rerun without `--dry-run` to write links and sync indexes
 - `node scripts/backfill-tenant-trial-used.js --dry-run` - preview trial-use stamps for tenants that already had access; rerun without `--dry-run` to apply
 - `node scripts/backfill-tenant-subdomains.js --dry-run` - preview generated subdomains for existing tenants; rerun without `--dry-run` to apply and create the unique index. To target specific tenants, add `--tenant-ids=<id1>,<id2>`.
+- `node scripts/sync-tenant-netlify-domains.js --dry-run` - preview Netlify aliases for existing tenants; rerun without `--dry-run` to register them. Add `--tenant-ids=<id1>,<id2>` to target selected tenants. In production, run through a Heroku one-off dyno so it uses Heroku Config Vars, for example `heroku run -a <app-name> node scripts/sync-tenant-netlify-domains.js --dry-run`.
 
 NPM shortcuts:
 

@@ -27,6 +27,10 @@ const {
   parseBrandingUpdate,
   invalidateTenantBrandingCache,
 } = require("../utils/tenantBranding");
+const {
+  buildTenantHostname,
+  updateNetlifyTenantAliases,
+} = require("../utils/netlifyDomainUtils");
 
 const detectImageType = (buffer) => {
   if (!buffer || buffer.length < 12) return null;
@@ -49,12 +53,13 @@ const detectImageType = (buffer) => {
   return null;
 };
 
-const sendBrandingResponse = async (res, tenantId, message) => {
+const sendBrandingResponse = async (res, tenantId, message, extra = {}) => {
   const tenant = await Tenant.findById(tenantId).select(BRANDING_SELECT).lean();
   if (!tenant) return res.status(404).json({ message: "Tenant not found" });
   return res.status(200).json({
     ...(message ? { message } : {}),
     branding: getPublicBranding(tenant),
+    ...extra,
   });
 };
 
@@ -117,6 +122,8 @@ exports.getMyBranding = async (req, res, next) => {
 exports.updateMyBranding = async (req, res, next) => {
   try {
     const { set, errors } = parseBrandingUpdate(req.body || {});
+    let previousSubdomain = null;
+    let domainProvisioning = null;
 
     if (req.body?.subdomain !== undefined) {
       const subdomain = normalizeSubdomain(req.body.subdomain);
@@ -131,6 +138,28 @@ exports.updateMyBranding = async (req, res, next) => {
           message: "That subdomain is already taken",
           errorCode: "SUBDOMAIN_TAKEN",
         });
+      }
+      const currentTenant = await Tenant.findById(req.tenantId)
+        .select("subdomain")
+        .lean();
+      previousSubdomain = currentTenant?.subdomain || null;
+
+      if (subdomain !== previousSubdomain) {
+        try {
+          domainProvisioning = await updateNetlifyTenantAliases({
+            addSubdomains: [subdomain],
+          });
+        } catch (err) {
+          console.error(
+            `Netlify domain alias registration failed for tenant ${req.tenantId}:`,
+            err && err.message ? err.message : err,
+          );
+          return res.status(502).json({
+            message:
+              "The new workspace hostname could not be registered with the hosting provider; the subdomain was not changed.",
+            errorCode: "NETLIFY_DOMAIN_SYNC_FAILED",
+          });
+        }
       }
       set.subdomain = subdomain;
     }
@@ -162,7 +191,40 @@ exports.updateMyBranding = async (req, res, next) => {
     }
 
     invalidateTenantBrandingCache(req.tenantId);
-    await sendBrandingResponse(res, req.tenantId, "Branding updated");
+    if (
+      domainProvisioning &&
+      previousSubdomain &&
+      previousSubdomain !== set.subdomain &&
+      domainProvisioning.status !== "not_configured" &&
+      domainProvisioning.status !== "local_domain_skipped"
+    ) {
+      try {
+        await updateNetlifyTenantAliases({
+          removeSubdomains: [previousSubdomain],
+        });
+      } catch (err) {
+        console.error(
+          `Netlify old domain alias cleanup failed for tenant ${req.tenantId}:`,
+          err && err.message ? err.message : err,
+        );
+        domainProvisioning.cleanupStatus = "failed";
+      }
+    }
+
+    await sendBrandingResponse(res, req.tenantId, "Branding updated", {
+      ...(domainProvisioning
+        ? {
+            tenantDomainProvisioning: {
+              status: domainProvisioning.status,
+              cleanupStatus: domainProvisioning.cleanupStatus || "complete",
+              hostname: buildTenantHostname(
+                set.subdomain,
+                process.env.TENANT_ROOT_DOMAIN,
+              ),
+            },
+          }
+        : {}),
+    });
   } catch (err) {
     next(err);
   }

@@ -238,7 +238,7 @@ const buildOpenApiSpec = () => {
           responses: {
             200: {
               description:
-                "Tenant created; response includes tenantBranding for the new workspace.",
+                "Tenant created; response includes tenantBranding and tenantDomainProvisioning status for the new workspace.",
             },
             400: { description: "Validation, branding, or subdomain error" },
             409: { description: "SUBDOMAIN_TAKEN" },

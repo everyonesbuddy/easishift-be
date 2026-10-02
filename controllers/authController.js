@@ -21,6 +21,10 @@ const {
   getRequestTenantSubdomain,
 } = require("../utils/tenantDomainUtils");
 const {
+  buildTenantHostname,
+  updateNetlifyTenantAliases,
+} = require("../utils/netlifyDomainUtils");
+const {
   BRANDING_SELECT,
   getPublicBranding,
   parseBrandingUpdate,
@@ -364,6 +368,19 @@ exports.registerTenant = async (req, res, next) => {
       roles: ["owner"],
     });
 
+    let tenantDomainProvisioning = { status: "not_configured" };
+    try {
+      tenantDomainProvisioning = await updateNetlifyTenantAliases({
+        addSubdomains: [subdomain],
+      });
+    } catch (err) {
+      tenantDomainProvisioning = { status: "failed" };
+      console.error(
+        `Netlify domain alias registration failed for tenant ${tenant._id}:`,
+        err && err.message ? err.message : err,
+      );
+    }
+
     // Best-effort starting guess only; stays unconfirmed until an admin saves it.
     const signupTimezone = String(facilityTimezone || "").trim();
     if (signupTimezone && DateTime.local().setZone(signupTimezone).isValid) {
@@ -427,6 +444,13 @@ exports.registerTenant = async (req, res, next) => {
       message: "Tenant and owner created successfully",
       tenant,
       tenantBranding: getPublicBranding(tenant),
+      tenantDomainProvisioning: {
+        status: tenantDomainProvisioning.status,
+        hostname: buildTenantHostname(
+          subdomain,
+          process.env.TENANT_ROOT_DOMAIN,
+        ),
+      },
       user: getUserResponse(adminUser),
     });
   } catch (err) {

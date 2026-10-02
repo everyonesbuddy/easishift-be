@@ -1,4 +1,9 @@
 const nodemailer = require("nodemailer");
+const {
+  getEmailBranding,
+  sanitizeFromName,
+  wrapBrandedEmail,
+} = require("./tenantBranding");
 const postmarkPkg = (() => {
   try {
     return require("postmark");
@@ -8,6 +13,34 @@ const postmarkPkg = (() => {
 })();
 
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// Accepts "addr@x.com" or "Name <addr@x.com>" and applies a display name.
+const withFromName = (sender, fromName) => {
+  const raw = String(sender || "").trim();
+  const name = sanitizeFromName(fromName);
+  if (!name) return raw;
+  const match = raw.match(/<([^>]+)>/);
+  const address = match ? match[1].trim() : raw;
+  return address ? `"${name}" <${address}>` : raw;
+};
+
+const applyTenantBranding = async (html, options = {}) => {
+  if (!options.tenantId) return { html, fromName: options.fromName };
+  try {
+    const branding = await getEmailBranding(options.tenantId);
+    if (!branding) return { html, fromName: options.fromName };
+    return {
+      html: wrapBrandedEmail(branding, html),
+      fromName: options.fromName || branding.displayName,
+    };
+  } catch (err) {
+    console.error(
+      "⚠️ Tenant email branding lookup failed:",
+      err && err.message ? err.message : err,
+    );
+    return { html, fromName: options.fromName };
+  }
+};
 
 const parsePositiveInt = (value, fallback) => {
   const parsed = Number(value);
@@ -66,7 +99,7 @@ const isTransientError = (err) => {
   );
 };
 
-const sendViaConfiguredProvider = async (to, subject, html, text) => {
+const sendViaConfiguredProvider = async (to, subject, html, text, fromName) => {
   const recipients = Array.isArray(to) ? to.join(",") : to;
 
   // Track last error for diagnostic return
@@ -85,7 +118,10 @@ const sendViaConfiguredProvider = async (to, subject, html, text) => {
 
     try {
       const client = new postmarkPkg.Client(process.env.POSTMARK_API_TOKEN);
-      const from = process.env.POSTMARK_SENDER_EMAIL || process.env.EMAIL_USER;
+      const from = withFromName(
+        process.env.POSTMARK_SENDER_EMAIL || process.env.EMAIL_USER,
+        fromName,
+      );
 
       await client.sendEmail({
         From: from,
@@ -135,7 +171,7 @@ const sendViaConfiguredProvider = async (to, subject, html, text) => {
     });
 
     const info = await transporter.sendMail({
-      from: `"Your Clinic Name" <${process.env.EMAIL_USER}>`,
+      from: withFromName(process.env.EMAIL_USER, fromName || "WiserShifts"),
       to: recipients,
       subject,
       html,
@@ -169,7 +205,13 @@ const sendWithRetry = async (to, subject, html, text, options = {}) => {
   );
 
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
-    const result = await sendViaConfiguredProvider(to, subject, html, text);
+    const result = await sendViaConfiguredProvider(
+      to,
+      subject,
+      html,
+      text,
+      options.fromName,
+    );
     if (result && result.success) {
       return result;
     }
@@ -245,16 +287,31 @@ const queueAndRateLimit = async (to, job, options = {}) => {
  * @param {string} subject - Email subject
  * @param {string} html - HTML content of the email
  * @param {string} [text] - Optional plaintext body
+ * @param {object} [options] - { tenantId } applies that tenant's branding
  */
-exports.sendEmail = async (to, subject, html, text) =>
-  sendViaConfiguredProvider(to, subject, html, text);
-
-exports.sendEmailQueued = async (to, subject, html, text, options = {}) =>
-  queueAndRateLimit(
+exports.sendEmail = async (to, subject, html, text, options = {}) => {
+  const branded = await applyTenantBranding(html, options);
+  return sendViaConfiguredProvider(
     to,
-    () => sendWithRetry(to, subject, html, text, options),
+    subject,
+    branded.html,
+    text,
+    branded.fromName,
+  );
+};
+
+exports.sendEmailQueued = async (to, subject, html, text, options = {}) => {
+  const branded = await applyTenantBranding(html, options);
+  return queueAndRateLimit(
+    to,
+    () =>
+      sendWithRetry(to, subject, branded.html, text, {
+        ...options,
+        fromName: branded.fromName,
+      }),
     options,
   );
+};
 
 // Keep backwards-compatible default for consumers using require('./sendEmail')
 module.exports = {

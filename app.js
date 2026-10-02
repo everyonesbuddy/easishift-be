@@ -28,6 +28,8 @@ const stripeRoutes = require("./routes/stripeRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
+const publicRoutes = require("./routes/publicRoutes");
+const { isTenantSubdomainOrigin } = require("./utils/tenantDomainUtils");
 const swaggerUi = require("swagger-ui-express");
 const buildOpenApiSpec = require("./docs/openapiSpec");
 
@@ -68,12 +70,13 @@ const allowedOrigins = new Set([
 ]);
 
 const localDevOriginPattern =
-  /^(https?:\/\/(localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?)\/?$/;
+  /^(https?:\/\/((?:[a-z0-9-]+\.)?localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?)\/?$/;
 
 const expoOriginPattern = /^(exp|exps):\/\/[^\s/]+(?::\d{2,5})?\/?$/;
 
 function isAllowedOrigin(origin) {
   if (allowedOrigins.has(origin)) return true;
+  if (isTenantSubdomainOrigin(origin)) return true;
   if (localDevOriginPattern.test(origin)) return true;
   if (expoOriginPattern.test(origin)) return true;
   return false;
@@ -285,6 +288,7 @@ app.use("/api/v1/stripe", stripeRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
 app.use("/api/v1/exports", exportRoutes);
+app.use("/api/v1/public", publicRoutes);
 
 // ✅ Global Error Handler
 app.use(errorHandler);

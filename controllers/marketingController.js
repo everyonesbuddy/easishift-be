@@ -642,7 +642,7 @@ exports.sendOvertimeCostEmailSummary = async (req, res, next) => {
   }
 };
 
-exports.sendTimeClockAccuracyEmailSummary = async (req, res, next) => {
+exports.sendPayrollAccuracyEmailSummary = async (req, res, next) => {
   try {
     const { recipientEmail, inputs = {} } = req.body || {};
 
@@ -656,19 +656,14 @@ exports.sendTimeClockAccuracyEmailSummary = async (req, res, next) => {
     const employees = clampNumber(inputs.employees, 50, 1, 1500);
     const hourlyWage = clampNumber(inputs.hourlyWage, 22, 1, 200);
     const hoursPerWeek = clampNumber(inputs.hoursPerWeek, 40, 1, 100);
-    const unverifiedMinutesPerShift = clampNumber(
-      inputs.unverifiedMinutesPerShift,
+    // Accepts the legacy `unverifiedMinutesPerShift` key from older calculator builds.
+    const discrepancyMinutesPerShift = clampNumber(
+      inputs.discrepancyMinutesPerShift ?? inputs.unverifiedMinutesPerShift,
       12,
       0,
       60,
     );
     const shiftsPerWeek = clampNumber(inputs.shiftsPerWeek, 5, 1, 14);
-    const sharedDevicePercent = clampNumber(
-      inputs.sharedDevicePercent,
-      50,
-      0,
-      100,
-    );
     const adminHoursPerPayPeriod = clampNumber(
       inputs.adminHoursPerPayPeriod,
       4,
@@ -676,76 +671,73 @@ exports.sendTimeClockAccuracyEmailSummary = async (req, res, next) => {
       80,
     );
     const adminHourlyRate = clampNumber(inputs.adminHourlyRate, 25, 1, 200);
-    const exposureMultiplier = sharedDevicePercent / 50;
-    const weeklyUnverifiedMinutes =
-      unverifiedMinutesPerShift *
-      shiftsPerWeek *
-      employees *
-      exposureMultiplier;
-    const weeklyUnverifiedCost = (weeklyUnverifiedMinutes / 60) * hourlyWage;
-    const annualUnverifiedCost = weeklyUnverifiedCost * WEEKS_PER_YEAR;
-    const annualAdminCorrectionCost =
+    const payDisputesPerMonth = clampNumber(inputs.payDisputesPerMonth, 3, 0, 200);
+
+    const weeklyDiscrepancyMinutes =
+      discrepancyMinutesPerShift * shiftsPerWeek * employees;
+    const weeklyDiscrepancyCost = (weeklyDiscrepancyMinutes / 60) * hourlyWage;
+    const annualDiscrepancyCost = weeklyDiscrepancyCost * WEEKS_PER_YEAR;
+    const annualAdminResolutionCost =
       adminHoursPerPayPeriod * adminHourlyRate * 26;
-    const annualUnverifiedHours =
-      (weeklyUnverifiedMinutes * WEEKS_PER_YEAR) / 60;
-    const totalAnnualCost = annualUnverifiedCost + annualAdminCorrectionCost;
+    const annualDiscrepancyHours =
+      (weeklyDiscrepancyMinutes * WEEKS_PER_YEAR) / 60;
+    const annualDisputes = payDisputesPerMonth * 12;
+    const totalAnnualCost = annualDiscrepancyCost + annualAdminResolutionCost;
+
     const inputRows = [
       ...(companyName ? [["Company or facility", companyName]] : []),
       ["Employees", formatNumber(employees, 0)],
       ["Average hourly wage", formatCurrency(hourlyWage)],
       ["Average hours per week", `${formatNumber(hoursPerWeek, 1)} hours`],
-      [
-        "Unverified time per shift",
-        `${formatNumber(unverifiedMinutesPerShift, 1)} minutes`,
-      ],
       ["Shifts per week per employee", formatNumber(shiftsPerWeek, 1)],
       [
-        "Staff using shared or kiosk devices",
-        `${formatNumber(sharedDevicePercent, 0)}%`,
+        "Average clock-in/out discrepancy per shift",
+        `${formatNumber(discrepancyMinutesPerShift, 1)} minutes`,
       ],
       [
-        "Payroll correction hours per pay period",
+        "Payroll hours spent resolving discrepancies per pay period",
         `${formatNumber(adminHoursPerPayPeriod, 1)} hours`,
       ],
       ["Payroll admin hourly rate", formatCurrency(adminHourlyRate)],
+      [
+        "Pay disputes or corrections per month",
+        formatNumber(payDisputesPerMonth, 0),
+      ],
     ];
     const resultRows = [
       [
-        "Unverified or unreviewed punch time",
-        formatCurrency(annualUnverifiedCost),
+        "Time discrepancies (pay not matching actual hours worked)",
+        formatCurrency(annualDiscrepancyCost),
       ],
+      ["Manual correction time", formatCurrency(annualAdminResolutionCost)],
       [
-        "Manual timesheet correction time",
-        formatCurrency(annualAdminCorrectionCost),
+        "Time under review",
+        `${formatNumber(annualDiscrepancyHours)} hours/year`,
       ],
-      [
-        "Estimated unverified time",
-        `${formatNumber(annualUnverifiedHours)} hours/year`,
-      ],
+      ["Pay disputes raised", `${formatNumber(annualDisputes, 0)} per year`],
     ];
     const calculatorUrl =
-      "https://wisershifts.com/calculators/time-clock-accuracy-calculator";
+      "https://wisershifts.com/calculators/payroll-accuracy-calculator";
     const html = buildCalculatorEmail({
-      eyebrow: "Time clock accuracy calculator",
-      title: "Your time clock accuracy summary",
+      eyebrow: "Payroll accuracy calculator",
+      title: "Your payroll accuracy summary",
       intro: companyName
-        ? `An estimate of the annual cost of unverified punch time and manual timesheet corrections for ${companyName}.`
-        : "An estimate of the annual cost of unverified punch time and manual timesheet corrections at your facility.",
-      totalLabel: "Estimated annual cost of unverified time entries",
+        ? `An estimate of the annual cost of unresolved payroll discrepancies and manual corrections for ${companyName}.`
+        : "An estimate of the annual cost of unresolved payroll discrepancies and manual corrections at your facility.",
+      totalLabel: "Estimated annual cost of unresolved payroll discrepancies",
       totalValue: formatCurrency(totalAnnualCost),
       accent: "#0f766e",
       accentSoft: "#ccfbf1",
       accentDark: "#115e59",
       inputRows,
       resultRows,
-      insight:
-        "Geofenced clock-in helps confirm that a punch happens on-site and gives payroll a clearer record to review when a punch falls outside the facility boundary.",
+      insight: `An estimated ${formatNumber(annualDisputes, 0)} pay disputes a year could be avoided or resolved faster with verified clock data. WiserShifts doesn't assume anyone's punching in wrong. Geofenced clock-in confirms exactly when and where a shift started and ended, so staff are paid accurately for the time they worked, and payroll isn't left guessing when something looks off.`,
       disclaimer:
-        "These estimates are based on the assumptions supplied to the calculator. Actual impact depends on your current time-clock process and facility layout.",
+        "These are estimates based on the inputs above. Actual impact depends on your current clock-in method and payroll process.",
       calculatorUrl,
     });
     const text = [
-      "Time Clock Accuracy Summary",
+      "Payroll Accuracy Summary",
       "",
       "Facility Inputs",
       ...inputRows.map(([label, value]) => `- ${label}: ${value}`),
@@ -760,7 +752,7 @@ exports.sendTimeClockAccuracyEmailSummary = async (req, res, next) => {
 
     return await sendCalculatorSummary({
       recipientEmail,
-      subject: "Your Time Clock Accuracy Summary | WiserShifts",
+      subject: "Your Payroll Accuracy Summary | WiserShifts",
       html,
       text,
       res,

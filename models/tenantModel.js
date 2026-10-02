@@ -1,5 +1,7 @@
 const mongoose = require("mongoose");
 
+const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
+
 const tenantSchema = new mongoose.Schema(
   {
     name: {
@@ -147,8 +149,42 @@ const tenantSchema = new mongoose.Schema(
       type: Date,
       default: null,
     },
+
+    /**
+     * WHITE-LABEL
+     * Tenant portal is served at <subdomain>.<TENANT_ROOT_DOMAIN>.
+     */
+    subdomain: {
+      type: String,
+      lowercase: true,
+      trim: true,
+    },
+
+    branding: {
+      displayName: { type: String, trim: true, maxlength: 80, default: null },
+      primaryColor: {
+        type: String,
+        trim: true,
+        match: HEX_COLOR_PATTERN,
+        default: null,
+      },
+      secondaryColor: {
+        type: String,
+        trim: true,
+        match: HEX_COLOR_PATTERN,
+        default: null,
+      },
+      // Set when a logo is stored in TenantAsset; doubles as a cache-buster.
+      logoUpdatedAt: { type: Date, default: null },
+    },
   },
   { timestamps: true },
+);
+
+// Partial index so tenants without a subdomain don't collide on null.
+tenantSchema.index(
+  { subdomain: 1 },
+  { unique: true, partialFilterExpression: { subdomain: { $type: "string" } } },
 );
 
 module.exports = mongoose.model("Tenant", tenantSchema);

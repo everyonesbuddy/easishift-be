@@ -92,6 +92,20 @@ const buildOpenApiSpec = () => {
             _id: { type: "string" },
             name: { type: "string" },
             email: { type: "string", format: "email" },
+            subdomain: { type: "string", nullable: true },
+          },
+        },
+        TenantBranding: {
+          type: "object",
+          properties: {
+            tenantId: { type: "string" },
+            name: { type: "string" },
+            displayName: { type: "string" },
+            subdomain: { type: "string", nullable: true },
+            appUrl: { type: "string", nullable: true },
+            logoUrl: { type: "string", nullable: true },
+            primaryColor: { type: "string", nullable: true },
+            secondaryColor: { type: "string", nullable: true },
           },
         },
         Coverage: {
@@ -1148,6 +1162,104 @@ const buildOpenApiSpec = () => {
             content: { "application/json": { schema: { type: "object" } } },
           },
           responses: { 201: { description: "Created" } },
+        },
+      },
+      "/api/v1/tenants/me/branding": {
+        get: {
+          tags: ["Tenant"],
+          security: [{ bearerAuth: [] }],
+          summary: "Get current tenant branding",
+          responses: { 200: { description: "Branding" } },
+        },
+        patch: {
+          tags: ["Tenant"],
+          security: [{ bearerAuth: [] }],
+          summary:
+            "Update branding (displayName, primaryColor, secondaryColor) and/or subdomain",
+          requestBody: {
+            required: true,
+            content: { "application/json": { schema: { type: "object" } } },
+          },
+          responses: {
+            200: { description: "Branding updated" },
+            400: { description: "INVALID_BRANDING or INVALID_SUBDOMAIN" },
+            409: { description: "SUBDOMAIN_TAKEN" },
+          },
+        },
+      },
+      "/api/v1/tenants/me/logo": {
+        put: {
+          tags: ["Tenant"],
+          security: [{ bearerAuth: [] }],
+          summary: "Upload tenant logo (PNG/JPEG/WebP, max 512 KB)",
+          requestBody: {
+            required: true,
+            content: {
+              "multipart/form-data": {
+                schema: {
+                  type: "object",
+                  properties: { logo: { type: "string", format: "binary" } },
+                },
+              },
+            },
+          },
+          responses: {
+            200: { description: "Logo updated" },
+            400: { description: "INVALID_LOGO" },
+          },
+        },
+        delete: {
+          tags: ["Tenant"],
+          security: [{ bearerAuth: [] }],
+          summary: "Remove tenant logo",
+          responses: { 200: { description: "Logo removed" } },
+        },
+      },
+      "/api/v1/public/tenant-branding": {
+        get: {
+          tags: ["Tenant"],
+          summary: "Public branding lookup by host or subdomain",
+          parameters: [
+            { name: "host", in: "query", schema: { type: "string" } },
+            { name: "subdomain", in: "query", schema: { type: "string" } },
+          ],
+          responses: {
+            200: { description: "Branding" },
+            404: { description: "TENANT_NOT_FOUND" },
+          },
+        },
+      },
+      "/api/v1/public/tenants/{tenantId}/logo": {
+        get: {
+          tags: ["Tenant"],
+          summary: "Tenant logo image",
+          parameters: [
+            {
+              name: "tenantId",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: {
+            200: { description: "Image" },
+            404: { description: "Not found" },
+          },
+        },
+      },
+      "/api/v1/public/subdomain-availability": {
+        get: {
+          tags: ["Tenant"],
+          summary: "Check whether a subdomain is valid and available",
+          parameters: [
+            {
+              name: "subdomain",
+              in: "query",
+              required: true,
+              schema: { type: "string" },
+            },
+          ],
+          responses: { 200: { description: "Availability result" } },
         },
       },
       "/api/v1/tenants/{id}": {

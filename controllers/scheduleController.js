@@ -888,7 +888,9 @@ const notifyUsersBestEffort = async ({
 
     try {
       if (user.email && isEmailNotificationEnabled(pref)) {
-        await sendEmail(user.email, emailSubject, emailHtml(user));
+        await sendEmail(user.email, emailSubject, emailHtml(user), null, {
+          tenantId,
+        });
       }
 
       const to = isSmsNotificationEnabled(pref)
@@ -3262,7 +3264,9 @@ exports.createSchedule = async (req, res, next) => {
           <p>Please contact your admin if you have any questions.</p>
         `;
 
-        const result = await sendEmail(staff.email, subject, html);
+        const result = await sendEmail(staff.email, subject, html, null, {
+          tenantId: req.tenantId,
+        });
         if (result && result.success) {
           console.log(
             `Notification email sent to ${staff.email} for schedule ${schedule._id}`,

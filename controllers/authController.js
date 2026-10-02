@@ -13,6 +13,19 @@ const Preferences = require("../models/preferencesModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
 const {
+  normalizeSubdomain,
+  validateSubdomain,
+  isSubdomainAvailable,
+  generateUniqueSubdomain,
+  getTenantAppUrl,
+  getRequestTenantSubdomain,
+} = require("../utils/tenantDomainUtils");
+const {
+  BRANDING_SELECT,
+  getPublicBranding,
+  parseBrandingUpdate,
+} = require("../utils/tenantBranding");
+const {
   SYSTEM_ROLES,
   getEffectivePermissions,
   getFacilityRoles,
@@ -85,17 +98,24 @@ const sendTokenResponse = (res, token, data) => {
   res.status(200).json({ token, ...data });
 };
 
-const buildResetUrl = (req, token) => {
-  const baseUrl =
-    process.env.FRONTEND_BASE_URL ||
-    process.env.FRONTEND_URL ||
-    req.headers.origin ||
-    "";
+const buildResetUrl = async (req, token, tenantId) => {
+  const tenant = tenantId
+    ? await Tenant.findById(tenantId).select("subdomain").lean()
+    : null;
+  const baseUrl = getTenantAppUrl(tenant) || req.headers.origin || "";
   const resetPath = process.env.FRONTEND_RESET_PATH || "/reset-password";
 
   if (!baseUrl) return token;
   const normalizedBase = baseUrl.replace(/\/$/, "");
   return `${normalizedBase}${resetPath}?token=${token}`;
+};
+
+// True when the request comes from a tenant subdomain that the user doesn't belong to.
+const isOutsideRequestTenant = async (req, user) => {
+  const subdomain = getRequestTenantSubdomain(req);
+  if (!subdomain) return false;
+  const tenant = await Tenant.findOne({ subdomain }).select("_id").lean();
+  return !tenant || String(tenant._id) !== String(user.tenantId);
 };
 
 const normalizeEmail = (email) =>
@@ -195,7 +215,7 @@ const createPasswordSetupLink = async (req, user) => {
   user.passwordResetExpires = new Date(Date.now() + getPasswordSetupTtlMs());
   await user.save({ validateBeforeSave: false });
 
-  return buildResetUrl(req, setupToken);
+  return buildResetUrl(req, setupToken, user.tenantId);
 };
 
 const getPasswordSetupValidityText = () =>
@@ -256,11 +276,53 @@ exports.registerTenant = async (req, res, next) => {
       termsVersion,
       termsAcceptedAt,
       facilityTimezone,
+      subdomain: requestedSubdomain,
+      branding,
     } = req.body;
     const hasAcceptedTerms = parseBoolean(termsAccepted);
     const parsedTermsAcceptedAt = termsAcceptedAt
       ? new Date(termsAcceptedAt)
       : new Date();
+
+    const { set: brandingSet, errors: brandingErrors } = parseBrandingUpdate(
+      branding && typeof branding === "object" ? branding : {},
+    );
+    if (brandingErrors.length) {
+      return res.status(400).json({
+        message: brandingErrors.join("; "),
+        errorCode: "INVALID_BRANDING",
+      });
+    }
+
+    let subdomain;
+    if (requestedSubdomain) {
+      subdomain = normalizeSubdomain(requestedSubdomain);
+      const subdomainError = validateSubdomain(subdomain);
+      if (subdomainError) {
+        return res
+          .status(400)
+          .json({ message: subdomainError, errorCode: "INVALID_SUBDOMAIN" });
+      }
+      if (!(await isSubdomainAvailable(subdomain))) {
+        return res.status(409).json({
+          message: "That subdomain is already taken",
+          errorCode: "SUBDOMAIN_TAKEN",
+        });
+      }
+    } else {
+      subdomain = await generateUniqueSubdomain(name);
+    }
+
+    const brandingFields = {};
+    for (const [path, value] of Object.entries(brandingSet)) {
+      const [, field, subField] = path.split(".");
+      if (subField) {
+        brandingFields[field] = brandingFields[field] || {};
+        brandingFields[field][subField] = value;
+      } else {
+        brandingFields[field] = value;
+      }
+    }
 
     // Create tenant
     const tenant = await Tenant.create({
@@ -270,6 +332,8 @@ exports.registerTenant = async (req, res, next) => {
       tenantPhoneCountryCode,
       address,
       industry,
+      subdomain,
+      branding: brandingFields,
       termsAccepted: hasAcceptedTerms,
       termsVersion: hasAcceptedTerms
         ? termsVersion
@@ -331,7 +395,9 @@ exports.registerTenant = async (req, res, next) => {
           <p>You can now sign in and start setting up your team.</p>
         `;
 
-        const result = await sendEmail(adminUser.email, subject, html);
+        const result = await sendEmail(adminUser.email, subject, html, null, {
+          tenantId: tenant._id,
+        });
         if (result && result.success) {
           console.log(
             `Admin welcome email sent for tenant ${tenant._id} to ${adminUser.email}`,
@@ -360,6 +426,7 @@ exports.registerTenant = async (req, res, next) => {
     sendTokenResponse(res, token, {
       message: "Tenant and owner created successfully",
       tenant,
+      tenantBranding: getPublicBranding(tenant),
       user: getUserResponse(adminUser),
     });
   } catch (err) {
@@ -458,7 +525,9 @@ exports.registerStaff = async (req, res, next) => {
           <p><a href="${setupUrl}">${setupUrl}</a></p>
         `;
 
-        const result = await sendEmail(user.email, subject, html);
+        const result = await sendEmail(user.email, subject, html, null, {
+          tenantId: req.tenantId,
+        });
         if (result && result.success) {
           console.log(`Staff welcome email sent to ${user.email}`);
         } else {
@@ -642,7 +711,13 @@ exports.bulkRegisterStaff = async (req, res, next) => {
             <p><a href="${setupUrl}">${setupUrl}</a></p>
           `;
 
-          const emailResult = await sendEmailQueued(user.email, subject, html);
+          const emailResult = await sendEmailQueued(
+            user.email,
+            subject,
+            html,
+            null,
+            { tenantId: req.tenantId },
+          );
           if (!emailResult || !emailResult.success) {
             inviteWarning = "account created but setup email failed";
           }
@@ -706,9 +781,20 @@ exports.loginStaff = async (req, res, next) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ message: "Invalid credentials" });
 
+    if (await isOutsideRequestTenant(req, user)) {
+      return res.status(401).json({ message: "Invalid credentials" });
+    }
+
+    const tenant = await Tenant.findById(user.tenantId)
+      .select(BRANDING_SELECT)
+      .lean();
+
     const roles = getUserRoles(user);
     const token = signToken(user._id, roles, user.tenantId);
-    sendTokenResponse(res, token, { user: getUserResponse(user) });
+    sendTokenResponse(res, token, {
+      user: getUserResponse(user),
+      tenantBranding: tenant ? getPublicBranding(tenant) : null,
+    });
   } catch (err) {
     next(err);
   }
@@ -743,7 +829,9 @@ exports.changePassword = async (req, res, next) => {
           <p>If you did not make this change, please contact your admin immediately.</p>
         `;
 
-        const result = await sendEmail(user.email, subject, html);
+        const result = await sendEmail(user.email, subject, html, null, {
+          tenantId: user.tenantId,
+        });
         if (result && result.success) {
           console.log(`Password change email sent to ${user.email}`);
         } else {
@@ -777,7 +865,7 @@ exports.forgotPassword = async (req, res, next) => {
     if (!email) return res.status(400).json({ message: "Email is required" });
 
     const user = await User.findOne({ email });
-    if (!user) {
+    if (!user || (await isOutsideRequestTenant(req, user))) {
       return res
         .status(200)
         .json({ message: "If the email exists, a reset link was sent." });
@@ -793,7 +881,7 @@ exports.forgotPassword = async (req, res, next) => {
     user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
     await user.save({ validateBeforeSave: false });
 
-    const resetUrl = buildResetUrl(req, resetToken);
+    const resetUrl = await buildResetUrl(req, resetToken, user.tenantId);
     const subject = "Password reset request";
     const html = `
       <p>Hi ${user.name || "there"},</p>
@@ -803,7 +891,9 @@ exports.forgotPassword = async (req, res, next) => {
       <p>If you did not request this, you can ignore this email.</p>
     `;
 
-    const result = await sendEmail(user.email, subject, html);
+    const result = await sendEmail(user.email, subject, html, null, {
+      tenantId: user.tenantId,
+    });
     if (!result || !result.success) {
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
@@ -848,7 +938,9 @@ exports.sendPasswordReset = async (req, res, next) => {
       <p>If you did not expect this email, please contact your administrator.</p>
     `;
 
-    const result = await sendEmail(user.email, subject, html);
+    const result = await sendEmail(user.email, subject, html, null, {
+      tenantId: req.tenantId,
+    });
     if (!result || !result.success) {
       user.passwordResetToken = undefined;
       user.passwordResetExpires = undefined;
@@ -903,7 +995,9 @@ exports.resetPassword = async (req, res, next) => {
           <p>If you did not make this change, please contact your admin immediately.</p>
         `;
 
-        const result = await sendEmail(user.email, subject, html);
+        const result = await sendEmail(user.email, subject, html, null, {
+          tenantId: user.tenantId,
+        });
         if (result && result.success) {
           console.log(`Password reset email sent to ${user.email}`);
         } else {

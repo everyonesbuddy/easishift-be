@@ -59,7 +59,7 @@ The scheduling domain now uses tenant-configurable taxonomy instead of hard-code
 
 ## Current Domain Model
 
-- **Tenant**: organization account, subscription status, seat limits, billing IDs
+- **Tenant**: organization account, subscription status, seat limits, billing IDs, portal `subdomain`, and `branding` (display name, colors, logo)
 - **User**: tenant user with multi-role access (`roles`) and optional capability arrays (`allowedAreas`, `allowedShiftTypes`, `certificationTags`)
 - **Coverage**: required staffing slots by role/date/time and required headcount
 - **Schedule**: assigned shifts per staff member, optionally linked to the coverage slot it fills through `coverageId`
@@ -105,6 +105,25 @@ All tenant data is isolated using `tenantId`.
 - `POST /api/v1/tenants` - create tenant (`superadmin`)
 - `GET /api/v1/tenants/:id` - get single tenant
 - `DELETE /api/v1/tenants/:id` - delete tenant account and all tenant data (owner for own tenant)
+- `GET /api/v1/tenants/me/branding` - current tenant branding and portal URL
+- `PATCH /api/v1/tenants/me/branding` - update `displayName`, `primaryColor`, `secondaryColor`, and/or `subdomain` (`tenant.settings`)
+- `PUT /api/v1/tenants/me/logo` - upload logo as multipart field `logo` (PNG/JPEG/WebP, max 512 KB) (`tenant.settings`)
+- `DELETE /api/v1/tenants/me/logo` - remove logo (`tenant.settings`)
+
+### White-Label Branding (Public)
+
+- `GET /api/v1/public/tenant-branding?host=abc.wisershifts.com` (or `?subdomain=abc`) - safe branding fields for the pre-login page
+- `GET /api/v1/public/tenants/:tenantId/logo` - logo image
+- `GET /api/v1/public/subdomain-availability?subdomain=abc` - validity/availability check for onboarding
+
+White-label behavior:
+
+- Each tenant is served at `<subdomain>.<TENANT_ROOT_DOMAIN>`. Tenant signup accepts optional `subdomain` and `branding`; without `subdomain`, one is generated from the tenant name.
+- Subdomains are 3-40 lowercase letters, numbers, and single hyphens; system names (`www`, `api`, `app`, `admin`, ...) are reserved.
+- Login and forgot-password requests from a tenant subdomain origin (or with body `tenantSubdomain`, for mobile) only accept users of that tenant. Logins from the root domain are unscoped, and the response includes `tenantBranding.appUrl` so the frontend can redirect.
+- Password setup/reset links and Stripe checkout redirects use the tenant's subdomain URL.
+- Tenant emails use the tenant display name as the From name and a branded layout (logo shown when `API_PUBLIC_URL` is set). The sender address remains `POSTMARK_SENDER_EMAIL`.
+- Business policies remain in Facility Preferences.
 
 ### Schedules
 
@@ -508,6 +527,13 @@ Create `config.env` in the project root.
 - `FRONTEND_RESET_PATH` (optional, default `/reset-password`)
 - `PASSWORD_RESET_TTL_MINUTES` (optional, defaults to `20160` = 14 days)
 
+### White-Label Subdomains
+
+- `TENANT_ROOT_DOMAIN` (e.g. `wisershifts.com`; enables `<subdomain>.<root>` portal URLs and CORS. When unset, `FRONTEND_BASE_URL`/`FRONTEND_URL` are used)
+- `TENANT_APP_URL_SCHEME` (optional, default `https`)
+- `TENANT_APP_URL_PORT` (optional, for local dev such as `TENANT_ROOT_DOMAIN=localhost`, `TENANT_APP_URL_SCHEME=http`, `TENANT_APP_URL_PORT=5173`)
+- `API_PUBLIC_URL` (optional public API base used for absolute logo URLs in emails)
+
 ### Stripe
 
 - `STRIPE_SECRET_KEY`
@@ -581,6 +607,7 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 - `node scripts/migrate-unit-area-lowercase.js` - normalizes uppercase legacy unit areas in coverage, schedules, draft assignments, and facility preferences
 - `node scripts/backfill-schedule-coverage-id.js --dry-run` - preview links from legacy schedules to coverage requirements; rerun without `--dry-run` to write links and sync indexes
 - `node scripts/backfill-tenant-trial-used.js --dry-run` - preview trial-use stamps for tenants that already had access; rerun without `--dry-run` to apply
+- `node scripts/backfill-tenant-subdomains.js --dry-run` - preview generated subdomains for existing tenants; rerun without `--dry-run` to apply and create the unique index
 
 NPM shortcuts:
 

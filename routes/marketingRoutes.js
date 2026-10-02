@@ -6,7 +6,7 @@ const {
   sendCostLeakEmailSummary,
   sendCallOutCostEmailSummary,
   sendOvertimeCostEmailSummary,
-  sendTimeClockAccuracyEmailSummary,
+  sendPayrollAccuracyEmailSummary,
 } = require("../controllers/marketingController");
 
 // Public endpoint for marketing calculator email capture + summary delivery.
@@ -15,8 +15,13 @@ router.post("/cost-leak/email-summary", sendCostLeakEmailSummary);
 router.post("/call-out-cost/email-summary", sendCallOutCostEmailSummary);
 router.post("/overtime-cost/email-summary", sendOvertimeCostEmailSummary);
 router.post(
+  "/payroll-accuracy/email-summary",
+  sendPayrollAccuracyEmailSummary,
+);
+// Legacy path kept so existing calculator builds keep working.
+router.post(
   "/time-clock-accuracy/email-summary",
-  sendTimeClockAccuracyEmailSummary,
+  sendPayrollAccuracyEmailSummary,
 );
 
 module.exports = router;

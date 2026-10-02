@@ -89,7 +89,9 @@ exports.requestTimeOff = async (req, res, next) => {
             <p>Please review the request in the admin dashboard.</p>
           `;
 
-          const result = await sendEmail(recipients, subject, html);
+          const result = await sendEmail(recipients, subject, html, null, {
+            tenantId: req.tenantId,
+          });
           if (result && result.success) {
             console.log(
               `Notification email sent to admins for time-off request ${timeOffRequest._id}`,
@@ -203,7 +205,9 @@ exports.reviewTimeOff = async (req, res, next) => {
           <p>Please contact your admin if you have questions.</p>
         `;
 
-        const result = await sendEmail(staff.email, subject, html);
+        const result = await sendEmail(staff.email, subject, html, null, {
+          tenantId: req.tenantId,
+        });
         if (result && result.success) {
           console.log(
             `Notification email sent to ${staff.email} for time-off ${updated._id}`,

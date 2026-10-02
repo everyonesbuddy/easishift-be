@@ -105,10 +105,10 @@ All tenant data is isolated using `tenantId`.
 - `POST /api/v1/tenants` - create tenant (`superadmin`)
 - `GET /api/v1/tenants/:id` - get single tenant
 - `DELETE /api/v1/tenants/:id` - delete tenant account and all tenant data (owner for own tenant)
-- `GET /api/v1/tenants/me/branding` - current tenant branding and portal URL
-- `PATCH /api/v1/tenants/me/branding` - update `displayName`, `primaryColor`, `secondaryColor`, and/or `subdomain` (`tenant.settings`)
-- `PUT /api/v1/tenants/me/logo` - upload logo as multipart field `logo` (PNG/JPEG/WebP, max 512 KB) (`tenant.settings`)
-- `DELETE /api/v1/tenants/me/logo` - remove logo (`tenant.settings`)
+- `GET /api/v1/tenants/me/branding` - get current tenant branding and portal URL (authenticated tenant user)
+- `PATCH /api/v1/tenants/me/branding` - update `displayName`, `primaryColor`, `secondaryColor`, and/or `subdomain` (`tenant.settings`, currently owner-only)
+- `PUT /api/v1/tenants/me/logo` - upload logo as multipart field `logo` (PNG/JPEG/WebP, max 512 KB; `tenant.settings`, currently owner-only)
+- `DELETE /api/v1/tenants/me/logo` - remove logo (`tenant.settings`, currently owner-only)
 
 ### White-Label Branding (Public)
 
@@ -118,12 +118,28 @@ All tenant data is isolated using `tenantId`.
 
 White-label behavior:
 
-- Each tenant is served at `<subdomain>.<TENANT_ROOT_DOMAIN>`. Tenant signup accepts optional `subdomain` and `branding`; without `subdomain`, one is generated from the tenant name.
+- Each tenant is served at `<subdomain>.<TENANT_ROOT_DOMAIN>`. Tenant signup accepts optional `subdomain` and `branding`; without `subdomain`, one is generated from the tenant name. The branding fields are `displayName`, `primaryColor`, and `secondaryColor`; logos are uploaded separately.
 - Subdomains are 3-40 lowercase letters, numbers, and single hyphens; system names (`www`, `api`, `app`, `admin`, ...) are reserved.
-- Login and forgot-password requests from a tenant subdomain origin (or with body `tenantSubdomain`, for mobile) only accept users of that tenant. Logins from the root domain are unscoped, and the response includes `tenantBranding.appUrl` so the frontend can redirect.
+- `GET /public/tenant-branding?host=<hostname>` resolves a tenant before login. The frontend should skip this lookup on the root domain and use default WiserShifts branding there.
+- Login and forgot-password requests from a tenant subdomain origin (or with body `tenantSubdomain`, for mobile) only accept users of that tenant. Root-domain login remains allowed and is not workspace-scoped; the login response includes `tenantBranding.appUrl` so the frontend can direct the user to their tenant portal.
+- User email addresses are globally unique, so the same email cannot currently have separate staff accounts in multiple tenants.
 - Password setup/reset links and Stripe checkout redirects use the tenant's subdomain URL.
-- Tenant emails use the tenant display name as the From name and a branded layout (logo shown when `API_PUBLIC_URL` is set). The sender address remains `POSTMARK_SENDER_EMAIL`.
+- Emails sent with tenant context use the tenant display name as the From name and a branded layout. The sender address remains the configured `POSTMARK_SENDER_EMAIL` (or SMTP sender); an absolute logo URL in email requires `API_PUBLIC_URL`.
+- Logo files are stored in MongoDB in the `TenantAsset` collection, limited to PNG/JPEG/WebP and 512 KB. The public logo endpoint returns the image with a content-type allowlist and `nosniff` protection.
 - Business policies remain in Facility Preferences.
+
+### Web Login Flow
+
+- On `<subdomain>.<TENANT_ROOT_DOMAIN>`, load the public branding, show the branded login, and call `POST /auth/login/staff`. The browser `Origin` scopes login and forgot-password to that tenant.
+- On the root domain (`wisershifts.com` or `localhost:5173`), login remains available but is not subdomain-scoped. Prefer a workspace finder that validates a subdomain and redirects to the tenant portal before login. Do not put a JWT in a redirect URL; browser storage is isolated between subdomains.
+- A tenant portal login rejects a user from another tenant with the same generic `401 Invalid credentials` response. Tenant scoping is not mandatory for requests without a tenant subdomain; the token still limits access to the user's own tenant.
+
+### Mobile App Flow
+
+- The App Store / Play Store app remains the single WiserShifts app. It can show tenant logo/colors on its in-app login and authenticated screens after it knows the workspace; the store listing, native app icon, and native launch screen remain WiserShifts-branded.
+- On first launch, ask for the workspace subdomain (or open the app from a tenant invite link), then call `GET /public/tenant-branding?subdomain=<subdomain>` and persist the returned branding/workspace locally.
+- Send `tenantSubdomain` in the JSON body of login and forgot-password requests. Native requests do not have a browser `Origin`, so this field supplies workspace scoping.
+- Root-domain/API login without `tenantSubdomain` remains allowed for backward compatibility. There is no enforcement flag currently enabled.
 
 ### Schedules
 
@@ -529,7 +545,7 @@ Create `config.env` in the project root.
 
 ### White-Label Subdomains
 
-- `TENANT_ROOT_DOMAIN` (e.g. `wisershifts.com`; enables `<subdomain>.<root>` portal URLs and CORS. When unset, `FRONTEND_BASE_URL`/`FRONTEND_URL` are used)
+- `TENANT_ROOT_DOMAIN` (e.g. `wisershifts.com`; enables `<subdomain>.<root>` portal URLs and tenant-subdomain CORS. When unset, portal links fall back to `FRONTEND_BASE_URL`/`FRONTEND_URL`)
 - `TENANT_APP_URL_SCHEME` (optional, default `https`)
 - `TENANT_APP_URL_PORT` (optional, for local dev such as `TENANT_ROOT_DOMAIN=localhost`, `TENANT_APP_URL_SCHEME=http`, `TENANT_APP_URL_PORT=5173`)
 - `API_PUBLIC_URL` (optional public API base used for absolute logo URLs in emails)
@@ -584,16 +600,47 @@ API base URL:
 http://localhost:5000/api/v1
 ```
 
+To test tenant portals locally, configure the backend `config.env`:
+
+```env
+TENANT_ROOT_DOMAIN=localhost
+TENANT_APP_URL_SCHEME=http
+TENANT_APP_URL_PORT=5173
+API_PUBLIC_URL=http://localhost:5000
+```
+
+Set the frontend root-domain setting to `localhost` (for example, `VITE_ROOT_DOMAIN=localhost`) and keep its API base URL at `http://localhost:5000`. Restart the backend and frontend after changing environment files. Then open `http://<tenant-subdomain>.localhost:5173`, for example `http://test-hospital.localhost:5173`. Browsers resolve `*.localhost` locally; if Vite rejects the host, allow `.localhost` in its `server.allowedHosts` setting.
+
+The backend can be smoke-tested directly:
+
+```text
+GET http://localhost:5000/api/v1/public/tenant-branding?host=test-hospital.localhost:5173
+```
+
+That public route returns 404 on the root host (`localhost:5173`) because it has no tenant subdomain. The frontend should skip the request on the root site and show default WiserShifts branding instead.
+
+## Production Subdomain Setup
+
+1. Add a wildcard DNS record (`*.wisershifts.com`) to the frontend host. Keep explicit records such as `api.wisershifts.com` and `www.wisershifts.com` if they point elsewhere.
+2. Configure the frontend host to serve the same app for `*.wisershifts.com` and issue a wildcard TLS certificate. Follow the provider's wildcard-domain requirements.
+3. Set backend production variables `TENANT_ROOT_DOMAIN=wisershifts.com` and `API_PUBLIC_URL=https://<public-api-host>`, then redeploy.
+4. Backfill tenants without subdomains before directing users to their portals (see Utility Scripts).
+5. Configure the frontend to resolve branding by hostname and scope login by the tenant subdomain. Existing sessions on the root domain do not transfer to subdomains; users sign in once on their tenant portal.
+
+Do not enable `TENANT_ROOT_DOMAIN` in production until the wildcard frontend domain and certificate are ready: password setup/reset links and Stripe checkout return URLs will start using tenant subdomains as soon as the variable is set.
+
 ---
 
 ## CORS Notes
 
-Current allowed origins in `app.js`:
+`app.js` allows these fixed origins:
 
 - `https://wisershifts.com`
+- `https://easishift.com`
 - `http://localhost:5173`
+- `http://localhost:8081`
 
-If your frontend runs on a different origin, update the whitelist in `app.js`.
+It also allows localhost/LAN development origins, Expo origins, and tenant subdomains under `TENANT_ROOT_DOMAIN` (HTTPS in production; HTTP is accepted for non-production). Keep `TENANT_ROOT_DOMAIN` limited to the domain you control. If you add a different fixed frontend origin, update the whitelist in `app.js`.
 
 ---
 
@@ -607,7 +654,7 @@ If your frontend runs on a different origin, update the whitelist in `app.js`.
 - `node scripts/migrate-unit-area-lowercase.js` - normalizes uppercase legacy unit areas in coverage, schedules, draft assignments, and facility preferences
 - `node scripts/backfill-schedule-coverage-id.js --dry-run` - preview links from legacy schedules to coverage requirements; rerun without `--dry-run` to write links and sync indexes
 - `node scripts/backfill-tenant-trial-used.js --dry-run` - preview trial-use stamps for tenants that already had access; rerun without `--dry-run` to apply
-- `node scripts/backfill-tenant-subdomains.js --dry-run` - preview generated subdomains for existing tenants; rerun without `--dry-run` to apply and create the unique index
+- `node scripts/backfill-tenant-subdomains.js --dry-run` - preview generated subdomains for existing tenants; rerun without `--dry-run` to apply and create the unique index. To target specific tenants, add `--tenant-ids=<id1>,<id2>`.
 
 NPM shortcuts:
 

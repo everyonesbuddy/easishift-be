@@ -197,13 +197,51 @@ const buildOpenApiSpec = () => {
         post: {
           tags: ["Auth"],
           summary: "Register tenant and owner",
+          description:
+            "Creates a tenant with an optional subdomain and optional display name/colors. A subdomain is generated from the tenant name when omitted. Upload a logo after signup using the authenticated tenant logo endpoint.",
           requestBody: {
             required: true,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    name: { type: "string" },
+                    email: { type: "string", format: "email" },
+                    password: { type: "string", format: "password" },
+                    adminName: { type: "string" },
+                    subdomain: {
+                      type: "string",
+                      description:
+                        "Optional 3-40 character tenant workspace slug.",
+                    },
+                    branding: {
+                      type: "object",
+                      properties: {
+                        displayName: { type: "string", maxLength: 80 },
+                        primaryColor: {
+                          type: "string",
+                          pattern: "^#[0-9a-fA-F]{6}$",
+                        },
+                        secondaryColor: {
+                          type: "string",
+                          pattern: "^#[0-9a-fA-F]{6}$",
+                        },
+                      },
+                    },
+                  },
+                  required: ["name", "email", "password", "adminName"],
+                },
+              },
+            },
           },
           responses: {
-            200: { description: "Tenant created" },
-            400: { description: "Validation error" },
+            200: {
+              description:
+                "Tenant created; response includes tenantBranding for the new workspace.",
+            },
+            400: { description: "Validation, branding, or subdomain error" },
+            409: { description: "SUBDOMAIN_TAKEN" },
           },
         },
       },
@@ -240,13 +278,34 @@ const buildOpenApiSpec = () => {
       "/api/v1/auth/login/staff": {
         post: {
           tags: ["Auth"],
-          summary: "Login staff",
+          summary: "Login staff/admin and return tenant branding",
+          description:
+            "On a tenant subdomain, browser Origin scopes login to that tenant. Native clients should send tenantSubdomain in the JSON body. Requests without a tenant subdomain remain unscoped for backward compatibility.",
           requestBody: {
             required: true,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    email: { type: "string", format: "email" },
+                    password: { type: "string", format: "password" },
+                    tenantSubdomain: {
+                      type: "string",
+                      description:
+                        "Optional workspace slug for native/mobile clients.",
+                    },
+                  },
+                  required: ["email", "password"],
+                },
+              },
+            },
           },
           responses: {
-            200: { description: "Login success" },
+            200: {
+              description:
+                "Login success; response includes tenantBranding and its appUrl.",
+            },
             401: { description: "Invalid credentials" },
           },
         },
@@ -267,9 +326,22 @@ const buildOpenApiSpec = () => {
         post: {
           tags: ["Auth"],
           summary: "Send forgot password link",
+          description:
+            "Browser requests on a tenant subdomain are scoped using Origin. Native clients should include tenantSubdomain to scope the reset request to the selected workspace.",
           requestBody: {
             required: true,
-            content: { "application/json": { schema: { type: "object" } } },
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    email: { type: "string", format: "email" },
+                    tenantSubdomain: { type: "string" },
+                  },
+                  required: ["email"],
+                },
+              },
+            },
           },
           responses: { 200: { description: "Handled" } },
         },

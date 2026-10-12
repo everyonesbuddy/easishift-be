@@ -104,6 +104,24 @@ const facilityPreferencesSchema = new mongoose.Schema(
       default: false,
     },
 
+    /**
+     * First day of the scheduling week: 0 = Sunday ... 6 = Saturday.
+     */
+    weekStartsOn: {
+      type: Number,
+      min: 0,
+      max: 6,
+      default: 0,
+    },
+
+    /**
+     * Call-out texts skip people the extra shift would push into overtime.
+     */
+    excludeOvertimeOnCallout: {
+      type: Boolean,
+      default: true,
+    },
+
     // ─── FACILITY TAXONOMY ──────────────────────────────────────────────────
     /**
      * Role families the facility uses. Keep these as base roles only

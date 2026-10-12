@@ -30,6 +30,9 @@ const buildE164Number = (countryCode, phone) => {
     local = local.slice(codeDigits.length);
   }
 
+  // North American numbers are always 10 digits after the +1.
+  if (codeDigits === "1" && local.length !== 10) return null;
+
   const full = `${codeDigits}${local}`;
   return full.length >= 8 && full.length <= 15 ? `+${full}` : null;
 };

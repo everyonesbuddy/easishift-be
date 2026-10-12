@@ -68,6 +68,12 @@ const scheduleSchema = new mongoose.Schema(
     },
     notes: { type: String },
     timezone: { type: String, default: "UTC" }, // IANA timezone, for display + auditing
+    // Draft until the week is published; staff only ever see "published".
+    state: {
+      type: String,
+      enum: ["draft", "published"],
+      default: "published",
+    },
     meta: {
       createdBy: { type: mongoose.Schema.Types.ObjectId, ref: "User" },
       publishedAt: Date,
@@ -75,6 +81,10 @@ const scheduleSchema = new mongoose.Schema(
       completedAt: Date,
       leftEarlyAt: Date,
       noShowAt: Date,
+      source: String, // "scheduler" | "staff_pickup" | "swap" | "auto" | "callout"
+      reminderSentAt: Date,
+      calledOutAt: Date,
+      callOutReason: String,
     },
   },
   { timestamps: true },
@@ -94,5 +104,6 @@ scheduleSchema.index({ tenantId: 1, coverageId: 1, status: 1 });
 scheduleSchema.index({ tenantId: 1, startTime: 1, endTime: 1 });
 scheduleSchema.index({ tenantId: 1, staffId: 1, startTime: 1 });
 scheduleSchema.index({ tenantId: 1, status: 1, startTime: 1 });
+scheduleSchema.index({ tenantId: 1, state: 1, startTime: 1 });
 
 module.exports = mongoose.model("Schedule", scheduleSchema);

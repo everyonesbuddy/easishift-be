@@ -2,6 +2,8 @@
 const TimeOff = require("../models/timeOffModel");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
+const { sendToStaff } = require("../utils/notify");
+const { getEffectivePlanKey } = require("../config/plans");
 const User = require("../models/userModel");
 const Preferences = require("../models/preferencesModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
@@ -165,58 +167,23 @@ exports.reviewTimeOff = async (req, res, next) => {
       const staff = await User.findOne({
         _id: updatedStaffId,
         tenantId: req.tenantId,
-      }).select("name email userPhone userPhoneCountryCode");
-      const staffPreference = staff
-        ? await Preferences.findOne({
-            tenantId: req.tenantId,
-            staffId: staff._id,
-          }).lean()
-        : null;
+      }).lean();
 
-      if (staff && staff.email && isEmailNotificationEnabled(staffPreference)) {
-        const subject = `Your time-off request has been ${status}`;
-        const html = `
-          <p>Hi ${staff.name || "team member"},</p>
-          <p>Your time-off request has been <strong>${status}</strong>.</p>
-          <ul>
-            <li><strong>When:</strong> ${timeOffWindow}</li>
-            <li><strong>Reviewed by:</strong> ${req.user.name || req.user._id}</li>
-          </ul>
-          <p>Please contact your admin if you have questions.</p>
-        `;
-
-        const result = await sendEmail(staff.email, subject, html, null, {
-          tenantId: req.tenantId,
+      if (staff && !staff.loginEnabled) {
+        const text = `${req.tenant?.name || "Your facility"}: your time-off request (${timeOffWindow}) was ${status}.`;
+        await sendToStaff({
+          tenant: req.tenant,
+          planKey: getEffectivePlanKey(req.tenant),
+          staff,
+          kind: "timeoff",
+          sms: text,
+          emailSubject: `Your time-off request was ${status}`,
+          emailHtml: `
+            <p>Hi ${staff.name || "there"},</p>
+            <p>Your time-off request has been <strong>${status}</strong>.</p>
+            <ul><li><strong>When:</strong> ${timeOffWindow}</li></ul>`,
+          refId: updated._id,
         });
-        if (result && result.success) {
-          console.log(
-            `Notification email sent to ${staff.email} for time-off ${updated._id}`,
-          );
-        } else {
-          console.error(
-            `Notification email failed for time-off ${updated._id}:`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-      }
-
-      const to =
-        staff && isSmsNotificationEnabled(staffPreference)
-          ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
-          : null;
-      if (to) {
-        const smsBody = `Your time-off request has been ${status}: ${timeOffWindow}.`;
-        const smsResult = await sendSMS(to, smsBody);
-        if (smsResult && smsResult.success) {
-          console.log(
-            `Notification SMS sent to ${to} for time-off ${updated._id}`,
-          );
-        } else {
-          console.error(
-            `Notification SMS failed for ${to} (time-off ${updated._id}):`,
-            smsResult && smsResult.error ? smsResult.error : "unknown error",
-          );
-        }
       }
     } catch (err) {
       console.error(

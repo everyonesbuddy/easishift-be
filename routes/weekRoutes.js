@@ -4,6 +4,7 @@ const {
   getCurrentWeek,
   getWeek,
   getCandidates,
+  publishWeek,
 } = require("../controllers/weekController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -17,6 +18,12 @@ router.get(
   "/:weekStart/candidates",
   requirePermission("schedule.manage"),
   getCandidates,
+);
+
+router.post(
+  "/:weekStart/publish",
+  requirePermission("schedule.manage"),
+  publishWeek,
 );
 
 module.exports = router;

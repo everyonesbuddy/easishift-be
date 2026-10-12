@@ -61,7 +61,9 @@ const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
 const {
   hasConflict,
   countAssignmentsByCoverage,
+  COVERAGE_OCCUPYING_STATUSES,
 } = require("../utils/scheduleUtils");
+const { markOfferFilledIfAny } = require("../utils/callouts");
 const {
   formatRangeInFacilityZone,
   formatInFacilityZone,
@@ -1079,92 +1081,119 @@ exports.getOpenCoverageForMe = async (req, res, next) => {
   }
 };
 
+/**
+ * Puts `staff` on an open slot of `coverageId`, safely.
+ * Used by link pickup and by YES replies to call-out texts.
+ * Returns { ok: true, schedule } or { ok: false, status, code, message }.
+ */
+const claimCoverage = async ({ tenantId, coverageId, staff, source }) => {
+  if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
+    return { ok: false, status: 400, code: "INVALID_COVERAGE", message: "Valid coverageId is required" };
+  }
+
+  const [coverage, facilityPreferences] = await Promise.all([
+    Coverage.findOne({ _id: coverageId, tenantId }),
+    FacilityPreferences.findOne({ tenantId }).lean(),
+  ]);
+  if (!coverage) {
+    return { ok: false, status: 404, code: "COVERAGE_NOT_FOUND", message: "Coverage not found" };
+  }
+  if (coverage.startTime <= new Date()) {
+    return { ok: false, status: 400, code: "SHIFT_STARTED", message: "Only future shifts can be picked up" };
+  }
+
+  const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+  const openCoverages = await getOpenCoverageForStaff({
+    tenantId,
+    staff,
+    facilityConfig,
+  });
+  if (!openCoverages.some((item) => String(item._id) === String(coverage._id))) {
+    return { ok: false, status: 409, code: "SHIFT_ALREADY_FILLED", message: "This shift is no longer available" };
+  }
+
+  const timeOff = await TimeOff.findOne({
+    tenantId,
+    staffId: staff._id,
+    status: "approved",
+    startTime: { $lte: coverage.endTime },
+    endTime: { $gte: coverage.startTime },
+  });
+  if (timeOff) {
+    return { ok: false, status: 409, code: "TIME_OFF", message: "You have approved time off overlapping this shift" };
+  }
+
+  const conflict = await hasConflict({
+    tenantId,
+    staffId: staff._id,
+    startTime: coverage.startTime,
+    endTime: coverage.endTime,
+  });
+  if (conflict) {
+    return { ok: false, status: 409, code: "CONFLICT", message: "You're already working then", conflict };
+  }
+
+  const schedule = await Schedule.create({
+    tenantId,
+    staffId: staff._id,
+    coverageId: coverage._id,
+    role: coverage.role,
+    unitArea: coverage.unitArea,
+    shiftType: coverage.shiftType,
+    shiftTag: coverage.shiftTag,
+    certificationTags: coverage.requiredCertificationTags || [],
+    startTime: coverage.startTime,
+    endTime: coverage.endTime,
+    timezone: facilityPreferences?.facilityTimezone || "UTC",
+    notes:
+      source === "callout" ? "Took a call-out shift" : "Picked up by staff member",
+    status: "scheduled",
+    state: "published",
+    meta: { createdBy: staff._id, source, publishedAt: new Date() },
+  });
+
+  // Two people can pass the checks above at the same moment. Re-count and
+  // keep the earliest N (by _id); anyone past the limit is undone.
+  const occupying = await Schedule.find({
+    tenantId,
+    coverageId: coverage._id,
+    status: { $in: COVERAGE_OCCUPYING_STATUSES },
+  })
+    .sort({ _id: 1 })
+    .select("_id")
+    .lean();
+  const position = occupying.findIndex(
+    (row) => String(row._id) === String(schedule._id),
+  );
+  if (position >= coverage.requiredCount) {
+    await Schedule.deleteOne({ _id: schedule._id });
+    return { ok: false, status: 409, code: "SHIFT_ALREADY_FILLED", message: "Sorry, someone just took this shift" };
+  }
+
+  await autoRemoveDraftAssignmentForSchedule({ tenantId, schedule });
+  await markOfferFilledIfAny({ tenantId, coverageId: coverage._id, staffId: staff._id });
+  return { ok: true, schedule };
+};
+exports.claimCoverage = claimCoverage;
+
 exports.pickUpSchedule = async (req, res, next) => {
   try {
-    const { coverageId } = req.body || {};
-    if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
-      return res.status(400).json({ message: "Valid coverageId is required" });
-    }
-
-    const [coverage, facilityPreferences] = await Promise.all([
-      Coverage.findOne({ _id: coverageId, tenantId: req.tenantId }),
-      FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
-    ]);
-    if (!coverage) {
-      return res.status(404).json({ message: "Coverage not found" });
-    }
-    if (coverage.startTime <= new Date()) {
-      return res
-        .status(400)
-        .json({ message: "Only future shifts can be picked up" });
-    }
-
-    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
-    const openCoverages = await getOpenCoverageForStaff({
+    const result = await claimCoverage({
       tenantId: req.tenantId,
+      coverageId: req.body?.coverageId,
       staff: req.user,
-      facilityConfig,
+      source: "staff_pickup",
     });
-    const openCoverage = openCoverages.find(
-      (item) => item._id.toString() === coverage._id.toString(),
-    );
-    if (!openCoverage) {
-      return res.status(409).json({
-        message: "This shift is no longer available for pickup",
+    if (!result.ok) {
+      return res.status(result.status).json({
+        message: result.message,
+        errorCode: result.code,
+        ...(result.conflict ? { conflict: result.conflict } : {}),
       });
     }
-
-    const timeOff = await TimeOff.findOne({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      status: "approved",
-      startTime: { $lte: coverage.endTime },
-      endTime: { $gte: coverage.startTime },
-    });
-    if (timeOff) {
-      return res.status(409).json({
-        message: "You have approved time off overlapping this shift",
-      });
-    }
-
-    const conflict = await hasConflict({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      startTime: coverage.startTime,
-      endTime: coverage.endTime,
-    });
-    if (conflict) {
-      return res.status(409).json({ message: "Schedule conflict", conflict });
-    }
-
-    const schedule = await Schedule.create({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      coverageId: coverage._id,
-      role: coverage.role,
-      unitArea: coverage.unitArea,
-      shiftType: coverage.shiftType,
-      shiftTag: coverage.shiftTag,
-      certificationTags: coverage.requiredCertificationTags || [],
-      startTime: coverage.startTime,
-      endTime: coverage.endTime,
-      timezone: "UTC",
-      notes: "Picked up by staff member",
-      status: "scheduled",
-      state: "published",
-      meta: {
-        createdBy: req.user._id,
-        source: "staff_pickup",
-        publishedAt: new Date(),
-      },
-    });
-
-    await autoRemoveDraftAssignmentForSchedule({
-      tenantId: req.tenantId,
-      schedule,
-    });
-
-    res.status(201).json({ message: "Shift picked up successfully", schedule });
+    res
+      .status(201)
+      .json({ message: "Shift picked up successfully", schedule: result.schedule });
   } catch (err) {
     next(err);
   }

@@ -23,6 +23,7 @@ const {
   pickUpSchedule,
 } = require("../controllers/scheduleController");
 
+const { markCallOut } = require("../controllers/calloutController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
@@ -81,6 +82,11 @@ router.post(
 );
 
 // SHIFT SWAP REQUESTS
+router.post(
+  "/:id/call-out",
+  requirePermission("schedule.manage"),
+  markCallOut,
+);
 router.get("/swap-requests", getShiftSwapRequests);
 router.post("/swap-requests/:swapRequestId/respond", respondToShiftSwapRequest);
 router.post("/:id/swap-requests", requestShiftSwap);

@@ -12,6 +12,7 @@ const {
 } = require("./utils/timeTrackingAttendanceUtils");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
+const { sendShiftReminders } = require("./utils/reminderJobs");
 
 // Routers
 const tenantRouter = require("./routes/tenantRoutes");
@@ -32,6 +33,7 @@ const setupRoutes = require("./routes/setupRoutes");
 const staffingTemplateRoutes = require("./routes/staffingTemplateRoutes");
 const weekRoutes = require("./routes/weekRoutes");
 const staffLinkRoutes = require("./routes/staffLinkRoutes");
+const smsRoutes = require("./routes/smsRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
@@ -116,6 +118,16 @@ cron.schedule("0 14 * * *", async () => {
     await sendTrialEmails();
   } catch (err) {
     console.error("🚫 Error sending trial emails:", err);
+  }
+});
+
+// ✅ Cron job: shift reminders (hourly, at :05)
+cron.schedule("5 * * * *", async () => {
+  try {
+    const { sent } = await sendShiftReminders();
+    if (sent) console.log(`⏰ Sent ${sent} shift reminder(s)`);
+  } catch (err) {
+    console.error("🚫 Error sending shift reminders:", err);
   }
 });
 
@@ -305,6 +317,7 @@ app.use("/api/v1/setup", setupRoutes);
 app.use("/api/v1/staffing-template", staffingTemplateRoutes);
 app.use("/api/v1/weeks", weekRoutes);
 app.use("/api/v1/s/:token", staffLinkRoutes);
+app.use("/api/v1/sms", smsRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
 app.use("/api/v1/exports", exportRoutes);

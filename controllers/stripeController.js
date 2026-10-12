@@ -1,168 +1,162 @@
+/**
+ * Billing
+ * -------
+ * Plans: Free (default) → optional 14-day Pro trial (no card, in our DB) →
+ * paid Pro or Facility through Stripe Checkout, monthly or yearly.
+ *
+ * Prices live in Stripe; we only keep their Price IDs in env:
+ *   STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY,
+ *   STRIPE_PRICE_FACILITY_MONTHLY, STRIPE_PRICE_FACILITY_YEARLY
+ * Founding price: STRIPE_FOUNDING_COUPON_ID ($20 off forever, Pro monthly,
+ * first FOUNDING_SPOTS workspaces).
+ */
 const Stripe = require("stripe");
 const Tenant = require("../models/tenantModel");
-const User = require("../models/userModel");
+const {
+  PLANS,
+  PAID_PLAN_KEYS,
+  PAID_STATUSES,
+  TRIAL_DAYS,
+  DAY_MS,
+  getEffectivePlanKey,
+  trialAvailable,
+  describePlan,
+  isPaid,
+} = require("../config/plans");
+const {
+  countActiveStaff,
+  countSchedulers,
+} = require("../utils/planLimits");
 
 // Use env key but allow a fallback dummy to avoid crashes in dev without env set
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 
-// Plan mapping: planKey -> price (cents) and seats
-// Prices are in cents: $3000 -> 300000 cents
-const yearlyStarterPriceCents = 480000;
-const yearlyGrowthPriceCents = 770000;
-const yearlyPremiumPriceCents = 960000;
-const monthlyStarterPriceCents = 50000;
-const monthlyGrowthPriceCents = 80000;
-const monthlyPremiumPriceCents = 100000;
-
-// Trial length per billing interval. Set to 0 to disable a trial for that interval.
-const TRIAL_DAYS_BY_INTERVAL = {
-  year: 30,
-  month: 7,
+const FOUNDING_SPOTS = 20;
+const INTERVALS = ["month", "year"];
+// Display prices (cents). Stripe is the source of truth for what's charged.
+const LIST_PRICES_CENTS = {
+  "pro:month": 4900,
+  "pro:year": 49000,
+  "facility:month": 17900,
+  "facility:year": 179000,
 };
+const FOUNDING_PRO_MONTHLY_CENTS = 2900;
 
-const ACTIVE_SUBSCRIPTION_STATUSES = ["active", "trialing", "past_due"];
 const frontendUrl = (
   process.env.FRONTEND_URL || "http://localhost:5173"
 ).replace(/\/+$/, "");
 
-const PLANS = {
-  starterYearly: {
-    priceCents: yearlyStarterPriceCents,
-    seats: 50,
-    name: "Starter Yearly",
-  },
-  growthYearly: {
-    priceCents: yearlyGrowthPriceCents,
-    seats: 100,
-    name: "Growth Yearly",
-  },
-  premiumYearly: {
-    priceCents: yearlyPremiumPriceCents,
-    seats: 150,
-    name: "Premium Yearly",
-  },
-  starterMonthly: {
-    priceCents: monthlyStarterPriceCents,
-    seats: 50,
-    name: "Starter Monthly",
-  },
-  growthMonthly: {
-    priceCents: monthlyGrowthPriceCents,
-    seats: 100,
-    name: "Growth Monthly",
-  },
-  premiumMonthly: {
-    priceCents: monthlyPremiumPriceCents,
-    seats: 150,
-    name: "Premium Monthly",
-  },
-  // test: { priceCents: 200, seats: 12, name: "Test" },
-};
+const priceEnvName = (plan, interval) =>
+  `STRIPE_PRICE_${plan.toUpperCase()}_${interval === "year" ? "YEARLY" : "MONTHLY"}`;
 
-exports.PLANS = PLANS;
+/** Stripe Price ID for a plan + interval, read from env at call time. */
+const getPriceId = (plan, interval) =>
+  process.env[priceEnvName(plan, interval)] || null;
 
-const intervalFromPlanKey = (planKey) =>
-  planKey && planKey.toLowerCase().endsWith("monthly") ? "month" : "year";
-
-const previousMonthLabel = () => {
-  const date = new Date();
-  date.setUTCDate(1);
-  date.setUTCMonth(date.getUTCMonth() - 1);
-  return date.toLocaleString("en-US", {
-    month: "long",
-    year: "numeric",
-    timeZone: "UTC",
-  });
-};
-
-// A tenant gets exactly one free trial, ever — not one per plan or per resubscribe.
-const getTrialPeriodDays = (tenant, planKey) => {
-  if (tenant.trialUsedAt) return 0;
-  return TRIAL_DAYS_BY_INTERVAL[intervalFromPlanKey(planKey)] || 0;
-};
-
-// A seat is any user with a login in the tenant.
-const getSeatsInUse = (tenantId) => User.countDocuments({ tenantId });
-
-const buildPlanOption = (planKey, seatsInUse, trialAvailable) => {
-  const plan = PLANS[planKey];
-  return {
-    planKey,
-    name: plan.name,
-    priceCents: plan.priceCents,
-    seats: plan.seats,
-    interval: intervalFromPlanKey(planKey),
-    trialPeriodDays: trialAvailable
-      ? TRIAL_DAYS_BY_INTERVAL[intervalFromPlanKey(planKey)] || 0
-      : 0,
-    available: plan.seats >= seatsInUse,
-    seatsOverLimit: Math.max(0, seatsInUse - plan.seats),
-  };
-};
-
-const buildCheckoutLineItems = (
-  planKey,
-  includePriorPeriodCharge,
-  priorPeriodLabel,
-) => {
-  const plan = PLANS[planKey];
-  const lineItems = [
-    {
-      price_data: {
-        currency: "usd",
-        product_data: { name: `${plan.name} plan (WiserShifts)` },
-        recurring: { interval: intervalFromPlanKey(planKey) },
-        unit_amount: plan.priceCents,
-      },
-      quantity: 1,
-    },
-  ];
-
-  if (includePriorPeriodCharge) {
-    lineItems.push({
-      price_data: {
-        currency: "usd",
-        product_data: {
-          name: `${plan.name} service - ${priorPeriodLabel}`,
-        },
-        unit_amount: plan.priceCents,
-      },
-      quantity: 1,
-    });
+/** Reverse lookup: Stripe Price ID → { plan, interval }. */
+const planFromPriceId = (priceId) => {
+  if (!priceId) return null;
+  for (const plan of PAID_PLAN_KEYS) {
+    for (const interval of INTERVALS) {
+      if (getPriceId(plan, interval) === priceId) return { plan, interval };
+    }
   }
-
-  return lineItems;
+  return null;
 };
 
-exports.buildCheckoutLineItems = buildCheckoutLineItems;
+const getFoundingSpotsLeft = async () =>
+  Math.max(
+    0,
+    FOUNDING_SPOTS - (await Tenant.countDocuments({ foundingMember: true })),
+  );
+
+const qualifiesForFounding = (plan, interval, spotsLeft) =>
+  plan === "pro" &&
+  interval === "month" &&
+  spotsLeft > 0 &&
+  Boolean(process.env.STRIPE_FOUNDING_COUPON_ID);
+
+const validatePlanChoice = (plan, interval) => {
+  if (!PAID_PLAN_KEYS.includes(plan)) {
+    return `plan must be one of: ${PAID_PLAN_KEYS.join(", ")}`;
+  }
+  if (!INTERVALS.includes(interval)) {
+    return `interval must be one of: ${INTERVALS.join(", ")}`;
+  }
+  return null;
+};
+
+const billingNotConfigured = (res, plan, interval) =>
+  res.status(500).json({
+    message: `Billing is not configured: missing ${priceEnvName(plan, interval)}`,
+    errorCode: "BILLING_NOT_CONFIGURED",
+  });
+
+/** Usage vs a target plan; returns the first limit that would be exceeded. */
+const findLimitBreach = async (tenantId, planKey) => {
+  const plan = PLANS[planKey];
+  const [staff, schedulers] = await Promise.all([
+    countActiveStaff(tenantId),
+    countSchedulers(tenantId),
+  ]);
+  if (staff > plan.staff)
+    return { kind: "staff", used: staff, limit: plan.staff };
+  if (schedulers > plan.schedulers)
+    return { kind: "schedulers", used: schedulers, limit: plan.schedulers };
+  return null;
+};
+
+// Newer Stripe API versions moved invoice.subscription under `parent`.
+const getInvoiceSubscriptionId = (invoice) =>
+  invoice.subscription ||
+  invoice.parent?.subscription_details?.subscription ||
+  null;
 
 /**
- * Plan catalog with per-tenant availability so the UI can disable plans that
- * are smaller than the tenant's current staff count.
+ * GET /api/v1/stripe/plans
+ * Catalog + where this workspace stands.
  */
 exports.getPlans = async (req, res, next) => {
   try {
-    const tenantId = req.tenantId || (req.user && req.user.tenantId);
-    if (!tenantId)
-      return res.status(400).json({ message: "Tenant context required" });
-
-    const tenant = await Tenant.findById(tenantId).select(
-      "planKey subscriptionStatus trialUsedAt seatLimit",
-    );
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
-
-    const seatsInUse = await getSeatsInUse(tenantId);
-    const trialAvailable = !tenant.trialUsedAt;
+    const tenant = req.tenant;
+    const [staff, schedulers, foundingSpotsLeft] = await Promise.all([
+      countActiveStaff(req.tenantId),
+      countSchedulers(req.tenantId),
+      getFoundingSpotsLeft(),
+    ]);
+    const effectivePlan = getEffectivePlanKey(tenant);
+    const effective = PLANS[effectivePlan];
 
     res.status(200).json({
-      seatsInUse,
-      seatLimit: tenant.seatLimit,
-      currentPlanKey: tenant.planKey,
+      currentPlan: tenant.plan,
+      effectivePlan,
+      billingInterval: tenant.billingInterval,
       subscriptionStatus: tenant.subscriptionStatus,
-      trialAvailable,
-      plans: Object.keys(PLANS).map((planKey) =>
-        buildPlanOption(planKey, seatsInUse, trialAvailable),
-      ),
+      foundingMember: tenant.foundingMember,
+      trialAvailable: trialAvailable(tenant),
+      trialEndsAt: tenant.trialEndsAt,
+      foundingSpotsLeft,
+      usage: {
+        staff,
+        schedulers,
+        overLimit:
+          staff > effective.staff || schedulers > effective.schedulers,
+      },
+      plans: Object.keys(PLANS).map((key) => ({
+        ...describePlan(key),
+        prices:
+          key === "pro" || key === "facility"
+            ? {
+                month: LIST_PRICES_CENTS[`${key}:month`],
+                year: LIST_PRICES_CENTS[`${key}:year`],
+              }
+            : null,
+        foundingPrice:
+          key === "pro" && foundingSpotsLeft > 0
+            ? { month: FOUNDING_PRO_MONTHLY_CENTS }
+            : null,
+        purchasable: PAID_PLAN_KEYS.includes(key),
+      })),
     });
   } catch (err) {
     next(err);
@@ -170,199 +164,161 @@ exports.getPlans = async (req, res, next) => {
 };
 
 /**
- * Create a Checkout Session for a tenant to purchase a subscription.
- * Expects { tenantId, planKey } in body.
+ * POST /api/v1/billing/start-trial
+ * Starts the one-time, no-card Pro trial.
+ */
+exports.startTrial = async (req, res, next) => {
+  try {
+    const tenant = req.tenant;
+    if (isPaid(tenant)) {
+      return res.status(409).json({
+        message: "You already have a paid plan",
+        errorCode: "ALREADY_PAID",
+      });
+    }
+    if (!trialAvailable(tenant)) {
+      return res.status(409).json({
+        message: "Your free trial has already been used",
+        errorCode: "TRIAL_ALREADY_USED",
+      });
+    }
+
+    const now = new Date();
+    tenant.trialUsedAt = now;
+    tenant.trialEndsAt = new Date(now.getTime() + TRIAL_DAYS * DAY_MS);
+    await tenant.save();
+
+    res.status(200).json({
+      message: `Your ${TRIAL_DAYS}-day Pro trial has started`,
+      effectivePlan: getEffectivePlanKey(tenant),
+      trialEndsAt: tenant.trialEndsAt,
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/v1/stripe/create-checkout-session
+ * Body: { plan: "pro" | "facility", interval: "month" | "year" }
  */
 exports.createCheckoutSession = async (req, res, next) => {
   try {
-    const {
-      tenantId: requestedTenantId,
-      planKey,
-      includePriorPeriodCharge = false,
-      priorPeriodLabel,
-    } = req.body;
-    const tenantId = req.tenantId || (req.user && req.user.tenantId);
+    const { plan, interval = "month" } = req.body || {};
+    const tenant = req.tenant;
+    const tenantId = String(tenant._id);
 
-    if (!tenantId || !planKey) {
-      return res
-        .status(400)
-        .json({ message: "Tenant context and planKey are required" });
-    }
+    const choiceError = validatePlanChoice(plan, interval);
+    if (choiceError) return res.status(400).json({ message: choiceError });
 
-    if (requestedTenantId && String(requestedTenantId) !== String(tenantId)) {
-      return res.status(403).json({
-        message: "Cannot create a checkout session for another tenant",
-      });
-    }
-
-    const tenant = await Tenant.findById(tenantId);
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
-
-    const plan = PLANS[planKey];
-    if (!plan) return res.status(400).json({ message: "Invalid planKey" });
-
-    if (
-      includePriorPeriodCharge !== false &&
-      includePriorPeriodCharge !== true
-    ) {
-      return res
-        .status(400)
-        .json({ message: "includePriorPeriodCharge must be a boolean" });
-    }
-
-    if (includePriorPeriodCharge && intervalFromPlanKey(planKey) !== "month") {
-      return res.status(400).json({
-        message: "Prior-period charges are only supported for monthly plans",
-      });
-    }
-
-    const normalizedPriorPeriodLabel = priorPeriodLabel
-      ? String(priorPeriodLabel).trim()
-      : previousMonthLabel();
-    if (normalizedPriorPeriodLabel.length > 100) {
-      return res
-        .status(400)
-        .json({ message: "priorPeriodLabel must be 100 characters or fewer" });
-    }
+    const price = getPriceId(plan, interval);
+    if (!price) return billingNotConfigured(res, plan, interval);
 
     if (
       tenant.stripeSubscriptionId &&
-      ACTIVE_SUBSCRIPTION_STATUSES.includes(tenant.subscriptionStatus)
+      PAID_STATUSES.includes(tenant.subscriptionStatus)
     ) {
       return res.status(409).json({
         message:
-          "This tenant already has a subscription. Use the change-plan endpoint to switch plans, or cancel the current plan first.",
+          "This workspace already has a subscription. Use change-plan to switch plans.",
         errorCode: "SUBSCRIPTION_ALREADY_ACTIVE",
         subscriptionStatus: tenant.subscriptionStatus,
-        planKey: tenant.planKey,
+        plan: tenant.plan,
       });
     }
 
-    const trialPeriodDays = getTrialPeriodDays(tenant, planKey);
-
-    const seatsInUse = await getSeatsInUse(tenantId);
-    if (plan.seats < seatsInUse) {
+    const breach = await findLimitBreach(tenantId, plan);
+    if (breach) {
       return res.status(409).json({
-        message: `This plan includes ${plan.seats} seats but your facility has ${seatsInUse} staff members. Choose a larger plan or remove ${seatsInUse - plan.seats} staff member(s) before subscribing.`,
-        errorCode: "PLAN_SEATS_BELOW_USAGE",
-        seatsInUse,
-        planSeats: plan.seats,
-        seatsOverLimit: seatsInUse - plan.seats,
-        availablePlans: Object.keys(PLANS)
-          .filter(
-            (key) =>
-              PLANS[key].seats >= seatsInUse &&
-              intervalFromPlanKey(key) === intervalFromPlanKey(planKey),
-          )
-          .map((key) => buildPlanOption(key, seatsInUse, trialPeriodDays > 0)),
+        message: `The ${PLANS[plan].label} plan allows ${breach.limit} ${breach.kind}; you have ${breach.used}.`,
+        errorCode: "PLAN_BELOW_USAGE",
+        ...breach,
       });
     }
 
-    const lineItems = buildCheckoutLineItems(
-      planKey,
-      includePriorPeriodCharge,
-      normalizedPriorPeriodLabel,
+    const founding = qualifiesForFounding(
+      plan,
+      interval,
+      await getFoundingSpotsLeft(),
     );
-    const appUrl = frontendUrl;
+    const metadata = {
+      tenantId,
+      plan,
+      interval,
+      ...(founding ? { founding: "1" } : {}),
+    };
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      payment_method_types: ["card"],
-      line_items: lineItems,
+      line_items: [{ price, quantity: 1 }],
       client_reference_id: tenantId,
-      metadata: { tenantId, planKey },
-      // Reusing the saved customer keeps billing history on one Stripe customer
-      // so a returning tenant can't start over with a fresh trial.
+      metadata,
+      // Reusing the saved customer keeps billing history on one customer.
       ...(tenant.stripeCustomerId
         ? { customer: tenant.stripeCustomerId }
-        : tenant.billingEmail
-          ? { customer_email: tenant.billingEmail }
+        : tenant.billingEmail || tenant.email
+          ? { customer_email: tenant.billingEmail || tenant.email }
           : {}),
-      // Ensure the subscription object itself carries tenant metadata so future
-      // subscription/invoice webhooks can directly reference tenantId.
-      subscription_data: {
-        ...(trialPeriodDays > 0 ? { trial_period_days: trialPeriodDays } : {}),
-        metadata: { tenantId, planKey },
-      },
-      success_url: `${appUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
-      cancel_url: `${appUrl}/billing/cancel`,
+      ...(founding
+        ? { discounts: [{ coupon: process.env.STRIPE_FOUNDING_COUPON_ID }] }
+        : { allow_promotion_codes: true }),
+      // No trial_period_days: the Pro trial lives in our DB, not Stripe.
+      subscription_data: { metadata },
+      success_url: `${frontendUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${frontendUrl}/billing/cancel`,
     });
 
-    res.status(200).json({
-      url: session.url,
-      id: session.id,
-      trialPeriodDays,
-      amountDueNowCents: plan.priceCents * (includePriorPeriodCharge ? 2 : 1),
-      priorPeriodChargeCents: includePriorPeriodCharge ? plan.priceCents : 0,
-    });
+    res.status(200).json({ url: session.url, id: session.id, founding });
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * Switch an existing subscription to a different plan in place.
- * Body params: { planKey }
- *
- * Updating the subscription item keeps the current trial_end and Stripe
- * customer, so a tenant can upgrade mid-trial without losing remaining
- * trial days or burning their one-time trial.
+ * POST /api/v1/stripe/change-plan
+ * Body: { plan, interval } — switches the existing subscription in place.
  */
 exports.changePlan = async (req, res, next) => {
   try {
-    const { planKey } = req.body;
-    const tenantId = req.tenantId || (req.user && req.user.tenantId);
+    const { plan, interval = "month" } = req.body || {};
+    const tenant = req.tenant;
 
-    if (!tenantId)
-      return res.status(400).json({ message: "Tenant context required" });
-    if (!planKey)
-      return res.status(400).json({ message: "planKey is required" });
+    const choiceError = validatePlanChoice(plan, interval);
+    if (choiceError) return res.status(400).json({ message: choiceError });
 
-    const plan = PLANS[planKey];
-    if (!plan) return res.status(400).json({ message: "Invalid planKey" });
-
-    const tenant = await Tenant.findById(tenantId);
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
+    const price = getPriceId(plan, interval);
+    if (!price) return billingNotConfigured(res, plan, interval);
 
     if (
       !tenant.stripeSubscriptionId ||
-      !ACTIVE_SUBSCRIPTION_STATUSES.includes(tenant.subscriptionStatus)
+      !PAID_STATUSES.includes(tenant.subscriptionStatus)
     ) {
       return res.status(409).json({
         message:
-          "This tenant has no active subscription to change. Start a new checkout instead.",
+          "This workspace has no active subscription to change. Start a checkout instead.",
         errorCode: "NO_ACTIVE_SUBSCRIPTION",
       });
     }
 
-    if (tenant.planKey === planKey) {
+    if (tenant.plan === plan && tenant.billingInterval === interval) {
       return res
         .status(400)
-        .json({ message: "Tenant is already on this plan" });
+        .json({ message: "You're already on this plan" });
     }
 
-    const seatsInUse = await getSeatsInUse(tenantId);
-    if (plan.seats < seatsInUse) {
+    const breach = await findLimitBreach(tenant._id, plan);
+    if (breach) {
       return res.status(409).json({
-        message: `This plan includes ${plan.seats} seats but your facility has ${seatsInUse} staff members. Choose a larger plan or remove ${seatsInUse - plan.seats} staff member(s) before switching.`,
-        errorCode: "PLAN_SEATS_BELOW_USAGE",
-        seatsInUse,
-        planSeats: plan.seats,
-        seatsOverLimit: seatsInUse - plan.seats,
-        availablePlans: Object.keys(PLANS)
-          .filter((key) => PLANS[key].seats >= seatsInUse)
-          .map((key) => buildPlanOption(key, seatsInUse, false)),
+        message: `The ${PLANS[plan].label} plan allows ${breach.limit} ${breach.kind}; you have ${breach.used}. Archive some first or pick a bigger plan.`,
+        errorCode: "PLAN_BELOW_USAGE",
+        ...breach,
       });
     }
 
     const subscription = await stripe.subscriptions.retrieve(
       tenant.stripeSubscriptionId,
     );
-    const currentItem =
-      subscription.items &&
-      subscription.items.data &&
-      subscription.items.data[0];
-
+    const currentItem = subscription.items?.data?.[0];
     if (!currentItem) {
       return res.status(409).json({
         message: "Subscription has no billable item to update",
@@ -370,39 +326,26 @@ exports.changePlan = async (req, res, next) => {
       });
     }
 
-    // Subscription items require a real Price id, so mint one for the target plan.
-    const price = await stripe.prices.create({
-      currency: "usd",
-      unit_amount: plan.priceCents,
-      recurring: { interval: intervalFromPlanKey(planKey) },
-      product_data: { name: `${plan.name} plan (WiserShifts)` },
-    });
-
     const updated = await stripe.subscriptions.update(
       tenant.stripeSubscriptionId,
       {
-        items: [{ id: currentItem.id, price: price.id }],
-        // Omitting trial_end preserves any trial still running.
+        items: [{ id: currentItem.id, price }],
         proration_behavior: "create_prorations",
-        metadata: { tenantId: String(tenantId), planKey },
+        metadata: { tenantId: String(tenant._id), plan, interval },
       },
     );
 
-    await Tenant.findByIdAndUpdate(tenantId, {
-      planKey,
-      seatLimit: plan.seats,
-      stripePriceId: price.id,
-      subscriptionStatus: updated.status,
-    });
+    tenant.plan = plan;
+    tenant.billingInterval = interval;
+    tenant.stripePriceId = price;
+    tenant.subscriptionStatus = updated.status;
+    await tenant.save();
 
     res.status(200).json({
       success: true,
-      planKey,
-      seatLimit: plan.seats,
+      plan,
+      interval,
       subscriptionStatus: updated.status,
-      trialEnd: updated.trial_end
-        ? new Date(updated.trial_end * 1000).toISOString()
-        : null,
     });
   } catch (err) {
     next(err);
@@ -410,68 +353,92 @@ exports.changePlan = async (req, res, next) => {
 };
 
 /**
- * Cancel a subscription for the current tenant (admin only).
- * Body params: { subscriptionId?, atPeriodEnd?: boolean }
- * If subscriptionId is not provided, the tenant's stripeSubscriptionId is used.
+ * POST /api/v1/stripe/portal
+ * Stripe customer portal: invoices, payment method, cancel.
  */
-exports.cancelSubscription = async (req, res, next) => {
+exports.createPortalSession = async (req, res, next) => {
   try {
-    const atPeriodEnd =
-      req.body.atPeriodEnd === true || req.query.atPeriodEnd === "true";
-
-    // Expect tenant middleware to have set req.tenantId for protected routes
-    const tenantId = req.tenantId || (req.user && req.user.tenantId);
-    if (!tenantId)
-      return res.status(400).json({ message: "Tenant context required" });
-
-    const requestedSubscriptionId = req.body.subscriptionId || null;
-
-    // Load tenant to find subscription if not passed
-    const tenant = await Tenant.findById(tenantId);
-    if (!tenant) return res.status(404).json({ message: "Tenant not found" });
-
-    const subscriptionId =
-      requestedSubscriptionId || tenant.stripeSubscriptionId;
-    if (!subscriptionId)
-      return res
-        .status(400)
-        .json({ message: "No subscriptionId provided or found for tenant" });
-
-    let subscription;
-    if (atPeriodEnd) {
-      subscription = await stripe.subscriptions.update(subscriptionId, {
-        cancel_at_period_end: true,
+    const tenant = req.tenant;
+    if (!tenant.stripeCustomerId) {
+      return res.status(409).json({
+        message: "No billing account yet. Choose a plan first.",
+        errorCode: "NO_BILLING_ACCOUNT",
       });
-    } else {
-      subscription = await stripe.subscriptions.del(subscriptionId);
     }
-
-    // Prepare tenant update based on result
-    const update = {
-      subscriptionStatus:
-        subscription.status ||
-        (subscription.cancel_at_period_end ? "active" : undefined),
-    };
-
-    // If fully canceled, clear plan and subscription fields
-    if (!atPeriodEnd && subscription.status === "canceled") {
-      update.planKey = null;
-      update.seatLimit = 1;
-      update.stripeSubscriptionId = null;
-      update.stripePriceId = null;
-    }
-
-    await Tenant.findByIdAndUpdate(tenantId, update, { new: true });
-
-    res.status(200).json({ success: true, subscription });
+    const session = await stripe.billingPortal.sessions.create({
+      customer: tenant.stripeCustomerId,
+      return_url: `${frontendUrl}/settings/billing`,
+    });
+    res.status(200).json({ url: session.url });
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * Stripe Webhook handler.
- * Verifies signature and updates Tenant billing info and seatLimit.
+ * POST /api/v1/stripe/cancel-subscription
+ * Body: { atPeriodEnd?: boolean } (default true). The portal can also cancel.
+ */
+exports.cancelSubscription = async (req, res, next) => {
+  try {
+    const tenant = req.tenant;
+    const atPeriodEnd = req.body?.atPeriodEnd !== false;
+
+    if (!tenant.stripeSubscriptionId) {
+      return res
+        .status(400)
+        .json({ message: "This workspace has no subscription" });
+    }
+
+    const subscription = atPeriodEnd
+      ? await stripe.subscriptions.update(tenant.stripeSubscriptionId, {
+          cancel_at_period_end: true,
+        })
+      : await stripe.subscriptions.cancel(tenant.stripeSubscriptionId);
+
+    if (subscription.status === "canceled") {
+      tenant.plan = "free";
+      tenant.billingInterval = null;
+      tenant.stripeSubscriptionId = null;
+      tenant.stripePriceId = null;
+    }
+    tenant.subscriptionStatus = subscription.status;
+    await tenant.save();
+
+    res.status(200).json({
+      success: true,
+      subscriptionStatus: subscription.status,
+      cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * Build the tenant update for a subscription object (used by webhooks).
+ * Exported for tests.
+ */
+const buildSubscriptionUpdate = (subscription) => {
+  const update = { subscriptionStatus: subscription.status };
+  const priceId = subscription.items?.data?.[0]?.price?.id || null;
+  const mapped = planFromPriceId(priceId);
+  if (mapped) {
+    update.plan = mapped.plan;
+    update.billingInterval = mapped.interval;
+    update.stripePriceId = priceId;
+  }
+  if (subscription.status === "canceled") {
+    update.plan = "free";
+    update.billingInterval = null;
+    update.stripeSubscriptionId = null;
+    update.stripePriceId = null;
+  }
+  return update;
+};
+
+/**
+ * Stripe webhook.
  */
 exports.handleWebhook = async (req, res) => {
   const sig = req.headers["stripe-signature"];
@@ -479,14 +446,10 @@ exports.handleWebhook = async (req, res) => {
 
   let event;
   try {
-    // Prefer rawBody captured by the express.json verify hook or route-level raw
-    // body parser. If not available, stringify the parsed body as a fallback
-    // (useful for local dev where signature verification may not be strict).
     let payload = req.rawBody || req.body;
     if (payload && typeof payload !== "string" && !Buffer.isBuffer(payload)) {
       payload = JSON.stringify(payload);
     }
-
     event = stripe.webhooks.constructEvent(payload, sig, webhookSecret);
   } catch (err) {
     console.error("⚠️  Webhook signature verification failed.", err.message);
@@ -496,124 +459,56 @@ exports.handleWebhook = async (req, res) => {
   try {
     const type = event.type;
 
-    // Handle checkout.session.completed to capture initial subscription
     if (type === "checkout.session.completed") {
       const session = event.data.object;
-      const tenantId = session.metadata && session.metadata.tenantId;
-      const planKey = session.metadata && session.metadata.planKey;
-
-      // Retrieve subscription to get price id
-      const subscription = session.subscription
-        ? await stripe.subscriptions.retrieve(session.subscription)
-        : null;
-
-      const priceId =
-        subscription && subscription.items && subscription.items.data[0]
-          ? subscription.items.data[0].price.id
-          : null;
-
-      if (tenantId && planKey) {
-        const plan = PLANS[planKey];
+      const tenantId = session.metadata?.tenantId;
+      if (tenantId && session.subscription) {
+        const subscription = await stripe.subscriptions.retrieve(
+          session.subscription,
+        );
         const update = {
-          billingEmail: session.customer_details
-            ? session.customer_details.email
-            : session.customer_email || null,
+          ...buildSubscriptionUpdate(subscription),
+          billingEmail:
+            session.customer_details?.email || session.customer_email || null,
           stripeCustomerId: session.customer || null,
-          stripeSubscriptionId: session.subscription || null,
-          stripePriceId: priceId,
-          planKey,
-          subscriptionStatus: (subscription && subscription.status) || "active",
-          seatLimit: plan ? plan.seats : undefined,
+          stripeSubscriptionId: session.subscription,
         };
-
-        if (
-          subscription &&
-          (subscription.trial_start || subscription.trial_end)
-        ) {
-          update.trialUsedAt = subscription.trial_start
-            ? new Date(subscription.trial_start * 1000)
-            : new Date();
+        // Fall back to metadata if the Price ID isn't mapped in env.
+        if (!update.plan && PAID_PLAN_KEYS.includes(session.metadata.plan)) {
+          update.plan = session.metadata.plan;
+          update.billingInterval = session.metadata.interval || null;
         }
+        if (session.metadata.founding === "1") update.foundingMember = true;
 
-        // Remove undefined fields
-        Object.keys(update).forEach(
-          (k) => update[k] === undefined && delete update[k],
-        );
-
-        await Tenant.findByIdAndUpdate(tenantId, update, { new: true });
-        console.log(
-          `✅ Tenant ${tenantId} updated after checkout.session.completed`,
-        );
+        await Tenant.findByIdAndUpdate(tenantId, update);
+        console.log(`✅ Tenant ${tenantId} subscribed (${update.plan})`);
       }
     }
 
-    // Update status when invoice payment succeeds
-    if (type === "invoice.paid") {
-      const invoice = event.data.object;
-      const subscriptionId = invoice.subscription;
+    if (type === "invoice.paid" || type === "invoice.payment_failed") {
+      const subscriptionId = getInvoiceSubscriptionId(event.data.object);
       if (subscriptionId) {
         await Tenant.findOneAndUpdate(
           { stripeSubscriptionId: subscriptionId },
-          { subscriptionStatus: "active" },
+          {
+            subscriptionStatus: type === "invoice.paid" ? "active" : "past_due",
+          },
         );
       }
     }
 
-    // Payment failed
-    if (type === "invoice.payment_failed") {
-      const invoice = event.data.object;
-      const subscriptionId = invoice.subscription;
-      if (subscriptionId) {
-        await Tenant.findOneAndUpdate(
-          { stripeSubscriptionId: subscriptionId },
-          { subscriptionStatus: "past_due" },
-        );
-      }
-    }
-
-    // Subscription updated (plan change / cancel)
     if (
       type === "customer.subscription.updated" ||
       type === "customer.subscription.deleted"
     ) {
       const subscription = event.data.object;
-      const subscriptionId = subscription.id;
-      const status = subscription.status; // active, trialing, past_due, canceled, incomplete
-
-      // Try to map price -> planKey if possible
-      let planKey = subscription.metadata && subscription.metadata.planKey;
-      if (!planKey) {
-        if (
-          subscription.items &&
-          subscription.items.data &&
-          subscription.items.data[0]
-        ) {
-          const price = subscription.items.data[0].price;
-          const unitAmount = price.unit_amount;
-          const interval = price.recurring && price.recurring.interval;
-          planKey =
-            Object.keys(PLANS).find(
-              (k) =>
-                PLANS[k].priceCents === unitAmount &&
-                intervalFromPlanKey(k) === interval,
-            ) || null;
-        }
-      }
-
-      const update = { subscriptionStatus: status };
-      if (planKey) {
-        update.planKey = planKey;
-        update.seatLimit = PLANS[planKey].seats;
-      }
-
-      if (subscription.trial_start || subscription.trial_end) {
-        update.trialUsedAt = subscription.trial_start
-          ? new Date(subscription.trial_start * 1000)
-          : new Date();
-      }
-
+      const update = buildSubscriptionUpdate(
+        type === "customer.subscription.deleted"
+          ? { ...subscription, status: "canceled" }
+          : subscription,
+      );
       await Tenant.findOneAndUpdate(
-        { stripeSubscriptionId: subscriptionId },
+        { stripeSubscriptionId: subscription.id },
         update,
       );
     }
@@ -624,3 +519,8 @@ exports.handleWebhook = async (req, res) => {
     res.status(500).send();
   }
 };
+
+// Exposed for unit tests.
+exports._planFromPriceId = planFromPriceId;
+exports._buildSubscriptionUpdate = buildSubscriptionUpdate;
+exports._qualifiesForFounding = qualifiesForFounding;

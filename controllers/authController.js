@@ -25,6 +25,13 @@ const {
   normalizeRole,
 } = require("../config/authorization");
 
+const {
+  getEffectivePlanKey,
+  describePlan,
+  trialAvailable,
+} = require("../config/plans");
+const { getUsage } = require("../utils/planLimits");
+
 const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
 const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
 
@@ -1132,6 +1139,37 @@ exports.deleteUser = async (req, res, next) => {
       message: isSelfDelete
         ? "Your account has been deleted"
         : "User deleted successfully",
+    });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * CURRENT SESSION
+ * ---------------
+ * Route: GET /api/v1/auth/me
+ * Everything the app needs on boot: who you are, your workspace, the plan you
+ * actually have right now, its limits, and how much of them you're using.
+ */
+exports.getMe = async (req, res, next) => {
+  try {
+    const tenant = req.tenant;
+    const usage = await getUsage(req);
+    res.status(200).json({
+      user: getUserResponse(req.user),
+      tenant: {
+        _id: tenant._id,
+        name: tenant.name,
+        facilityType: tenant.facilityType,
+        setupCompletedAt: tenant.setupCompletedAt,
+      },
+      plan: describePlan(getEffectivePlanKey(tenant)),
+      paidPlan: tenant.plan,
+      subscriptionStatus: tenant.subscriptionStatus,
+      trialAvailable: trialAvailable(tenant),
+      trialEndsAt: tenant.trialEndsAt,
+      usage,
     });
   } catch (err) {
     next(err);

@@ -11,6 +11,7 @@ const {
   getAttendanceOutcomeForClockOut,
 } = require("./utils/timeTrackingAttendanceUtils");
 const errorHandler = require("./middleware/errorMiddleware");
+const { sendTrialEmails } = require("./utils/trialJobs");
 
 // Routers
 const tenantRouter = require("./routes/tenantRoutes");
@@ -24,6 +25,7 @@ const preferencesRoutes = require("./routes/preferencesRoutes");
 const facilityPreferencesRoutes = require("./routes/facilityPreferencesRoutes");
 const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
+const billingRoutes = require("./routes/billingRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
@@ -101,6 +103,15 @@ app.use(
 
 // Note: no explicit app.options('*') call because some path parsers reject '*'.
 // The CORS middleware applied above will handle preflight requests.
+
+// ✅ Cron job: Pro trial reminder / ended emails (daily, 14:00 UTC)
+cron.schedule("0 14 * * *", async () => {
+  try {
+    await sendTrialEmails();
+  } catch (err) {
+    console.error("🚫 Error sending trial emails:", err);
+  }
+});
 
 // ✅ Cron job: every 2 hours close out past schedules
 cron.schedule("0 */2 * * *", async () => {
@@ -281,6 +292,7 @@ app.use("/api/v1/preferences", preferencesRoutes);
 app.use("/api/v1/facility-preferences", facilityPreferencesRoutes);
 app.use("/api/v1/time-tracking", timeTrackingRoutes);
 app.use("/api/v1/stripe", stripeRoutes);
+app.use("/api/v1/billing", billingRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
 app.use("/api/v1/exports", exportRoutes);

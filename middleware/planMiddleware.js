@@ -1,4 +1,5 @@
 const {
+  PLANS,
   hasFeature,
   requiredPlanFor,
   trialAvailable,
@@ -12,7 +13,7 @@ exports.requireFeature = (feature) => (req, res, next) => {
   if (req.plan && hasFeature(req.plan.key, feature)) return next();
   const requiredPlan = requiredPlanFor(feature);
   return res.status(402).json({
-    message: `This needs the ${requiredPlan} plan`,
+    message: `This needs the ${PLANS[requiredPlan]?.label || requiredPlan} plan`,
     errorCode: "PLAN_FEATURE_REQUIRED",
     feature,
     currentPlan: req.plan ? req.plan.key : null,

@@ -1,5 +1,7 @@
 // controllers/timeOffController.js
 const TimeOff = require("../models/timeOffModel");
+const { buildE164Number } = require("../utils/phone");
+const { findSchedulers } = require("../utils/schedulers");
 const User = require("../models/userModel");
 const Preferences = require("../models/preferencesModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
@@ -15,23 +17,6 @@ const getFacilityTimezone = async (tenantId) => {
   return prefs?.facilityTimezone || "UTC";
 };
 
-const buildE164Number = (countryCode, phone) => {
-  if (!phone) return null;
-
-  const rawPhone = String(phone).trim();
-  if (!rawPhone) return null;
-  if (rawPhone.startsWith("+")) return rawPhone;
-
-  if (!countryCode) return null;
-  const normalizedCountryCode = String(countryCode).trim();
-  if (!normalizedCountryCode) return null;
-
-  const prefix = normalizedCountryCode.startsWith("+")
-    ? normalizedCountryCode
-    : `+${normalizedCountryCode}`;
-
-  return `${prefix}${rawPhone}`;
-};
 
 const isEmailNotificationEnabled = (preferences) =>
   preferences?.emailNotificationsEnabled !== false;
@@ -64,15 +49,9 @@ exports.requestTimeOff = async (req, res, next) => {
         endTime,
         facilityTimezone,
       );
-      const admins = await User.find({
-        tenantId: req.tenantId,
-        $or: [
-          { roles: "admin" },
-          { role: "admin" },
-          { roles: "owner" },
-          { role: "owner" },
-        ],
-      }).select("name email userPhone userPhoneCountryCode");
+      const admins = await findSchedulers(req.tenantId).select(
+        "name email userPhone userPhoneCountryCode",
+      );
       if (admins && admins.length) {
         const recipients = admins.map((admin) => admin.email).filter(Boolean);
 

@@ -8,15 +8,9 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "messages.use",
     "preferences.manage_own",
   ],
+  // Schedulers run the schedule and the staff list, but not billing or
+  // workspace settings. ("admin" is a legacy alias of scheduler.)
   scheduler: [
-    "schedule.view",
-    "schedule.manage",
-    "coverage.view",
-    "coverage.manage",
-    "staff.view",
-    "facility_preferences.view",
-  ],
-  admin: [
     "schedule.view",
     "schedule.manage",
     "coverage.view",
@@ -26,7 +20,15 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "staff.reset_password",
     "timeoff.review",
     "messages.manage",
+    "facility_preferences.view",
     "facility_preferences.manage",
+  ],
+  // Read-only access to the schedule (e.g. a DON). Free on every plan.
+  viewer: [
+    "schedule.view",
+    "coverage.view",
+    "staff.view",
+    "facility_preferences.view",
   ],
   owner: [
     "schedule.view",
@@ -50,6 +52,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
 const LEGACY_ROLE_ALIASES = Object.freeze({
   user: "staff",
   other: "staff",
+  admin: "scheduler",
 });
 
 const SYSTEM_ROLES = new Set(Object.keys(SYSTEM_ROLE_PERMISSIONS));
@@ -57,6 +60,9 @@ const RESERVED_ROLES = new Set([
   ...SYSTEM_ROLES,
   ...Object.keys(LEGACY_ROLE_ALIASES),
 ]);
+
+// Roles that make someone a workspace account (can sign in).
+const ACCOUNT_ROLES = new Set(["owner", "scheduler", "viewer"]);
 
 const normalizeRole = (role) =>
   String(role || "")
@@ -90,14 +96,18 @@ const getFacilityRoles = (user, facilityRoleFamilies = []) => {
   return getUserRoles(user).filter((role) => facilityRoleSet.has(role));
 };
 
+// Staff permissions only apply to people without a workspace role, so a
+// viewer can't request swaps or pick up shifts.
 const getEffectivePermissions = (user) => {
-  const systemRoles = getSystemRoles(user);
+  const workspaceRoles = getSystemRoles(user).filter(
+    (role) => role !== "staff",
+  );
+  if (!workspaceRoles.length) return [...SYSTEM_ROLE_PERMISSIONS.staff];
 
   return Array.from(
-    new Set([
-      ...SYSTEM_ROLE_PERMISSIONS.staff,
-      ...systemRoles.flatMap((role) => SYSTEM_ROLE_PERMISSIONS[role] || []),
-    ]),
+    new Set(
+      workspaceRoles.flatMap((role) => SYSTEM_ROLE_PERMISSIONS[role] || []),
+    ),
   );
 };
 
@@ -114,6 +124,7 @@ module.exports = {
   SYSTEM_ROLE_PERMISSIONS,
   SYSTEM_ROLES,
   RESERVED_ROLES,
+  ACCOUNT_ROLES,
   LEGACY_ROLE_ALIASES,
   normalizeRole,
   getUserRoles,

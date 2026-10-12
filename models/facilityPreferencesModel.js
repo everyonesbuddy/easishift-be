@@ -120,7 +120,7 @@ const facilityPreferencesSchema = new mongoose.Schema(
      */
     unitAreas: {
       type: [String],
-      default: ["al", "il", "mc"],
+      default: [],
     },
 
     /**

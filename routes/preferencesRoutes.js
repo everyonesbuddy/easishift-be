@@ -2,8 +2,6 @@ const express = require("express");
 const router = express.Router();
 
 const {
-  getMyPreferences,
-  upsertMyPreferences,
   getPreferencesForStaff,
   upsertPreferencesForStaff,
 } = require("../controllers/preferencesController");
@@ -16,16 +14,16 @@ const { requirePermission } = require("../middleware/roleMiddleware");
 router.use(auth);
 router.use(tenant);
 
+// Staff manage their own preferences through their link (/api/v1/s/:token/preferences).
+
 /**
  * STAFF ROUTES
  * Staff can view + update their own preferences
  */
 
 // Get my preferences
-router.get("/me", getMyPreferences);
 
 // Create or update my preferences
-router.post("/me", upsertMyPreferences);
 
 /**
  * ADMIN ROUTES

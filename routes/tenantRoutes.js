@@ -19,6 +19,7 @@ const {
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
+const { requireFeature } = require("../middleware/planMiddleware");
 
 const LOGO_MAX_BYTES = 512 * 1024;
 const LOGO_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
@@ -46,7 +47,13 @@ router.get("/me", auth, tenant, getMyTenant);
 router
   .route("/me/branding")
   .get(auth, tenant, getMyBranding)
-  .patch(auth, tenant, requirePermission("tenant.settings"), updateMyBranding);
+  .patch(
+    auth,
+    tenant,
+    requirePermission("tenant.settings"),
+    requireFeature("branding"),
+    updateMyBranding,
+  );
 
 router
   .route("/me/logo")
@@ -54,6 +61,7 @@ router
     auth,
     tenant,
     requirePermission("tenant.settings"),
+    requireFeature("branding"),
     logoUpload,
     uploadMyLogo,
   )

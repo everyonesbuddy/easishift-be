@@ -10,9 +10,10 @@ const {
 } = require("../controllers/messageController");
 
 const auth = require("../middleware/authMiddleware");
+const { requireFeature } = require("../middleware/planMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 
-router.use(auth, tenant);
+router.use(auth, tenant, requireFeature("messaging"));
 
 router.route("/").get(getMessages).post(createMessage);
 router.get("/receiver/:receiverId", getMessagesByReceiver);

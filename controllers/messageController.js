@@ -2,6 +2,9 @@ const mongoose = require("mongoose");
 const Message = require("../models/messageModel");
 const User = require("../models/userModel");
 const { hasPermission } = require("../config/authorization");
+const { getEffectivePlanKey } = require("../config/plans");
+const { sendToStaff, firstName, escapeHtml } = require("../utils/notify");
+const { getStaffLinkUrl } = require("../utils/staffLinks");
 
 // Managers (messages.manage) see every message in their workspace.
 // Everyone else only sees messages they sent or received.
@@ -76,6 +79,10 @@ exports.createMessage = async (req, res, next) => {
   try {
     const { receiverIds = [], subject, body } = req.body;
 
+    if (!String(subject || "").trim() || !String(body || "").trim()) {
+      return res.status(400).json({ message: "subject and body are required" });
+    }
+
     if (!Array.isArray(receiverIds)) {
       return res.status(400).json({ message: "receiverIds must be an array" });
     }
@@ -112,11 +119,32 @@ exports.createMessage = async (req, res, next) => {
 
     const createdMessages = await Message.insertMany(messagesToCreate);
 
-    if (createdMessages.length === 1) {
-      return res.status(201).json(createdMessages[0]);
+    // Staff don't log in, so deliver each message by text/email with a link
+    // to read it (best-effort; the message is saved either way).
+    const facility = req.tenant?.name || "Your facility";
+    const planKey = getEffectivePlanKey(req.tenant);
+    const staffReceivers = await User.find({
+      _id: { $in: recipients },
+      tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
+    }).lean();
+    const delivery = { sms: 0, email: 0, notReached: [] };
+    for (const person of staffReceivers) {
+      const link = await getStaffLinkUrl(person);
+      const result = await sendToStaff({
+        tenant: req.tenant,
+        planKey,
+        staff: person,
+        kind: "message",
+        sms: `${facility}: ${String(subject || "").slice(0, 80)}. Read: ${link}`,
+        emailSubject: `${facility}: ${subject}`,
+        emailHtml: `<p>Hi ${escapeHtml(firstName(person.name))},</p><p><strong>${escapeHtml(subject)}</strong></p><p>${escapeHtml(body).replace(/\n/g, "<br>")}</p><p><a href="${link}">Open WiserShifts</a></p>`,
+      });
+      if (result.delivered) delivery[result.channel] += 1;
+      else delivery.notReached.push({ staffId: person._id, name: person.name, reason: result.reason });
     }
-
-    res.status(201).json(createdMessages);
+    res.status(201).json({ messages: createdMessages, delivery });
   } catch (err) {
     next(err);
   }

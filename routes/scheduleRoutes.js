@@ -30,7 +30,7 @@ const { requirePermission } = require("../middleware/roleMiddleware");
 router.use(auth, tenant);
 
 // GET /api/v1/schedules?staffId=&from=&to=
-router.get("/", getSchedules);
+router.get("/", requirePermission("schedule.view"), getSchedules);
 
 // POST /api/v1/schedules  (admin only ideally, maybe)
 router.post("/", requirePermission("schedule.manage"), createSchedule);
@@ -92,7 +92,7 @@ router.patch(
   updateOwnScheduleStatus,
 );
 
-router.get("/:id", getScheduleById);
+router.get("/:id", requirePermission("schedule.view"), getScheduleById);
 
 // PUT /api/v1/schedules/:id  (admin or schedule owner -> allow update)
 router.put("/:id", requirePermission("schedule.manage"), updateSchedule);

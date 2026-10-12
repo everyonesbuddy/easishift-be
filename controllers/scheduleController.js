@@ -3,6 +3,24 @@ const Schedule = require("../models/scheduleModel");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
 const {
+  sendToStaff,
+  shortShift,
+  firstName,
+  escapeHtml,
+} = require("../utils/notify");
+const {
+  stateForNewSchedule,
+  getWeekSettings,
+} = require("../utils/weekService");
+const { getEffectivePlanKey } = require("../config/plans");
+const ScheduleWeek = require("../models/scheduleWeekModel");
+const Tenant = require("../models/tenantModel");
+const {
+  weekStartFor,
+  dateKeyToCoverageDate,
+  addDaysToKey,
+} = require("../utils/dateUtils");
+const {
   normalizeRoleFamily,
   getStaffFacilityRoles,
   isStaffRoleCompatible,
@@ -635,16 +653,18 @@ const getFacilityTimezone = async (tenantId) => {
   return prefs?.facilityTimezone || "UTC";
 };
 
+// Accounts (schedulers) get email; staff contacts go through sendToStaff,
+// which respects the plan, SMS consent and their notification settings.
 const notifyUsersBestEffort = async ({
   tenantId,
   users,
   emailSubject,
   emailHtml,
   smsBody,
+  kind = "swap",
 }) => {
   const uniqueUsers = [];
   const seen = new Set();
-
   for (const user of users || []) {
     if (!user || !user._id) continue;
     const key = user._id.toString();
@@ -652,41 +672,34 @@ const notifyUsersBestEffort = async ({
     seen.add(key);
     uniqueUsers.push(user);
   }
-
   if (!uniqueUsers.length) return;
 
-  const preferenceDocs = await Preferences.find({
-    tenantId,
-    staffId: { $in: uniqueUsers.map((user) => user._id) },
-  })
-    .select("staffId emailNotificationsEnabled smsNotificationsEnabled")
-    .lean();
-
-  const preferenceMap = {};
-  preferenceDocs.forEach((pref) => {
-    preferenceMap[pref.staffId.toString()] = pref;
-  });
+  const tenant = await Tenant.findById(tenantId);
+  if (!tenant) return;
+  const planKey = getEffectivePlanKey(tenant);
 
   for (const user of uniqueUsers) {
-    const pref = preferenceMap[user._id.toString()];
-
     try {
-      if (user.email && isEmailNotificationEnabled(pref)) {
-        await sendEmail(user.email, emailSubject, emailHtml(user), null, {
-          tenantId,
-        });
+      if (user.loginEnabled) {
+        if (user.email) {
+          await sendEmail(user.email, emailSubject, emailHtml(user), null, {
+            tenantId,
+          });
+        }
+        continue;
       }
-
-      const to = isSmsNotificationEnabled(pref)
-        ? buildE164Number(user.userPhoneCountryCode, user.userPhone)
-        : null;
-
-      if (to) {
-        await sendSMS(to, smsBody(user));
-      }
+      await sendToStaff({
+        tenant,
+        planKey,
+        staff: user,
+        kind,
+        sms: smsBody(user),
+        emailSubject,
+        emailHtml: emailHtml(user),
+      });
     } catch (err) {
       console.error(
-        `Failed swap notification for user ${user._id}:`,
+        `Failed notification for user ${user._id}:`,
         err && err.message ? err.message : err,
       );
     }
@@ -695,6 +708,46 @@ const notifyUsersBestEffort = async ({
 
 const getTenantAdmins = (tenantId, excludeUserIds = []) =>
   findSchedulers(tenantId, excludeUserIds);
+
+/**
+ * Tell one staff member their published schedule changed (best-effort).
+ * kind: "shift_added" | "shift_changed" | "shift_removed"
+ */
+const notifyShiftChange = async ({ req, staffId, kind, schedule }) => {
+  try {
+    const staff = await User.findOne({
+      _id: staffId,
+      tenantId: req.tenantId,
+      loginEnabled: false,
+    }).lean();
+    if (!staff) return null;
+    const timezone = await getFacilityTimezone(req.tenantId);
+    const when = shortShift(schedule.startTime, schedule.endTime, timezone);
+    const facility = req.tenant?.name || "Your facility";
+    const lines = {
+      shift_added: `${facility}: you've been added to ${when} (${schedule.role}).`,
+      shift_changed: `${facility}: your shift changed. Now ${when} (${schedule.role}).`,
+      shift_removed: `${facility}: your ${when} shift was removed from the schedule.`,
+    };
+    const text = lines[kind] || lines.shift_changed;
+    return sendToStaff({
+      tenant: req.tenant,
+      planKey: getEffectivePlanKey(req.tenant),
+      staff,
+      kind,
+      sms: text,
+      emailSubject: (() => {
+        const subject = text.replace(/^[^:]+: /, "");
+        return subject.charAt(0).toUpperCase() + subject.slice(1);
+      })(),
+      emailHtml: `<p>Hi ${escapeHtml(firstName(staff.name))},</p><p>${escapeHtml(text)}</p>`,
+      refId: schedule._id,
+    });
+  } catch (err) {
+    console.error("notifyShiftChange failed:", err.message);
+    return null;
+  }
+};
 
 const toObjectId = (value) =>
   mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(value) : null;
@@ -937,11 +990,38 @@ const restoreAutoRemovedDraftAssignment = async ({ tenantId, schedule }) => {
   }
 };
 
+// Date keys (YYYY-MM-DD) of every day in a published week from last week on.
+const getPublishedDates = async (tenantId) => {
+  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  const lastWeek = addDaysToKey(
+    weekStartFor(new Date(), timezone, weekStartsOn),
+    -7,
+  );
+  const weeks = await ScheduleWeek.find({
+    tenantId,
+    status: "published",
+    weekStart: { $gte: dateKeyToCoverageDate(lastWeek) },
+  })
+    .select("weekStart")
+    .lean();
+  const dates = [];
+  for (const week of weeks) {
+    for (let day = 0; day < 7; day += 1) {
+      dates.push(new Date(week.weekStart.getTime() + day * 86400000));
+    }
+  }
+  return dates;
+};
+
 const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
   const now = new Date();
+  // Staff only see open shifts in weeks the scheduler has published.
+  const publishedDates = await getPublishedDates(tenantId);
+  if (!publishedDates.length) return [];
   const coverages = await Coverage.find({
     tenantId,
     startTime: { $gt: now },
+    date: { $in: publishedDates },
   })
     .sort({ date: 1, startTime: 1 })
     .lean();
@@ -1068,7 +1148,12 @@ exports.pickUpSchedule = async (req, res, next) => {
       timezone: "UTC",
       notes: "Picked up by staff member",
       status: "scheduled",
-      meta: { createdBy: req.user._id, source: "staff_pickup" },
+      state: "published",
+      meta: {
+        createdBy: req.user._id,
+        source: "staff_pickup",
+        publishedAt: new Date(),
+      },
     });
 
     await autoRemoveDraftAssignmentForSchedule({
@@ -2388,7 +2473,20 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
       });
     }
 
-    const schedulePayload = assignments.map((assignment) => ({
+    // "Publishing" an auto-fill draft puts the shifts on the schedule. They
+    // stay drafts (silent) unless their week has already been published.
+    const states = [];
+    for (const assignment of assignments) {
+      states.push(
+        await stateForNewSchedule({
+          tenantId: req.tenantId,
+          startTime: assignment.startTime,
+        }),
+      );
+    }
+
+    const schedulePayload = assignments.map((assignment, index) => ({
+      state: states[index],
       tenantId: req.tenantId,
       staffId: assignment.staffId,
       coverageId: assignment.coverageId || null,
@@ -2404,7 +2502,8 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
       status: "scheduled",
       meta: {
         createdBy: req.user._id,
-        publishedAt: new Date(),
+        source: "auto",
+        ...(states[index] === "published" ? { publishedAt: new Date() } : {}),
       },
     }));
 
@@ -3000,6 +3099,11 @@ exports.createSchedule = async (req, res, next) => {
     if (conflict)
       return res.status(409).json({ message: "Schedule conflict", conflict });
 
+    const state = await stateForNewSchedule({
+      tenantId: req.tenantId,
+      startTime,
+    });
+
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
       staffId,
@@ -3012,79 +3116,22 @@ exports.createSchedule = async (req, res, next) => {
       startTime,
       endTime,
       notes,
-      timezone: timezone || "UTC",
+      timezone: timezone || facilityPreferences?.facilityTimezone || "UTC",
       status: "scheduled",
-      meta: { createdBy: req.user._id },
+      state,
+      meta: { createdBy: req.user._id, source: "scheduler" },
     });
 
-    // Notify assigned staff (best-effort)
-    try {
-      const facilityTimezone = facilityPreferences?.facilityTimezone || "UTC";
-      const shiftWindow = formatRangeInFacilityZone(
-        startTime,
-        endTime,
-        facilityTimezone,
-      );
-      const staffPref = staff
-        ? await Preferences.findOne({
-            tenantId: req.tenantId,
-            staffId: staff._id,
-          })
-            .select("emailNotificationsEnabled smsNotificationsEnabled")
-            .lean()
-        : null;
-
-      if (staff && staff.email && isEmailNotificationEnabled(staffPref)) {
-        const subject = `New shift assigned: ${role} - ${formatInFacilityZone(startTime, facilityTimezone)}`;
-        const html = `
-          <p>Hi ${staff.name || "team member"},</p>
-          <p>You have been assigned a new shift:</p>
-          <ul>
-            <li><strong>Role:</strong> ${role}</li>
-            <li><strong>Shift:</strong> ${shiftWindow}</li>
-            <li><strong>Notes:</strong> ${notes || ""}</li>
-          </ul>
-          <p>Please contact your admin if you have any questions.</p>
-        `;
-
-        const result = await sendEmail(staff.email, subject, html, null, {
-          tenantId: req.tenantId,
-        });
-        if (result && result.success) {
-          console.log(
-            `Notification email sent to ${staff.email} for schedule ${schedule._id}`,
-          );
-        } else {
-          console.error(
-            `Notification email failed for ${staff.email} (schedule ${schedule._id}):`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-      }
-
-      const to =
-        staff && isSmsNotificationEnabled(staffPref)
-          ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
-          : null;
-      if (to) {
-        const smsBody = `New shift assigned: ${role}. ${shiftWindow}.`;
-        const smsResult = await sendSMS(to, smsBody);
-        if (smsResult && smsResult.success) {
-          console.log(
-            `Notification SMS sent to ${to} for schedule ${schedule._id}`,
-          );
-        } else {
-          console.error(
-            `Notification SMS failed for ${to} (schedule ${schedule._id}):`,
-            smsResult && smsResult.error ? smsResult.error : "unknown error",
-          );
-        }
-      }
-    } catch (err) {
-      console.error(
-        `Failed to send assignment notifications for schedule ${schedule._id}:`,
-        err && err.message ? err.message : err,
-      );
+    // Drafts are silent; the person hears about them when the week is
+    // published. Changes to a published week go out right away unless the
+    // scheduler asked for a quiet edit (notify: false).
+    if (state === "published" && req.body?.notify !== false) {
+      await notifyShiftChange({
+        req,
+        staffId: schedule.staffId,
+        kind: "shift_added",
+        schedule,
+      });
     }
 
     await autoRemoveDraftAssignmentForSchedule({
@@ -3186,9 +3233,51 @@ exports.getScheduleById = async (req, res, next) => {
 };
 
 // UPDATE SCHEDULE
+const SCHEDULE_EDITABLE_FIELDS = [
+  "staffId",
+  "role",
+  "unitArea",
+  "shiftType",
+  "shiftTag",
+  "certificationTags",
+  "startTime",
+  "endTime",
+  "notes",
+  "status",
+  "coverageId",
+];
+const SCHEDULER_SETTABLE_STATUSES = new Set([
+  "scheduled",
+  "in_progress",
+  "completed",
+  "left_early",
+  "no_show",
+  "call_out",
+]);
+
 exports.updateSchedule = async (req, res, next) => {
   try {
-    const updates = req.body;
+    // Only known fields can change (tenantId, state, meta never).
+    const updates = {};
+    for (const key of SCHEDULE_EDITABLE_FIELDS) {
+      if (req.body?.[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (
+      updates.status !== undefined &&
+      !SCHEDULER_SETTABLE_STATUSES.has(String(updates.status))
+    ) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+    if (
+      updates.coverageId !== undefined &&
+      updates.coverageId !== null &&
+      !(await Coverage.exists({
+        _id: updates.coverageId,
+        tenantId: req.tenantId,
+      }))
+    ) {
+      return res.status(404).json({ message: "Coverage not found" });
+    }
 
     const currentSchedule = await Schedule.findOne({
       _id: req.params.id,
@@ -3331,6 +3420,42 @@ exports.updateSchedule = async (req, res, next) => {
     if (!updated)
       return res.status(404).json({ message: "Schedule not found" });
 
+    // Published shift moved, re-timed or reassigned: tell whoever's affected.
+    const staffChanged =
+      String(currentSchedule.staffId) !== String(updated.staffId?._id || updated.staffId);
+    const timeChanged =
+      new Date(currentSchedule.startTime).getTime() !==
+        new Date(updated.startTime).getTime() ||
+      new Date(currentSchedule.endTime).getTime() !==
+        new Date(updated.endTime).getTime();
+    if (
+      currentSchedule.state === "published" &&
+      req.body?.notify !== false &&
+      new Date(updated.endTime) > new Date()
+    ) {
+      if (staffChanged) {
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_removed",
+          schedule: currentSchedule,
+        });
+        await notifyShiftChange({
+          req,
+          staffId: updated.staffId?._id || updated.staffId,
+          kind: "shift_added",
+          schedule: updated,
+        });
+      } else if (timeChanged || updates.role !== undefined) {
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_changed",
+          schedule: updated,
+        });
+      }
+    }
+
     res.json(updated);
   } catch (err) {
     next(err);
@@ -3391,6 +3516,21 @@ exports.deleteSchedule = async (req, res, next) => {
       schedule: deleted,
     });
 
+    if (
+      deleted.state === "published" &&
+      deleted.status === "scheduled" &&
+      new Date(deleted.startTime) > new Date() &&
+      req.body?.notify !== false &&
+      req.query?.notify !== "false"
+    ) {
+      await notifyShiftChange({
+        req,
+        staffId: deleted.staffId,
+        kind: "shift_removed",
+        schedule: deleted,
+      });
+    }
+
     res.json({ message: "Schedule deleted" });
   } catch (err) {
     next(err);
@@ -3431,6 +3571,17 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
     const existingIdSet = new Set(existing.map((item) => String(item._id)));
     const notFoundIds = uniqueIds.filter((id) => !existingIdSet.has(id));
 
+    const toNotify =
+      req.body?.notify === false
+        ? []
+        : await Schedule.find({
+            tenantId: req.tenantId,
+            _id: { $in: existing.map((item) => item._id) },
+            state: "published",
+            status: "scheduled",
+            startTime: { $gt: new Date() },
+          }).lean();
+
     let deletedCount = 0;
     if (existing.length) {
       const deleteResult = await Schedule.deleteMany({
@@ -3438,6 +3589,15 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
         _id: { $in: existing.map((item) => item._id) },
       });
       deletedCount = deleteResult.deletedCount || 0;
+    }
+
+    for (const removed of toNotify) {
+      await notifyShiftChange({
+        req,
+        staffId: removed.staffId,
+        kind: "shift_removed",
+        schedule: removed,
+      });
     }
 
     return res.status(200).json({

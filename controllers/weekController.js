@@ -248,6 +248,9 @@ exports.publishWeek = async (req, res, next) => {
     await Schedule.updateMany(
       { ...inWeek, state: "draft" },
       { $set: { state: "published", "meta.publishedAt": now } },
+      // Going live isn't an edit; keep updatedAt so the next publish only
+      // messages people whose shifts really changed.
+      { timestamps: false },
     );
 
     const [shifts, staff] = await Promise.all([
@@ -322,7 +325,9 @@ exports.publishWeek = async (req, res, next) => {
     }
 
     week.status = "published";
-    week.publishedAt = now;
+    // Stamp after all writes above so nothing from this publish counts as
+    // "changed since publish" next time.
+    week.publishedAt = new Date();
     week.publishedBy = req.user._id;
     week.lastPublish = { sms: sent.sms, email: sent.email, notReached };
     await week.save();

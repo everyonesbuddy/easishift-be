@@ -91,9 +91,19 @@ router.post(
 );
 
 // SHIFT SWAP REQUESTS (schedulers approve; staff use their link)
-router.get("/swap-requests", getShiftSwapRequests);
-router.post("/swap-requests/:swapRequestId/respond", respondToShiftSwapRequest);
-router.post("/:id/swap-requests", requestShiftSwap);
+router.get("/swap-requests", requirePermission("schedule.view"), getShiftSwapRequests);
+router.post(
+  "/swap-requests/:swapRequestId/respond",
+  requirePermission("schedule.manage"),
+  requireFeature("swaps"),
+  respondToShiftSwapRequest,
+);
+router.post(
+  "/:id/swap-requests",
+  requirePermission("schedule.manage"),
+  requireFeature("swaps"),
+  requestShiftSwap,
+);
 
 router.get("/:id", requirePermission("schedule.view"), getScheduleById);
 

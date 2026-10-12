@@ -131,6 +131,8 @@ async function ensureWeek({ tenantId, weekStart, settings = null }) {
 
   // Insert only rows that don't exist yet (never touch existing ones).
   if (ops.length) {
+    // Two first loads at once can race on the unique index; the rows exist
+    // either way, so duplicate-key errors are fine.
     await Coverage.bulkWrite(
       ops.map(({ rule, count, filter }) => ({
         updateOne: {
@@ -149,7 +151,13 @@ async function ensureWeek({ tenantId, weekStart, settings = null }) {
         },
       })),
       { ordered: false },
-    );
+    ).catch((err) => {
+      const isDuplicate =
+        err?.code === 11000 ||
+        (Array.isArray(err?.writeErrors) &&
+          err.writeErrors.every((e) => (e.code || e.err?.code) === 11000));
+      if (!isDuplicate) throw err;
+    });
   }
 
   week.generatedAt = new Date();

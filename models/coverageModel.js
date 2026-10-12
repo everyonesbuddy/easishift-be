@@ -79,6 +79,11 @@ const coverageSchema = new mongoose.Schema(
       type: Boolean,
       default: false,
     },
+    // Short lock so only one pickup/YES at a time can claim this slot.
+    claimLockUntil: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );

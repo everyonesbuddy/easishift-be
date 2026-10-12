@@ -15,6 +15,15 @@ const FacilityPreferences = require("../models/facilityPreferencesModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
 const TenantAsset = require("../models/tenantAssetModel");
+const StaffLink = require("../models/staffLinkModel");
+const CalloutOffer = require("../models/calloutOfferModel");
+const OutboundMessage = require("../models/outboundMessageModel");
+const ScheduleWeek = require("../models/scheduleWeekModel");
+const StaffingTemplate = require("../models/staffingTemplateModel");
+const TimeEntry = require("../models/timeEntryModel");
+const Stripe = require("stripe");
+
+const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 const { hasPermission } = require("../config/authorization");
 const {
   BRANDING_SELECT,
@@ -199,6 +208,21 @@ exports.deleteTenantAccount = async (req, res, next) => {
     const tenant = await Tenant.findById(targetTenantId);
     if (!tenant) return res.status(404).json({ message: "Tenant not found" });
 
+    // Stop billing first so a deleted workspace is never charged again.
+    if (tenant.stripeSubscriptionId) {
+      try {
+        await stripe.subscriptions.cancel(tenant.stripeSubscriptionId);
+      } catch (err) {
+        if (err?.code !== "resource_missing") {
+          return res.status(502).json({
+            message:
+              "Couldn't cancel the Stripe subscription, so nothing was deleted. Try again or cancel it in billing first.",
+            errorCode: "STRIPE_CANCEL_FAILED",
+          });
+        }
+      }
+    }
+
     const tenantFilter = { tenantId: targetTenantId };
 
     await Promise.all([
@@ -212,6 +236,12 @@ exports.deleteTenantAccount = async (req, res, next) => {
       FacilityPreferences.deleteMany(tenantFilter),
       TenantAsset.deleteMany(tenantFilter),
       User.deleteMany(tenantFilter),
+      StaffLink.deleteMany(tenantFilter),
+      CalloutOffer.deleteMany(tenantFilter),
+      OutboundMessage.deleteMany(tenantFilter),
+      ScheduleWeek.deleteMany(tenantFilter),
+      StaffingTemplate.deleteMany(tenantFilter),
+      TimeEntry.deleteMany(tenantFilter),
     ]);
 
     await Tenant.deleteOne({ _id: targetTenantId });

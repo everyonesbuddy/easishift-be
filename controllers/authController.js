@@ -44,14 +44,14 @@ const signToken = (id, roles, tenantId) => {
 const JWT_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
 
 // Helper: Send cookie + response
-const sendTokenResponse = (res, token, data) => {
+const sendTokenResponse = (res, token, data, status = 200) => {
   res.cookie("jwt", token, {
     httpOnly: true,
     secure: process.env.NODE_ENV === "production",
     sameSite: "lax",
     maxAge: JWT_COOKIE_MAX_AGE_MS,
   });
-  res.status(200).json({ token, ...data });
+  res.status(status).json({ token, ...data });
 };
 
 const normalizeEmail = (email) =>
@@ -66,20 +66,6 @@ const getUserResponse = (user) => {
   return response;
 };
 
-const normalizeStringArray = (values) =>
-  Array.from(
-    new Set(
-      (Array.isArray(values)
-        ? values
-        : typeof values === "string"
-          ? values.split(",")
-          : []
-      )
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
-
 const parseBoolean = (value) => {
   if (typeof value === "boolean") return value;
   if (typeof value === "string") {
@@ -91,141 +77,149 @@ const parseBoolean = (value) => {
 };
 
 /**
- * TENANT SIGNUP
- * -------------
- * Creates a tenant (hospital/clinic) and its admin user.
+ * SIGNUP
+ * ------
+ * Route: POST /api/v1/auth/signup   (old path: /signup/tenant)
+ * Body: { name, email, password, facilityName, timezone, termsAccepted,
+ *         termsVersion }
+ *
+ * Creates the workspace on the Free plan and its owner account. Facility
+ * type, roles, shifts and the staffing template come next in onboarding
+ * (/api/v1/setup). The old body shape (name = facility, adminName = person,
+ * facilityTimezone) is still accepted.
  */
 exports.registerTenant = async (req, res, next) => {
   try {
-    const {
-      name,
-      email,
-      password,
-      tenantPhone,
-      tenantPhoneCountryCode,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas,
-      allowedShiftTypes,
-      certificationTags,
-      address,
-      industry,
-      adminName,
-      termsAccepted,
-      termsVersion,
-      termsAcceptedAt,
-      facilityTimezone,
-    } = req.body;
-    const hasAcceptedTerms = parseBoolean(termsAccepted);
-    const parsedTermsAcceptedAt = termsAcceptedAt
-      ? new Date(termsAcceptedAt)
-      : new Date();
+    const body = req.body || {};
+    const isLegacyShape = !body.facilityName && body.adminName;
+    const personName = String(
+      (isLegacyShape ? body.adminName : body.name) || "",
+    ).trim();
+    const facilityName = String(
+      (isLegacyShape ? body.name : body.facilityName) || "",
+    ).trim();
+    const email = normalizeEmail(body.email);
+    const password = String(body.password || "");
+    const timezone = String(
+      body.timezone || body.facilityTimezone || "",
+    ).trim();
+    const hasAcceptedTerms = parseBoolean(body.termsAccepted);
 
-    // Create tenant
-    const tenant = await Tenant.create({
-      name,
-      email,
-      tenantPhone,
-      tenantPhoneCountryCode,
-      address,
-      industry,
-      termsAccepted: hasAcceptedTerms,
-      termsVersion: hasAcceptedTerms
-        ? termsVersion
-          ? String(termsVersion).trim()
-          : "1.0"
-        : null,
-      termsAcceptedAt: hasAcceptedTerms
-        ? Number.isNaN(parsedTermsAcceptedAt.getTime())
-          ? new Date()
-          : parsedTermsAcceptedAt
-        : null,
-    });
-
-    // Create the tenant owner. Additional facility roles can be added later.
-    const passwordHash = await bcrypt.hash(password, 12);
-    const adminUser = await User.create({
-      tenantId: tenant._id,
-      name: adminName,
-      email,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas: normalizeStringArray(allowedAreas),
-      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
-      certificationTags: normalizeStringArray(certificationTags),
-      passwordHash,
-      loginEnabled: true,
-      role: "owner",
-      roles: ["owner"],
-    });
-
-    // Best-effort starting guess only; stays unconfirmed until an admin saves it.
-    const signupTimezone = String(facilityTimezone || "").trim();
-    if (signupTimezone && DateTime.local().setZone(signupTimezone).isValid) {
-      try {
-        await FacilityPreferences.create({
-          tenantId: tenant._id,
-          facilityTimezone: signupTimezone,
-          facilityTimezoneConfirmed: false,
-        });
-      } catch (err) {
-        console.error(
-          `Failed to seed facility timezone for tenant ${tenant._id}:`,
-          err && err.message ? err.message : err,
-        );
-      }
+    if (!personName || !facilityName || !email || !password) {
+      return res.status(400).json({
+        message: "Name, facility name, email and password are required",
+      });
+    }
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: "Enter a valid email address" });
+    }
+    if (password.length < 8) {
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 8 characters" });
+    }
+    if (!hasAcceptedTerms) {
+      return res.status(400).json({
+        message: "Please accept the terms to continue",
+        errorCode: "TERMS_REQUIRED",
+      });
+    }
+    if (timezone && !DateTime.local().setZone(timezone).isValid) {
+      return res.status(400).json({
+        message: `Invalid timezone '${timezone}'`,
+        errorCode: "INVALID_TIMEZONE",
+      });
     }
 
-    // Notify the admin about account creation (best-effort)
-    try {
-      if (adminUser.email) {
-        const subject = "Your admin account is ready";
-        const html = `
-          <p>Hi ${adminUser.name || "there"},</p>
-          <p>Your admin account for <strong>${tenant.name}</strong> has been created.</p>
-          <ul>
-            <li><strong>Login email:</strong> ${adminUser.email}</li>
-            <li><strong>Tenant:</strong> ${tenant.name}</li>
-          </ul>
-          <p>You can now sign in and start setting up your team.</p>
-        `;
+    const existing = await User.findOne({ email, loginEnabled: true })
+      .select("_id")
+      .lean();
+    if (existing) {
+      return res.status(409).json({
+        message: "An account with this email already exists. Log in instead.",
+        errorCode: "EMAIL_IN_USE",
+      });
+    }
 
-        const result = await sendEmail(adminUser.email, subject, html, null, {
-          tenantId: tenant._id,
+    const tenant = await Tenant.create({
+      name: facilityName,
+      email,
+      plan: "free",
+      termsAccepted: true,
+      termsVersion: body.termsVersion ? String(body.termsVersion).trim() : "1.0",
+      termsAcceptedAt: new Date(),
+    });
+
+    let owner;
+    try {
+      owner = await User.create({
+        tenantId: tenant._id,
+        name: personName,
+        email,
+        passwordHash: await bcrypt.hash(password, 12),
+        loginEnabled: true,
+        status: "active",
+        role: "owner",
+        roles: ["owner"],
+      });
+      await FacilityPreferences.create({
+        tenantId: tenant._id,
+        facilityTimezone: timezone || "UTC",
+        // The browser's timezone is a real answer, not a guess.
+        facilityTimezoneConfirmed: Boolean(timezone),
+        unitAreas: [],
+      });
+    } catch (err) {
+      // No transactions without a replica set: undo by hand.
+      await Promise.all([
+        Tenant.deleteOne({ _id: tenant._id }),
+        User.deleteMany({ tenantId: tenant._id }),
+        FacilityPreferences.deleteMany({ tenantId: tenant._id }),
+      ]);
+      if (err && err.code === 11000) {
+        return res.status(409).json({
+          message: "An account with this email already exists. Log in instead.",
+          errorCode: "EMAIL_IN_USE",
         });
-        if (result && result.success) {
-          console.log(
-            `Admin welcome email sent for tenant ${tenant._id} to ${adminUser.email}`,
-          );
-        } else {
-          console.error(
-            `Admin welcome email failed for tenant ${tenant._id}:`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
       }
+      throw err;
+    }
+
+    // Welcome email (best-effort)
+    try {
+      const appUrl = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+      await sendEmail(
+        owner.email,
+        "Welcome to WiserShifts",
+        `
+          <p>Hi ${owner.name},</p>
+          <p>Your workspace for <strong>${tenant.name}</strong> is ready. Next: tell us what a normal week needs, add your staff, and publish your first schedule.</p>
+          ${appUrl ? `<p><a href="${appUrl}">Open WiserShifts</a></p>` : ""}
+        `,
+        null,
+        { tenantId: tenant._id },
+      );
     } catch (err) {
       console.error(
-        "Error sending admin welcome email:",
+        "Error sending welcome email:",
         err && err.message ? err.message : err,
       );
     }
 
-    // Generate token
-    const token = signToken(
-      adminUser._id,
-      getUserRoles(adminUser),
-      adminUser.tenantId,
-    );
-
+    const token = signToken(owner._id, getUserRoles(owner), owner.tenantId);
+    const planKey = getEffectivePlanKey(tenant);
     sendTokenResponse(res, token, {
-      message: "Tenant and owner created successfully",
-      tenant,
-      tenantBranding: getPublicBranding(tenant),
-      user: getUserResponse(adminUser),
-    });
+      message: "Workspace created",
+      user: getUserResponse(owner),
+      tenant: {
+        _id: tenant._id,
+        name: tenant.name,
+        facilityType: tenant.facilityType,
+        setupCompletedAt: tenant.setupCompletedAt,
+      },
+      plan: describePlan(planKey),
+      trialAvailable: trialAvailable(tenant),
+    }, 201);
   } catch (err) {
     next(err);
   }

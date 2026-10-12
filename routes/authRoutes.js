@@ -15,7 +15,8 @@ const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
 
 // Workspace signup (creates the workspace + its owner)
-router.post("/signup/tenant", registerTenant);
+router.post("/signup", registerTenant);
+router.post("/signup/tenant", registerTenant); // old path, kept for the current app
 
 // Accounts (owner / schedulers / viewers). Staff don't log in — they use
 // their personal link. Staff are managed under /api/v1/staff, accounts

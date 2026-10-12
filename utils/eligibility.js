@@ -253,7 +253,7 @@ const minutesBetween = (start, end) =>
  * Returns [{ staff, eligible, reasons[], weekMinutes, overtimeIfAssigned }]
  * sorted eligible first, then fewest hours that week.
  *   reasons: "role" | "area" | "shift_type" | "certification" |
- *            "already_assigned" | "conflict" | "time_off"
+ *            "already_assigned" | "called_out" | "conflict" | "time_off"
  */
 async function eligibleStaffForCoverage({
   tenantId,
@@ -270,7 +270,7 @@ async function eligibleStaffForCoverage({
     staffList ||
     (await User.find({ tenantId, loginEnabled: false, status: "active" })
       .select(
-        "name role roles allowedAreas allowedShiftTypes certificationTags phoneE164 email smsConsent",
+        "tenantId name role roles allowedAreas allowedShiftTypes certificationTags phoneE164 email smsConsent",
       )
       .lean())
   ).filter((person) => !excluded.has(String(person._id)));
@@ -281,11 +281,11 @@ async function eligibleStaffForCoverage({
     Schedule.find({
       tenantId,
       staffId: { $in: staffIds },
-      status: { $nin: ["completed", "call_out", "no_show"] },
+      status: { $nin: ["completed", "no_show"] },
       startTime: { $lt: coverage.endTime },
       endTime: { $gt: coverage.startTime },
     })
-      .select("staffId coverageId")
+      .select("staffId coverageId status")
       .lean(),
     TimeOff.find({
       tenantId,
@@ -309,13 +309,18 @@ async function eligibleStaffForCoverage({
   ]);
 
   const assignedHere = new Set();
+  const calledOutHere = new Set();
   const conflicted = new Set();
   for (const row of overlapping) {
-    if (row.coverageId && String(row.coverageId) === String(coverage._id)) {
-      assignedHere.add(String(row.staffId));
-    } else {
-      conflicted.add(String(row.staffId));
+    const sameSlot =
+      row.coverageId && String(row.coverageId) === String(coverage._id);
+    if (row.status === "call_out") {
+      // Whoever called out of this slot shouldn't be offered it back.
+      if (sameSlot) calledOutHere.add(String(row.staffId));
+      continue;
     }
+    if (sameSlot) assignedHere.add(String(row.staffId));
+    else conflicted.add(String(row.staffId));
   }
   const onTimeOff = new Set(timeOff.map((row) => String(row.staffId)));
   const minutesByStaff = new Map();
@@ -365,6 +370,7 @@ async function eligibleStaffForCoverage({
       reasons.push("certification");
     }
     if (assignedHere.has(key)) reasons.push("already_assigned");
+    if (calledOutHere.has(key)) reasons.push("called_out");
     if (conflicted.has(key)) reasons.push("conflict");
     if (onTimeOff.has(key)) reasons.push("time_off");
 

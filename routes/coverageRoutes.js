@@ -15,6 +15,11 @@ const {
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
+const { requireFeature } = require("../middleware/planMiddleware");
+const {
+  fillByText,
+  getCalloutStatus,
+} = require("../controllers/calloutController");
 
 // All coverage routes require authentication + tenant context
 router.use(auth);
@@ -48,6 +53,13 @@ router.delete(
   requirePermission("coverage.manage"),
   deleteCoveragesByIds,
 );
+router.post(
+  "/:id/fill-by-text",
+  requirePermission("schedule.manage"),
+  requireFeature("calloutText"),
+  fillByText,
+);
+router.get("/:id/callout", requirePermission("schedule.view"), getCalloutStatus);
 router.put("/:id", requirePermission("coverage.manage"), updateCoverage);
 router.delete("/:id", requirePermission("coverage.manage"), deleteCoverage);
 

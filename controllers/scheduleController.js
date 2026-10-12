@@ -2,6 +2,35 @@
 const Schedule = require("../models/scheduleModel");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
+const {
+  normalizeRoleFamily,
+  getStaffFacilityRoles,
+  isStaffRoleCompatible,
+  getSchedulingCandidateTier,
+  isRoleCompatible,
+  normalizeAreaTag,
+  normalizeShiftType,
+  normalizeShiftTag,
+  inferShiftTypeFromWindow,
+  dedupeStrings,
+  getCoverageArea,
+  getCoverageShiftType,
+  getCoverageShiftTag,
+  getCoverageCertificationTags,
+  getStaffExplicitAreas,
+  getStaffExplicitShiftTypes,
+  getStaffAllowedAreas,
+  getStaffAllowedShiftTypes,
+  getStaffCertificationTags,
+  isCertificationCompatible,
+  isAreaCompatible,
+  isShiftTypeCompatible,
+  getFacilityShiftTypes,
+  getCompatibleFacilityConfig,
+  isEnabledScheduleRole,
+  isStaffCompatibleWithCoverage,
+} = require("../utils/eligibility");
+
 const Coverage = require("../models/coverageModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
@@ -31,8 +60,6 @@ const {
 } = require("../config/authorization");
 
 const HOURS_TO_MINUTES = 60;
-const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
-const SCHEDULE_SYSTEM_ROLES = new Set(["user", "staff", "other"]);
 const PICKUP_ACTIVE_STATUSES = ["scheduled", "in_progress"];
 const SELF_SERVICE_SCHEDULE_STATUSES = new Set(["scheduled", "call_out"]);
 
@@ -78,234 +105,6 @@ const stableHash = (value) => {
     hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
   }
   return hash;
-};
-
-const normalizeRoleFamily = (role) => {
-  const value = String(role || "")
-    .trim()
-    .toLowerCase();
-
-  if (!value) return "";
-
-  for (const prefix of LEGACY_AREA_PREFIXES) {
-    if (value.startsWith(prefix)) {
-      return value.slice(prefix.length);
-    }
-  }
-
-  return value;
-};
-
-const getStaffFacilityRoles = (staff, facilityConfig) => {
-  const configuredRoles = new Set(
-    (facilityConfig?.roleFamilies || []).map(normalizeRole),
-  );
-  const roles = getUserRoles(staff);
-  const facilityRoles = roles.filter((role) => configuredRoles.has(role));
-
-  if (facilityRoles.length) return facilityRoles;
-
-  const legacyRole = normalizeRole(staff?.role);
-  return legacyRole && !SYSTEM_ROLES.has(legacyRole) ? [legacyRole] : [];
-};
-
-const isStaffRoleCompatible = (staff, coverageRole, facilityConfig) =>
-  getStaffFacilityRoles(staff, facilityConfig).some((role) =>
-    isRoleCompatible(role, coverageRole),
-  );
-
-const getSchedulingCandidateTier = (staff, facilityConfig) => {
-  const hasSystemRole = getSystemRoles(staff).length > 0;
-  const hasFacilityRole =
-    getStaffFacilityRoles(staff, facilityConfig).length > 0;
-
-  if (!hasFacilityRole) return null;
-  return hasSystemRole ? 2 : 1;
-};
-
-const isRoleCompatible = (staffRole, coverageRole) =>
-  normalizeRoleFamily(staffRole) === normalizeRoleFamily(coverageRole);
-
-const normalizeAreaTag = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const normalizeShiftType = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const normalizeShiftTag = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const inferShiftTypeFromWindow = (startTime, endTime) => {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return null;
-  }
-
-  const startHour = start.getUTCHours();
-  const crossesMidnight = end.getUTCDate() !== start.getUTCDate();
-
-  if (crossesMidnight || startHour >= 23 || startHour < 7) {
-    return "night";
-  }
-
-  if (startHour >= 15 && startHour < 23) {
-    return "evening";
-  }
-
-  return "day";
-};
-
-const dedupeStrings = (values) =>
-  Array.from(
-    new Set(
-      (Array.isArray(values) ? values : [])
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
-
-const getCoverageArea = (coverage) => normalizeAreaTag(coverage?.unitArea);
-
-const getCoverageShiftType = (coverage) =>
-  normalizeShiftType(coverage?.shiftType || coverage?.meta?.shiftType || "");
-
-const getCoverageShiftTag = (coverage) =>
-  normalizeShiftTag(coverage?.shiftTag || coverage?.meta?.shiftTag || "");
-
-const getCoverageCertificationTags = (coverage) =>
-  dedupeStrings(coverage?.requiredCertificationTags || []);
-
-const getStaffExplicitAreas = (staff) =>
-  dedupeStrings(staff?.allowedAreas).map(normalizeAreaTag);
-
-const getStaffExplicitShiftTypes = (staff) =>
-  dedupeStrings(staff?.allowedShiftTypes).map(normalizeShiftType);
-
-const getStaffAllowedAreas = (staff, facilityAreas) => {
-  const explicit = getStaffExplicitAreas(staff);
-  if (explicit.length) return explicit;
-
-  return dedupeStrings(facilityAreas).map(normalizeAreaTag);
-};
-
-const getStaffAllowedShiftTypes = (staff, facilityShiftTypes) => {
-  const explicit = getStaffExplicitShiftTypes(staff);
-  if (explicit.length) return explicit;
-
-  return dedupeStrings(facilityShiftTypes).map(normalizeShiftType);
-};
-
-const getStaffCertificationTags = (staff) =>
-  dedupeStrings(staff?.certificationTags);
-
-const isCertificationCompatible = (requiredTags, staffTags) => {
-  if (!requiredTags.length) return true;
-  const staffTagSet = new Set(
-    (staffTags || []).map((tag) => tag.toLowerCase()),
-  );
-  return requiredTags.every((tag) => staffTagSet.has(tag.toLowerCase()));
-};
-
-const isAreaCompatible = (staffAreas, coverageArea, hasAreaRestrictions) => {
-  if (!staffAreas || !staffAreas.length) return true;
-  if (!coverageArea) return !hasAreaRestrictions;
-  return staffAreas.includes(coverageArea);
-};
-
-const isShiftTypeCompatible = (
-  staffShiftTypes,
-  coverageShiftType,
-  coverageShiftTag,
-  hasShiftTypeRestrictions,
-) => {
-  if (!staffShiftTypes || !staffShiftTypes.length) return true;
-
-  const normalizedCoverageShiftType = normalizeShiftType(coverageShiftType);
-  const normalizedCoverageShiftTag = normalizeShiftTag(coverageShiftTag);
-
-  if (!normalizedCoverageShiftType) return !hasShiftTypeRestrictions;
-
-  const compositeCoverageKey = normalizedCoverageShiftTag
-    ? `${normalizedCoverageShiftType}:${normalizedCoverageShiftTag}`
-    : null;
-
-  return staffShiftTypes.some((value) => {
-    const normalizedValue = normalizeShiftType(value);
-    if (!normalizedValue) return false;
-
-    // Supports both plain type allow-list (e.g. "day") and slot-level
-    // allow-list (e.g. "day:day_1") stored in allowedShiftTypes.
-    return (
-      normalizedValue === normalizedCoverageShiftType ||
-      (compositeCoverageKey && normalizedValue === compositeCoverageKey)
-    );
-  });
-};
-
-const getFacilityShiftTypes = (facilityPreferences) => {
-  const configured = dedupeStrings(facilityPreferences?.shiftTypes).map(
-    normalizeShiftType,
-  );
-  const defined = dedupeStrings(
-    (facilityPreferences?.shiftTypeDefinitions || []).map((item) => item?.key),
-  ).map(normalizeShiftType);
-  const merged = dedupeStrings([...configured, ...defined]);
-  return merged.length ? merged : ["day", "evening", "night"];
-};
-
-const getCompatibleFacilityConfig = (facilityPreferences) => ({
-  roleFamilies: dedupeStrings(facilityPreferences?.roleFamilies).map(
-    normalizeRoleFamily,
-  ),
-  areas: (facilityPreferences?.unitAreas || ["al", "il", "mc"]).map(
-    normalizeAreaTag,
-  ),
-  shiftTypes: getFacilityShiftTypes(facilityPreferences),
-  certificationTags: dedupeStrings(facilityPreferences?.certificationTags),
-});
-
-const isEnabledScheduleRole = (role, facilityConfig) => {
-  const normalized = normalizeRoleFamily(role);
-  if (!normalized) return false;
-  if (SCHEDULE_SYSTEM_ROLES.has(normalized)) return true;
-  return (facilityConfig?.roleFamilies || []).includes(normalized);
-};
-
-const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
-  const explicitStaffAreas = getStaffExplicitAreas(staff);
-  const explicitStaffShiftTypes = getStaffExplicitShiftTypes(staff);
-  const staffAreas = getStaffAllowedAreas(staff, facilityConfig.areas);
-  const staffShiftTypes = getStaffAllowedShiftTypes(
-    staff,
-    facilityConfig.shiftTypes,
-  );
-  const hasAreaRestrictions = explicitStaffAreas.length > 0;
-  const hasShiftTypeRestrictions = explicitStaffShiftTypes.length > 0;
-  const staffCerts = getStaffCertificationTags(staff);
-  const coverageArea = getCoverageArea(coverage);
-  const coverageShiftType = getCoverageShiftType(coverage);
-  const coverageShiftTag = getCoverageShiftTag(coverage);
-  const coverageCerts = getCoverageCertificationTags(coverage);
-
-  return (
-    isStaffRoleCompatible(staff, coverage.role, facilityConfig) &&
-    isAreaCompatible(staffAreas, coverageArea, hasAreaRestrictions) &&
-    isShiftTypeCompatible(
-      staffShiftTypes,
-      coverageShiftType,
-      coverageShiftTag,
-      hasShiftTypeRestrictions,
-    ) &&
-    isCertificationCompatible(coverageCerts, staffCerts)
-  );
 };
 
 const getEffectiveFacilityPolicy = (facilityPreferences) => {

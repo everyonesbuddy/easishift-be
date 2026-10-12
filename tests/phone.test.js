@@ -15,4 +15,5 @@ test("rejects empty or impossible numbers", () => {
   assert.equal(buildE164Number("+1", ""), null);
   assert.equal(buildE164Number("+1", null), null);
   assert.equal(buildE164Number("+1", "12"), null);
+  assert.equal(buildE164Number("+1", "55530000"), null);
 });

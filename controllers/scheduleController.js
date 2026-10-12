@@ -3134,7 +3134,10 @@ exports.createSchedule = async (req, res, next) => {
       return res.status(404).json({ message: "Coverage not found" });
     }
 
-    const staff = await User.findById(staffId).select(
+    const staff = await User.findOne({
+      _id: staffId,
+      tenantId: req.tenantId,
+    }).select(
       "role roles allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
     );
 
@@ -3442,9 +3445,10 @@ exports.updateSchedule = async (req, res, next) => {
       ? updates.certificationTags
       : currentSchedule.certificationTags || [];
 
-    const staff = await User.findById(nextStaffId).select(
-      "role roles allowedAreas allowedShiftTypes certificationTags",
-    );
+    const staff = await User.findOne({
+      _id: nextStaffId,
+      tenantId: req.tenantId,
+    }).select("role roles allowedAreas allowedShiftTypes certificationTags");
 
     if (!staff) {
       return res.status(404).json({ message: "Staff not found" });

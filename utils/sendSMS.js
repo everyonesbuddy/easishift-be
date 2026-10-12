@@ -29,13 +29,13 @@ const sendSMS = async (to, body) => {
       !process.env.TWILIO_PHONE_NUMBER
     ) {
       const msg =
-        "Missing Twilio env vars. Required: TWILIO_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER.";
+        "Missing Twilio env vars. Required: TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER.";
       console.error(`❌ ${msg}`);
       return { success: false, error: msg };
     }
 
     const client = twilioPkg(
-      process.env.TWILIO_SID,
+      process.env.TWILIO_ACCOUNT_SID,
       process.env.TWILIO_AUTH_TOKEN,
     );
 

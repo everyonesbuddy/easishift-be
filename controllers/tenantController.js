@@ -17,20 +17,11 @@ const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
 const TenantAsset = require("../models/tenantAssetModel");
 const { hasPermission } = require("../config/authorization");
 const {
-  normalizeSubdomain,
-  validateSubdomain,
-  isSubdomainAvailable,
-} = require("../utils/tenantDomainUtils");
-const {
   BRANDING_SELECT,
   getPublicBranding,
   parseBrandingUpdate,
   invalidateTenantBrandingCache,
 } = require("../utils/tenantBranding");
-const {
-  buildTenantHostname,
-  updateNetlifyTenantAliases,
-} = require("../utils/netlifyDomainUtils");
 
 const detectImageType = (buffer) => {
   if (!buffer || buffer.length < 12) return null;
@@ -63,39 +54,19 @@ const sendBrandingResponse = async (res, tenantId, message, extra = {}) => {
   });
 };
 
-/**
- * Create a new tenant (used internally or for onboarding)
- * Route: POST /api/v1/tenants
- */
-exports.createTenant = async (req, res, next) => {
-  try {
-    const tenant = await Tenant.create(req.body);
-    res.status(201).json({ tenant });
-  } catch (err) {
-    next(err);
-  }
-};
+// Fields never sent to the browser.
+const PRIVATE_TENANT_FIELDS =
+  "-stripeCustomerId -stripeSubscriptionId -stripePriceId";
 
 /**
- * Get all tenants (super admin use)
- * Route: GET /api/v1/tenants
+ * Get the signed-in user's own workspace.
+ * Route: GET /api/v1/tenants/me
  */
-exports.getTenants = async (req, res, next) => {
+exports.getMyTenant = async (req, res, next) => {
   try {
-    const tenants = await Tenant.find();
-    res.status(200).json({ tenants });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * Get single tenant (for admin dashboard)
- * Route: GET /api/v1/tenants/:id
- */
-exports.getTenantById = async (req, res, next) => {
-  try {
-    const tenant = await Tenant.findById(req.params.id);
+    const tenant = await Tenant.findById(req.tenantId)
+      .select(PRIVATE_TENANT_FIELDS)
+      .lean();
     if (!tenant) return res.status(404).json({ message: "Tenant not found" });
     res.status(200).json({ tenant });
   } catch (err) {
@@ -116,53 +87,12 @@ exports.getMyBranding = async (req, res, next) => {
 };
 
 /**
- * Update branding fields and/or subdomain.
+ * Update branding fields.
  * Route: PATCH /api/v1/tenants/me/branding
  */
 exports.updateMyBranding = async (req, res, next) => {
   try {
     const { set, errors } = parseBrandingUpdate(req.body || {});
-    let previousSubdomain = null;
-    let domainProvisioning = null;
-
-    if (req.body?.subdomain !== undefined) {
-      const subdomain = normalizeSubdomain(req.body.subdomain);
-      const subdomainError = validateSubdomain(subdomain);
-      if (subdomainError) {
-        return res
-          .status(400)
-          .json({ message: subdomainError, errorCode: "INVALID_SUBDOMAIN" });
-      }
-      if (!(await isSubdomainAvailable(subdomain, req.tenantId))) {
-        return res.status(409).json({
-          message: "That subdomain is already taken",
-          errorCode: "SUBDOMAIN_TAKEN",
-        });
-      }
-      const currentTenant = await Tenant.findById(req.tenantId)
-        .select("subdomain")
-        .lean();
-      previousSubdomain = currentTenant?.subdomain || null;
-
-      if (subdomain !== previousSubdomain) {
-        try {
-          domainProvisioning = await updateNetlifyTenantAliases({
-            addSubdomains: [subdomain],
-          });
-        } catch (err) {
-          console.error(
-            `Netlify domain alias registration failed for tenant ${req.tenantId}:`,
-            err && err.message ? err.message : err,
-          );
-          return res.status(502).json({
-            message:
-              "The new workspace hostname could not be registered with the hosting provider; the subdomain was not changed.",
-            errorCode: "NETLIFY_DOMAIN_SYNC_FAILED",
-          });
-        }
-      }
-      set.subdomain = subdomain;
-    }
 
     if (errors.length) {
       return res.status(400).json({
@@ -174,57 +104,14 @@ exports.updateMyBranding = async (req, res, next) => {
       return res.status(400).json({ message: "No branding fields provided" });
     }
 
-    try {
-      await Tenant.updateOne(
-        { _id: req.tenantId },
-        { $set: set },
-        { runValidators: true },
-      );
-    } catch (err) {
-      if (err && err.code === 11000) {
-        return res.status(409).json({
-          message: "That subdomain is already taken",
-          errorCode: "SUBDOMAIN_TAKEN",
-        });
-      }
-      throw err;
-    }
+    await Tenant.updateOne(
+      { _id: req.tenantId },
+      { $set: set },
+      { runValidators: true },
+    );
 
     invalidateTenantBrandingCache(req.tenantId);
-    if (
-      domainProvisioning &&
-      previousSubdomain &&
-      previousSubdomain !== set.subdomain &&
-      domainProvisioning.status !== "not_configured" &&
-      domainProvisioning.status !== "local_domain_skipped"
-    ) {
-      try {
-        await updateNetlifyTenantAliases({
-          removeSubdomains: [previousSubdomain],
-        });
-      } catch (err) {
-        console.error(
-          `Netlify old domain alias cleanup failed for tenant ${req.tenantId}:`,
-          err && err.message ? err.message : err,
-        );
-        domainProvisioning.cleanupStatus = "failed";
-      }
-    }
-
-    await sendBrandingResponse(res, req.tenantId, "Branding updated", {
-      ...(domainProvisioning
-        ? {
-            tenantDomainProvisioning: {
-              status: domainProvisioning.status,
-              cleanupStatus: domainProvisioning.cleanupStatus || "complete",
-              hostname: buildTenantHostname(
-                set.subdomain,
-                process.env.TENANT_ROOT_DOMAIN,
-              ),
-            },
-          }
-        : {}),
-    });
+    await sendBrandingResponse(res, req.tenantId, "Branding updated");
   } catch (err) {
     next(err);
   }
@@ -284,9 +171,7 @@ exports.deleteMyLogo = async (req, res, next) => {
 /**
  * Delete tenant account and all tenant-scoped data.
  * Route: DELETE /api/v1/tenants/:id
- * Access:
- * - superadmin can delete any tenant
- * - admin can delete only their own tenant
+ * Access: the workspace owner, for their own workspace only.
  */
 exports.deleteTenantAccount = async (req, res, next) => {
   try {
@@ -301,7 +186,7 @@ exports.deleteTenantAccount = async (req, res, next) => {
 
     if (!canDeleteTenant) {
       return res.status(403).json({
-        message: "Access denied. Only admin or superadmin can delete account.",
+        message: "Access denied. Only the workspace owner can delete it.",
       });
     }
 

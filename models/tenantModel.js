@@ -151,15 +151,8 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
-     * WHITE-LABEL
-     * Tenant portal is served at <subdomain>.<TENANT_ROOT_DOMAIN>.
+     * WHITE-LABEL BRANDING (logo + colors used in emails)
      */
-    subdomain: {
-      type: String,
-      lowercase: true,
-      trim: true,
-    },
-
     branding: {
       displayName: { type: String, trim: true, maxlength: 80, default: null },
       primaryColor: {
@@ -179,12 +172,6 @@ const tenantSchema = new mongoose.Schema(
     },
   },
   { timestamps: true },
-);
-
-// Partial index so tenants without a subdomain don't collide on null.
-tenantSchema.index(
-  { subdomain: 1 },
-  { unique: true, partialFilterExpression: { subdomain: { $type: "string" } } },
 );
 
 module.exports = mongoose.model("Tenant", tenantSchema);

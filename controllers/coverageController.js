@@ -5,8 +5,21 @@ const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
 const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
 
-// Normalize to UTC midnight
+const DATE_KEY_PATTERN = /^(\d{4})-(\d{2})-(\d{2})/;
+
+// Coverage.date is the facility-local calendar day stored at 00:00Z.
+// For strings ("2026-10-11" or "2026-10-11T00:00:00+01:00") the calendar day
+// written in the string wins, so a local midnight never shifts to the
+// previous/next UTC day. Date objects fall back to their UTC day.
 function normalizeToUTC(date) {
+  if (typeof date === "string") {
+    const match = date.trim().match(DATE_KEY_PATTERN);
+    if (match) {
+      return new Date(
+        Date.UTC(Number(match[1]), Number(match[2]) - 1, Number(match[3])),
+      );
+    }
+  }
   const d = new Date(date);
   return new Date(
     Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
@@ -868,3 +881,6 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     next(err);
   }
 };
+
+// Exposed for unit tests.
+exports._normalizeToUTC = normalizeToUTC;

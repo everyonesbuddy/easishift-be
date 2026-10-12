@@ -4,7 +4,6 @@ const cookieParser = require("cookie-parser");
 const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const cron = require("node-cron");
-const { sendPendingReminders } = require("./utils/scheduleJobs");
 const FacilityPreferences = require("./models/facilityPreferencesModel");
 const Schedule = require("./models/scheduleModel");
 const TimeEntry = require("./models/timeEntryModel");
@@ -29,7 +28,6 @@ const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
 const publicRoutes = require("./routes/publicRoutes");
-const { isTenantSubdomainOrigin } = require("./utils/tenantDomainUtils");
 const swaggerUi = require("swagger-ui-express");
 const buildOpenApiSpec = require("./docs/openapiSpec");
 
@@ -62,12 +60,17 @@ app.use(cookieParser());
 // CORS: allow production site and local dev. Use a whitelist plus pattern
 // matching for dynamic Expo Go and LAN dev origins. Stripe webhooks and other
 // server-to-server calls will have no Origin and are allowed.
-const allowedOrigins = new Set([
-  "https://easishift.com",
-  "https://wisershifts.com",
-  "http://localhost:5173",
-  "http://localhost:8081",
-]);
+// Comma-separated list in ALLOWED_ORIGINS, e.g.
+// "https://wisershifts.com,https://www.wisershifts.com"
+const allowedOrigins = new Set(
+  (
+    process.env.ALLOWED_ORIGINS ||
+    "https://wisershifts.com,https://easishift.com,http://localhost:5173,http://localhost:8081"
+  )
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+);
 
 const localDevOriginPattern =
   /^(https?:\/\/((?:[a-z0-9-]+\.)?localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?)\/?$/;
@@ -75,8 +78,7 @@ const localDevOriginPattern =
 const expoOriginPattern = /^(exp|exps):\/\/[^\s/]+(?::\d{2,5})?\/?$/;
 
 function isAllowedOrigin(origin) {
-  if (allowedOrigins.has(origin)) return true;
-  if (isTenantSubdomainOrigin(origin)) return true;
+  if (allowedOrigins.has(String(origin).replace(/\/+$/, ""))) return true;
   if (localDevOriginPattern.test(origin)) return true;
   if (expoOriginPattern.test(origin)) return true;
   return false;
@@ -99,12 +101,6 @@ app.use(
 
 // Note: no explicit app.options('*') call because some path parsers reject '*'.
 // The CORS middleware applied above will handle preflight requests.
-
-// ✅ Cron job example: send appointment reminders daily at 8 AM
-cron.schedule("0 8 * * *", async () => {
-  console.log("⏰ Running daily reminder job...");
-  await sendPendingReminders();
-});
 
 // ✅ Cron job: every 2 hours close out past schedules
 cron.schedule("0 */2 * * *", async () => {

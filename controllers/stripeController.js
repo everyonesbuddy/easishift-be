@@ -1,7 +1,6 @@
 const Stripe = require("stripe");
 const Tenant = require("../models/tenantModel");
 const User = require("../models/userModel");
-const { buildTenantAppUrl } = require("../utils/tenantDomainUtils");
 
 // Use env key but allow a fallback dummy to avoid crashes in dev without env set
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
@@ -264,7 +263,7 @@ exports.createCheckoutSession = async (req, res, next) => {
       includePriorPeriodCharge,
       normalizedPriorPeriodLabel,
     );
-    const appUrl = buildTenantAppUrl(tenant.subdomain) || frontendUrl;
+    const appUrl = frontendUrl;
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",

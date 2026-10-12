@@ -13,21 +13,8 @@ const Preferences = require("../models/preferencesModel");
 const ShiftSwap = require("../models/shiftSwapModel");
 const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
 const {
-  normalizeSubdomain,
-  validateSubdomain,
-  isSubdomainAvailable,
-  generateUniqueSubdomain,
-  getTenantAppUrl,
-  getRequestTenantSubdomain,
-} = require("../utils/tenantDomainUtils");
-const {
-  buildTenantHostname,
-  updateNetlifyTenantAliases,
-} = require("../utils/netlifyDomainUtils");
-const {
   BRANDING_SELECT,
   getPublicBranding,
-  parseBrandingUpdate,
 } = require("../utils/tenantBranding");
 const {
   SYSTEM_ROLES,
@@ -96,30 +83,28 @@ const signToken = (id, roles, tenantId) => {
   );
 };
 
+const JWT_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Helper: Send cookie + response
 const sendTokenResponse = (res, token, data) => {
-  res.cookie("jwt", token, { httpOnly: true, secure: false });
+  res.cookie("jwt", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: JWT_COOKIE_MAX_AGE_MS,
+  });
   res.status(200).json({ token, ...data });
 };
 
-const buildResetUrl = async (req, token, tenantId) => {
-  const tenant = tenantId
-    ? await Tenant.findById(tenantId).select("subdomain").lean()
-    : null;
-  const baseUrl = getTenantAppUrl(tenant) || req.headers.origin || "";
+// Password setup / reset links always point at the single app URL.
+const buildResetUrl = async (req, token) => {
+  const baseUrl = String(
+    process.env.FRONTEND_URL || req.headers.origin || "",
+  ).replace(/\/+$/, "");
   const resetPath = process.env.FRONTEND_RESET_PATH || "/reset-password";
 
   if (!baseUrl) return token;
-  const normalizedBase = baseUrl.replace(/\/$/, "");
-  return `${normalizedBase}${resetPath}?token=${token}`;
-};
-
-// True when the request comes from a tenant subdomain that the user doesn't belong to.
-const isOutsideRequestTenant = async (req, user) => {
-  const subdomain = getRequestTenantSubdomain(req);
-  if (!subdomain) return false;
-  const tenant = await Tenant.findOne({ subdomain }).select("_id").lean();
-  return !tenant || String(tenant._id) !== String(user.tenantId);
+  return `${baseUrl}${resetPath}?token=${token}`;
 };
 
 const normalizeEmail = (email) =>
@@ -219,7 +204,7 @@ const createPasswordSetupLink = async (req, user) => {
   user.passwordResetExpires = new Date(Date.now() + getPasswordSetupTtlMs());
   await user.save({ validateBeforeSave: false });
 
-  return buildResetUrl(req, setupToken, user.tenantId);
+  return buildResetUrl(req, setupToken);
 };
 
 const getPasswordSetupValidityText = () =>
@@ -280,53 +265,11 @@ exports.registerTenant = async (req, res, next) => {
       termsVersion,
       termsAcceptedAt,
       facilityTimezone,
-      subdomain: requestedSubdomain,
-      branding,
     } = req.body;
     const hasAcceptedTerms = parseBoolean(termsAccepted);
     const parsedTermsAcceptedAt = termsAcceptedAt
       ? new Date(termsAcceptedAt)
       : new Date();
-
-    const { set: brandingSet, errors: brandingErrors } = parseBrandingUpdate(
-      branding && typeof branding === "object" ? branding : {},
-    );
-    if (brandingErrors.length) {
-      return res.status(400).json({
-        message: brandingErrors.join("; "),
-        errorCode: "INVALID_BRANDING",
-      });
-    }
-
-    let subdomain;
-    if (requestedSubdomain) {
-      subdomain = normalizeSubdomain(requestedSubdomain);
-      const subdomainError = validateSubdomain(subdomain);
-      if (subdomainError) {
-        return res
-          .status(400)
-          .json({ message: subdomainError, errorCode: "INVALID_SUBDOMAIN" });
-      }
-      if (!(await isSubdomainAvailable(subdomain))) {
-        return res.status(409).json({
-          message: "That subdomain is already taken",
-          errorCode: "SUBDOMAIN_TAKEN",
-        });
-      }
-    } else {
-      subdomain = await generateUniqueSubdomain(name);
-    }
-
-    const brandingFields = {};
-    for (const [path, value] of Object.entries(brandingSet)) {
-      const [, field, subField] = path.split(".");
-      if (subField) {
-        brandingFields[field] = brandingFields[field] || {};
-        brandingFields[field][subField] = value;
-      } else {
-        brandingFields[field] = value;
-      }
-    }
 
     // Create tenant
     const tenant = await Tenant.create({
@@ -336,8 +279,6 @@ exports.registerTenant = async (req, res, next) => {
       tenantPhoneCountryCode,
       address,
       industry,
-      subdomain,
-      branding: brandingFields,
       termsAccepted: hasAcceptedTerms,
       termsVersion: hasAcceptedTerms
         ? termsVersion
@@ -367,19 +308,6 @@ exports.registerTenant = async (req, res, next) => {
       role: "owner",
       roles: ["owner"],
     });
-
-    let tenantDomainProvisioning = { status: "not_configured" };
-    try {
-      tenantDomainProvisioning = await updateNetlifyTenantAliases({
-        addSubdomains: [subdomain],
-      });
-    } catch (err) {
-      tenantDomainProvisioning = { status: "failed" };
-      console.error(
-        `Netlify domain alias registration failed for tenant ${tenant._id}:`,
-        err && err.message ? err.message : err,
-      );
-    }
 
     // Best-effort starting guess only; stays unconfirmed until an admin saves it.
     const signupTimezone = String(facilityTimezone || "").trim();
@@ -444,13 +372,6 @@ exports.registerTenant = async (req, res, next) => {
       message: "Tenant and owner created successfully",
       tenant,
       tenantBranding: getPublicBranding(tenant),
-      tenantDomainProvisioning: {
-        status: tenantDomainProvisioning.status,
-        hostname: buildTenantHostname(
-          subdomain,
-          process.env.TENANT_ROOT_DOMAIN,
-        ),
-      },
       user: getUserResponse(adminUser),
     });
   } catch (err) {
@@ -805,9 +726,6 @@ exports.loginStaff = async (req, res, next) => {
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ message: "Invalid credentials" });
 
-    if (await isOutsideRequestTenant(req, user)) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
 
     const tenant = await Tenant.findById(user.tenantId)
       .select(BRANDING_SELECT)
@@ -889,7 +807,7 @@ exports.forgotPassword = async (req, res, next) => {
     if (!email) return res.status(400).json({ message: "Email is required" });
 
     const user = await User.findOne({ email });
-    if (!user || (await isOutsideRequestTenant(req, user))) {
+    if (!user) {
       return res
         .status(200)
         .json({ message: "If the email exists, a reset link was sent." });
@@ -905,7 +823,7 @@ exports.forgotPassword = async (req, res, next) => {
     user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
     await user.save({ validateBeforeSave: false });
 
-    const resetUrl = await buildResetUrl(req, resetToken, user.tenantId);
+    const resetUrl = await buildResetUrl(req, resetToken);
     const subject = "Password reset request";
     const html = `
       <p>Hi ${user.name || "there"},</p>

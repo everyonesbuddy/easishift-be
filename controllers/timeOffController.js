@@ -183,9 +183,10 @@ exports.reviewTimeOff = async (req, res, next) => {
           ? updated.staffId._id
           : updated.staffId;
 
-      const staff = await User.findById(updatedStaffId).select(
-        "name email userPhone userPhoneCountryCode",
-      );
+      const staff = await User.findOne({
+        _id: updatedStaffId,
+        tenantId: req.tenantId,
+      }).select("name email userPhone userPhoneCountryCode");
       const staffPreference = staff
         ? await Preferences.findOne({
             tenantId: req.tenantId,

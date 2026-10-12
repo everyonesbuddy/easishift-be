@@ -1,5 +1,6 @@
 // controllers/timeOffController.js
 const TimeOff = require("../models/timeOffModel");
+const { DateTime } = require("luxon");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
 const { sendToStaff } = require("../utils/notify");
@@ -29,18 +30,40 @@ const isSmsNotificationEnabled = (preferences) =>
 // Create request (staff)
 exports.requestTimeOff = async (req, res, next) => {
   try {
-    const { startTime, endTime, reason } = req.body;
+    const { reason } = req.body;
+    let { startTime, endTime } = req.body;
+
+    // Whole days: { startDate: "2026-10-20", endDate: "2026-10-21" } means
+    // from the start of the first day to the end of the last, facility time.
+    const { startDate, endDate } = req.body;
+    if (startDate || endDate) {
+      const zone = await getFacilityTimezone(req.tenantId);
+      const first = DateTime.fromISO(String(startDate || endDate), { zone });
+      const last = DateTime.fromISO(String(endDate || startDate), { zone });
+      if (!first.isValid || !last.isValid || last < first) {
+        return res
+          .status(400)
+          .json({ message: "startDate and endDate must be YYYY-MM-DD, in order" });
+      }
+      startTime = first.startOf("day").toUTC().toJSDate();
+      endTime = last.plus({ days: 1 }).startOf("day").toUTC().toJSDate();
+    }
+
     if (!startTime || !endTime)
       return res
         .status(400)
-        .json({ message: "startTime and endTime required" });
+        .json({ message: "startTime and endTime (or startDate/endDate) required" });
+    if (new Date(endTime) <= new Date(startTime))
+      return res
+        .status(400)
+        .json({ message: "endTime must be after startTime" });
 
     const timeOffRequest = await TimeOff.create({
       tenantId: req.tenantId,
       staffId: req.user._id,
       startTime,
       endTime,
-      reason,
+      reason: reason ? String(reason).slice(0, 500) : undefined,
     });
 
     // Notify tenant admins about the new time-off request (best-effort)

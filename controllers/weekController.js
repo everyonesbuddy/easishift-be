@@ -22,15 +22,9 @@ const {
   escapeHtml,
 } = require("../utils/notify");
 
-// Staff links arrive in Stage 6; until then messages carry no link.
-let linkForStaff = async () => null;
-try {
-  // eslint-disable-next-line global-require
-  const staffLinks = require("../utils/staffLinks");
-  linkForStaff = (person) => staffLinks.getStaffLinkUrl(person);
-} catch (err) {
-  if (err.code !== "MODULE_NOT_FOUND") throw err;
-}
+const { getStaffLinkUrl } = require("../utils/staffLinks");
+
+const linkForStaff = (person) => getStaffLinkUrl(person);
 const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
 const {
   dateKeyToCoverageDate,

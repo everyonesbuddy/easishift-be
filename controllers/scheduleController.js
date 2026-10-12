@@ -1,5 +1,7 @@
 // controllers/scheduleController.js
 const Schedule = require("../models/scheduleModel");
+const { buildE164Number } = require("../utils/phone");
+const { findSchedulers } = require("../utils/schedulers");
 const Coverage = require("../models/coverageModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
@@ -807,23 +809,6 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
   return "lower overall ranking score";
 };
 
-const buildE164Number = (countryCode, phone) => {
-  if (!phone) return null;
-
-  const rawPhone = String(phone).trim();
-  if (!rawPhone) return null;
-  if (rawPhone.startsWith("+")) return rawPhone;
-
-  if (!countryCode) return null;
-  const normalizedCountryCode = String(countryCode).trim();
-  if (!normalizedCountryCode) return null;
-
-  const prefix = normalizedCountryCode.startsWith("+")
-    ? normalizedCountryCode
-    : `+${normalizedCountryCode}`;
-
-  return `${prefix}${rawPhone}`;
-};
 
 const isEmailNotificationEnabled = (preferences) =>
   preferences?.emailNotificationsEnabled !== false;
@@ -909,19 +894,8 @@ const notifyUsersBestEffort = async ({
   }
 };
 
-const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
-  const excluded = excludeUserIds.map((id) => id.toString());
-  return User.find({
-    tenantId,
-    $or: [
-      { roles: "admin" },
-      { role: "admin" },
-      { roles: "owner" },
-      { role: "owner" },
-    ],
-    _id: { $nin: excluded },
-  });
-};
+const getTenantAdmins = (tenantId, excludeUserIds = []) =>
+  findSchedulers(tenantId, excludeUserIds);
 
 const toObjectId = (value) =>
   mongoose.isValidObjectId(value) ? new mongoose.Types.ObjectId(value) : null;
@@ -1457,7 +1431,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       email: { sent: 0, failed: 0 },
       sms: { sent: 0, failed: 0 },
     };
-    const tenantUsers = await User.find({ tenantId }).select(
+    const tenantUsers = await User.find({ tenantId, loginEnabled: false, status: "active" }).select(
       "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
     );
 
@@ -2282,7 +2256,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
           startTime: { $lte: targetEnd },
           endTime: { $gte: fairnessWindowStart },
         }).select("staffId startTime endTime"),
-        User.find({ tenantId }).select(
+        User.find({ tenantId, loginEnabled: false, status: "active" }).select(
           "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
         ),
       ]);
@@ -2749,7 +2723,12 @@ exports.requestShiftSwap = async (req, res, next) => {
 
     const [requester, receiver, facilityPreferences] = await Promise.all([
       User.findOne({ _id: schedule.staffId, tenantId: req.tenantId }),
-      User.findOne({ _id: receiverStaffId, tenantId: req.tenantId }),
+      User.findOne({
+        _id: receiverStaffId,
+        tenantId: req.tenantId,
+        loginEnabled: false,
+        status: "active",
+      }),
       FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
     ]);
 
@@ -3137,6 +3116,8 @@ exports.createSchedule = async (req, res, next) => {
     const staff = await User.findOne({
       _id: staffId,
       tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
     }).select(
       "role roles allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
     );
@@ -3448,6 +3429,8 @@ exports.updateSchedule = async (req, res, next) => {
     const staff = await User.findOne({
       _id: nextStaffId,
       tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
     }).select("role roles allowedAreas allowedShiftTypes certificationTags");
 
     if (!staff) {

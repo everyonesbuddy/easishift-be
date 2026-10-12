@@ -11,16 +11,12 @@ const SCHEDULER_ROLES = ["owner", "admin", "scheduler"];
 const ACCOUNT_ROLES = [...SCHEDULER_ROLES, "viewer"];
 
 const countActiveStaff = (tenantId) =>
-  User.countDocuments({
-    tenantId,
-    status: { $ne: "archived" },
-    roles: { $nin: ACCOUNT_ROLES },
-    role: { $nin: ACCOUNT_ROLES },
-  });
+  User.countDocuments({ tenantId, loginEnabled: false, status: "active" });
 
 const countSchedulers = (tenantId) =>
   User.countDocuments({
     tenantId,
+    loginEnabled: true,
     status: { $ne: "archived" },
     $or: [{ roles: { $in: SCHEDULER_ROLES } }, { role: { $in: SCHEDULER_ROLES } }],
   });
@@ -59,7 +55,7 @@ const assertLimit = async (req, kind, adding = 1) => {
     throw planError(
       402,
       "PLAN_LIMIT_REACHED",
-      `Your ${req.plan.label} plan allows ${limit} ${kind}`,
+      `Your ${req.plan.label} plan allows ${limit} ${limit === 1 ? kind.replace(/s$/, "") : kind}`,
       {
         kind,
         used,

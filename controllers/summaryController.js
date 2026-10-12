@@ -138,7 +138,7 @@ exports.getAdminSummary = async (req, res, next) => {
 
         TimeOff.countDocuments({ tenantId, status: "pending" }),
 
-        User.countDocuments({ tenantId }),
+        User.countDocuments({ tenantId, loginEnabled: false, status: "active" }),
       ]);
 
     // Build a map of assigned schedules per coverage key (role-start-end)

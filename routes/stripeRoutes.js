@@ -7,53 +7,25 @@ const {
   cancelSubscription,
   getPlans,
   changePlan,
+  createPortalSession,
 } = require("../controllers/stripeController");
-
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
 
-// Stripe needs the raw body for webhook signature verification. Keep webhook public.
+// Stripe webhook (signature verified in the controller)
 router.post(
   "/webhook",
   bodyParser.raw({ type: "application/json" }),
   handleWebhook,
 );
 
-// Protected routes: require authentication + tenant context
-// Apply middleware per-route (keeps webhook public)
-router.get(
-  "/plans",
-  auth,
-  tenant,
-  requirePermission("billing.manage"),
-  getPlans,
-);
+const billing = [auth, tenant, requirePermission("billing.manage")];
 
-router.post(
-  "/create-checkout-session",
-  auth,
-  tenant,
-  requirePermission("billing.manage"),
-  createCheckoutSession,
-);
-
-// Switch plans on an existing subscription (admin)
-router.post(
-  "/change-plan",
-  auth,
-  tenant,
-  requirePermission("billing.manage"),
-  changePlan,
-);
-
-// Cancel subscription (admin)
-router.post(
-  "/cancel-subscription",
-  auth,
-  tenant,
-  requirePermission("billing.manage"),
-  cancelSubscription,
-);
+router.get("/plans", auth, tenant, requirePermission("billing.view"), getPlans);
+router.post("/create-checkout-session", ...billing, createCheckoutSession);
+router.post("/change-plan", ...billing, changePlan);
+router.post("/portal", ...billing, createPortalSession);
+router.post("/cancel-subscription", ...billing, cancelSubscription);
 
 module.exports = router;

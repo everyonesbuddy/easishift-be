@@ -1,4 +1,5 @@
 const Tenant = require("../models/tenantModel");
+const { getEffectivePlanKey, getPlan } = require("../config/plans");
 
 module.exports = async (req, res, next) => {
   try {
@@ -9,6 +10,7 @@ module.exports = async (req, res, next) => {
     if (!tenant) return res.status(404).json({ message: "Tenant not found" });
 
     req.tenant = tenant;
+    req.plan = getPlan(getEffectivePlanKey(tenant));
     next();
   } catch (err) {
     next(err);

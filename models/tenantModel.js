@@ -10,10 +10,10 @@ const tenantSchema = new mongoose.Schema(
       trim: true,
     },
 
+    // Contact email for the workspace (the owner's login email lives on User).
     email: {
       type: String,
       required: true,
-      unique: true,
       lowercase: true,
       trim: true,
     },
@@ -37,25 +37,24 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
-     * INDUSTRY
-     * Type of business the tenant operates
+     * FACILITY TYPE
+     * Picked during onboarding; drives the default roles, shifts and template.
      */
-    industry: {
+    facilityType: {
       type: String,
       enum: [
-        "Healthcare",
-        "Senior Living",
-        "Retail",
-        "Hospitality",
-        "Manufacturing",
-        "Education",
-        "Transportation",
-        "Finance",
-        "Police",
-        "Warehouse and Logistics",
-        "Security Service",
-        "Other",
+        "assisted_living",
+        "memory_care",
+        "skilled_nursing",
+        "home_care",
+        "other",
+        null,
       ],
+      default: null,
+    },
+
+    setupCompletedAt: {
+      type: Date,
       default: null,
     },
 
@@ -80,30 +79,26 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
-     * PLAN / LIMITS
-     * Seat = a user with a login (admin/staff).
-     * Default 1 because signup creates an admin user.
+     * PLAN
+     * `plan` is the PAID plan from Stripe ("free" until someone pays). The
+     * plan a workspace actually gets is computed by getEffectivePlanKey() in
+     * config/plans.js from plan + subscriptionStatus + trialEndsAt.
      */
-    seatLimit: {
-      type: Number,
-      default: 1,
-      min: 1,
+    plan: {
+      type: String,
+      enum: ["free", "pro", "facility", "organization"],
+      default: "free",
     },
 
-    // The active plan after payment. Keep null until active.
-    planKey: {
+    billingInterval: {
       type: String,
-      enum: [
-        "starterYearly",
-        "growthYearly",
-        "premiumYearly",
-        "starterMonthly",
-        "growthMonthly",
-        "premiumMonthly",
-        "test",
-        null,
-      ],
+      enum: ["month", "year", null],
       default: null,
+    },
+
+    foundingMember: {
+      type: Boolean,
+      default: false,
     },
 
     subscriptionStatus: {
@@ -142,10 +137,26 @@ const tenantSchema = new mongoose.Schema(
     },
 
     /**
-     * Set the first time this tenant starts a trial. Used to make sure a
-     * tenant only ever gets one free trial, across any plan or resubscribe.
+     * PRO TRIAL (opt-in, no card, once per workspace)
+     * trialUsedAt: when the owner started it. trialEndsAt: when it ends.
      */
     trialUsedAt: {
+      type: Date,
+      default: null,
+    },
+
+    trialEndsAt: {
+      type: Date,
+      default: null,
+    },
+
+    // Set once each so the trial emails are only sent one time.
+    trialReminderSentAt: {
+      type: Date,
+      default: null,
+    },
+
+    trialEndedEmailSentAt: {
       type: Date,
       default: null,
     },

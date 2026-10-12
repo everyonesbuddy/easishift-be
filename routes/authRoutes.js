@@ -39,6 +39,7 @@ const {
   getUserById,
   updateUser,
   deleteUser,
+  getMe,
 } = require("../controllers/authController");
 
 const auth = require("../middleware/authMiddleware");
@@ -67,6 +68,7 @@ router.post(
 
 // Logins
 router.post("/login/staff", loginStaff);
+router.get("/me", auth, tenant, getMe);
 
 // Change passwords
 router.patch("/change-password", auth, changePassword);

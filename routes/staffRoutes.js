@@ -11,6 +11,9 @@ const {
   archiveStaff,
   restoreStaff,
   deleteStaff,
+  getStaffLink,
+  sendStaffLink,
+  rotateStaffLink,
 } = require("../controllers/staffController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -47,5 +50,8 @@ router.patch("/:id", canManage, updateStaff);
 router.post("/:id/archive", canManage, archiveStaff);
 router.post("/:id/restore", canManage, restoreStaff);
 router.delete("/:id", canManage, deleteStaff);
+router.get("/:id/link", canManage, getStaffLink);
+router.post("/:id/send-link", canManage, sendStaffLink);
+router.post("/:id/rotate-link", canManage, rotateStaffLink);
 
 module.exports = router;

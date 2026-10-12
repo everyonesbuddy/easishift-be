@@ -376,7 +376,9 @@ exports.clockIn = async (req, res, next) => {
       mode: config.mode,
       clockInLocation: locationCheck?.snapshot,
       attendanceOutcome: "in_progress",
-      source: ["mobile", "web", "admin"].includes(req.body.source)
+      source: req.authKind === "staff_link"
+        ? "web"
+        : ["mobile", "web", "admin"].includes(req.body.source)
         ? req.body.source
         : "mobile",
       notes: req.body.note || "",
@@ -445,7 +447,9 @@ exports.startBreak = async (req, res, next) => {
         ? req.body.type
         : "rest",
       paid: Boolean(req.body.paid),
-      source: ["mobile", "web", "admin"].includes(req.body.source)
+      source: req.authKind === "staff_link"
+        ? "web"
+        : ["mobile", "web", "admin"].includes(req.body.source)
         ? req.body.source
         : "mobile",
     });

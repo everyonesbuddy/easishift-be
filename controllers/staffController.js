@@ -17,6 +17,14 @@ const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { RESERVED_ROLES } = require("../config/authorization");
 const { buildE164Number } = require("../utils/phone");
 const { assertLimit } = require("../utils/planLimits");
+const {
+  createStaffLink,
+  getStaffLinkUrl,
+  rotateStaffLink,
+  revokeStaffLinks,
+} = require("../utils/staffLinks");
+const { sendToStaff } = require("../utils/notify");
+const { getEffectivePlanKey } = require("../config/plans");
 
 const MAX_BULK_ROWS = 500;
 const EDITABLE_FIELDS = [
@@ -274,6 +282,7 @@ exports.createStaff = async (req, res, next) => {
       loginEnabled: false,
       status: "active",
     });
+    await createStaffLink(staff);
 
     res.status(201).json(toStaffResponse(staff));
   } catch (err) {
@@ -336,6 +345,7 @@ const importRows = async (req, rows) => {
         loginEnabled: false,
         status: "active",
       });
+      await createStaffLink(staff);
       created += 1;
       results.push({ rowNumber, name: value.name, status: "created", staffId: staff._id });
     } catch (err) {
@@ -515,6 +525,7 @@ exports.archiveStaff = async (req, res, next) => {
 
     staff.status = "archived";
     await staff.save({ validateBeforeSave: false });
+    await revokeStaffLinks(staff);
 
     res.json({
       ...toStaffResponse(staff),
@@ -547,6 +558,7 @@ exports.restoreStaff = async (req, res, next) => {
     await assertLimit(req, "staff");
     staff.status = "active";
     await staff.save({ validateBeforeSave: false });
+    await rotateStaffLink(staff);
     res.json(toStaffResponse(staff));
   } catch (err) {
     next(err);
@@ -576,6 +588,74 @@ exports.deleteStaff = async (req, res, next) => {
 
     await User.deleteOne({ _id: staff._id, tenantId: req.tenantId });
     res.json({ message: "Staff deleted" });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const sendLinkMessage = async (req, staff, url, rotated) => {
+  const facility = req.tenant.name;
+  const text = rotated
+    ? `${facility}: here's your new WiserShifts link (the old one no longer works): ${url}`
+    : `${facility}: here's your WiserShifts link for your schedule, swaps and time off: ${url}`;
+  return sendToStaff({
+    tenant: req.tenant,
+    planKey: getEffectivePlanKey(req.tenant),
+    staff,
+    kind: "link",
+    sms: text,
+    emailSubject: `Your ${facility} schedule link`,
+    emailHtml: `
+      <p>Hi ${staff.name},</p>
+      <p>Use this link to see your schedule, swap or pick up shifts, and request time off. No app or password needed.</p>
+      <p><a href="${url}">${url}</a></p>
+      ${rotated ? "<p>Your old link no longer works.</p>" : ""}`,
+  });
+};
+
+/**
+ * GET /api/v1/staff/:id/link — the person's link (to copy and share).
+ */
+exports.getStaffLink = async (req, res, next) => {
+  try {
+    const staff = await findStaff(req);
+    if (!staff || staff.status !== "active")
+      return res.status(404).json({ message: "Staff not found" });
+    res.json({ url: await getStaffLinkUrl(staff) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/v1/staff/:id/send-link — text/email their link now.
+ */
+exports.sendStaffLink = async (req, res, next) => {
+  try {
+    const staff = await findStaff(req);
+    if (!staff || staff.status !== "active")
+      return res.status(404).json({ message: "Staff not found" });
+    const url = await getStaffLinkUrl(staff);
+    const result = await sendLinkMessage(req, staff.toObject(), url, false);
+    res.json({ url, ...result });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/v1/staff/:id/rotate-link — old link stops working; new one sent.
+ */
+exports.rotateStaffLink = async (req, res, next) => {
+  try {
+    const staff = await findStaff(req);
+    if (!staff || staff.status !== "active")
+      return res.status(404).json({ message: "Staff not found" });
+    const url = await rotateStaffLink(staff);
+    const result = req.body?.send === false
+      ? { delivered: false, reason: "not_sent" }
+      : await sendLinkMessage(req, staff.toObject(), url, true);
+    res.json({ url, ...result });
   } catch (err) {
     next(err);
   }

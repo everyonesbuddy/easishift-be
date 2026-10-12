@@ -4,10 +4,12 @@ const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
 const {
   sendToStaff,
+  notifySchedulers,
   shortShift,
   firstName,
   escapeHtml,
 } = require("../utils/notify");
+const { getStaffLinkUrl } = require("../utils/staffLinks");
 const {
   stateForNewSchedule,
   getWeekSettings,
@@ -729,7 +731,8 @@ const notifyShiftChange = async ({ req, staffId, kind, schedule }) => {
       shift_changed: `${facility}: your shift changed. Now ${when} (${schedule.role}).`,
       shift_removed: `${facility}: your ${when} shift was removed from the schedule.`,
     };
-    const text = lines[kind] || lines.shift_changed;
+    const link = await getStaffLinkUrl(staff);
+    const text = `${lines[kind] || lines.shift_changed} ${link}`;
     return sendToStaff({
       tenant: req.tenant,
       planKey: getEffectivePlanKey(req.tenant),
@@ -3490,10 +3493,40 @@ exports.updateOwnScheduleStatus = async (req, res, next) => {
       });
     }
 
+    if (new Date(schedule.endTime) <= new Date()) {
+      return res
+        .status(400)
+        .json({ message: "This shift has already ended" });
+    }
+
+    const callingOut = status === "call_out" && schedule.status !== "call_out";
     schedule.status = status;
+    if (callingOut) {
+      schedule.meta = schedule.meta || {};
+      schedule.meta.calledOutAt = new Date();
+      schedule.meta.callOutReason = String(req.body?.reason || "")
+        .trim()
+        .slice(0, 300);
+    }
     await schedule.save();
 
-    await schedule.populate("staffId", "-passwordHash");
+    // Tell the schedulers right away so they can fill it.
+    if (callingOut) {
+      const timezone = await getFacilityTimezone(req.tenantId);
+      const when = shortShift(schedule.startTime, schedule.endTime, timezone);
+      const appUrl = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+      await notifySchedulers({
+        tenantId: req.tenantId,
+        subject: `${req.user.name} called out: ${when}`,
+        html: (person) => `
+          <p>Hi ${escapeHtml(firstName(person.name))},</p>
+          <p><strong>${escapeHtml(req.user.name)}</strong> can't make their ${escapeHtml(schedule.role)} shift on ${escapeHtml(when)}.</p>
+          ${schedule.meta.callOutReason ? `<p>Reason: ${escapeHtml(schedule.meta.callOutReason)}</p>` : ""}
+          ${appUrl ? `<p><a href="${appUrl}/callout/${schedule._id}">Find coverage</a></p>` : ""}`,
+      });
+    }
+
+    await schedule.populate("staffId", "name roles");
     res.json(schedule);
   } catch (err) {
     next(err);

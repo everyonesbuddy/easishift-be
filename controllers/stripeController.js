@@ -97,8 +97,13 @@ const planFromPriceId = (priceId) => {
 };
 
 /** The card trial at checkout is for workspaces that never trialed. */
+// Card trial only for first-timers: not after a trial, a past
+// subscription, or while already on a paid plan (e.g. set up by hand).
 const checkoutTrialDays = (tenant, interval) =>
-  tenant.trialUsedAt || tenant.cardTrialUsedAt || tenant.stripeSubscriptionId
+  tenant.trialUsedAt ||
+  tenant.cardTrialUsedAt ||
+  tenant.stripeSubscriptionId ||
+  (normalizePlanKey(tenant.plan) !== "free" && PAID_STATUSES.includes(tenant.subscriptionStatus))
     ? 0
     : CHECKOUT_TRIAL_DAYS[interval] || 0;
 
@@ -126,6 +131,53 @@ const findLimitBreach = async (tenantId, planKey) => {
   return null;
 };
 
+// "Growth allows 5 schedulers; you have 9. Make 4 of them viewers, or
+// choose Premium." — what to do about it, not just the numbers.
+const breachMessage = (planKey, breach, usage) => {
+  const plan = PLANS[planKey];
+  const extra = breach.used - breach.limit;
+  const fix =
+    breach.kind === "schedulers"
+      ? `make ${extra} of them viewer${extra === 1 ? "" : "s"} under Schedulers & viewers`
+      : `archive ${extra} under Staff`;
+  const bigger = PAID_PLAN_KEYS.find(
+    (key) => PLANS[key].staff >= usage.staff && PLANS[key].schedulers >= usage.schedulers,
+  );
+  return `${plan.label} allows ${breach.limit} ${breach.kind}; you have ${breach.used}. To switch, ${fix}${
+    bigger && bigger !== planKey ? `, or choose ${PLANS[bigger].label}` : ""
+  }.`;
+};
+
+const usageFor = async (tenantId) => {
+  const [staff, schedulers] = await Promise.all([
+    countActiveStaff(tenantId),
+    countSchedulers(tenantId),
+  ]);
+  return { staff, schedulers };
+};
+
+// Switch an existing Stripe subscription to another plan, in place.
+const switchSubscriptionPlan = async (tenant, plan, interval, subscription) => {
+  const currentItem = subscription.items?.data?.[0];
+  if (!currentItem) {
+    const err = new Error("Subscription has no billable item to update");
+    err.statusCode = 409;
+    throw err;
+  }
+  const price = await ensurePriceId(plan, interval);
+  const updated = await stripe.subscriptions.update(subscription.id, {
+    items: [{ id: currentItem.id, price }],
+    proration_behavior: "create_prorations",
+    metadata: { tenantId: String(tenant._id), plan, interval },
+  });
+  tenant.plan = plan;
+  tenant.billingInterval = interval;
+  tenant.stripePriceId = price;
+  tenant.subscriptionStatus = updated.status;
+  await tenant.save();
+  return updated;
+};
+
 // Newer Stripe API versions moved invoice.subscription under `parent`.
 const getInvoiceSubscriptionId = (invoice) =>
   invoice.subscription ||
@@ -151,6 +203,9 @@ exports.getPlans = async (req, res, next) => {
       effectivePlan,
       billingInterval: tenant.billingInterval,
       subscriptionStatus: tenant.subscriptionStatus,
+      // A paid plan without a Stripe subscription was set up by hand
+      // (comped or invoiced); switching goes through checkout.
+      hasSubscription: Boolean(tenant.stripeSubscriptionId),
       trialAvailable: trialAvailable(tenant),
       trialPlan: TRIAL_PLAN,
       trialDays: TRIAL_DAYS,
@@ -165,12 +220,19 @@ exports.getPlans = async (req, res, next) => {
         overLimit:
           staff > effective.staff || schedulers > effective.schedulers,
       },
-      plans: Object.keys(PLANS).map((key) => ({
-        ...describePlan(key),
-        prices: PLAN_PRICES[key] || null,
-        purchasable: PAID_PLAN_KEYS.includes(key),
-        contactSales: key === "enterprise",
-      })),
+      plans: Object.keys(PLANS).map((key) => {
+        const limits = PLANS[key];
+        const overStaff = Math.max(0, staff - limits.staff);
+        const overSchedulers = Math.max(0, schedulers - limits.schedulers);
+        return {
+          ...describePlan(key),
+          prices: PLAN_PRICES[key] || null,
+          purchasable: PAID_PLAN_KEYS.includes(key),
+          contactSales: key === "enterprise",
+          fitsUsage: !overStaff && !overSchedulers,
+          over: { staff: overStaff, schedulers: overSchedulers },
+        };
+      }),
     });
   } catch (err) {
     next(err);
@@ -225,26 +287,37 @@ exports.createCheckoutSession = async (req, res, next) => {
     const choiceError = validatePlanChoice(plan, interval);
     if (choiceError) return res.status(400).json({ message: choiceError });
 
-    if (
-      tenant.stripeSubscriptionId &&
-      PAID_STATUSES.includes(tenant.subscriptionStatus)
-    ) {
-      return res.status(409).json({
-        message:
-          "This workspace already has a subscription. Use change-plan to switch plans.",
-        errorCode: "SUBSCRIPTION_ALREADY_ACTIVE",
-        subscriptionStatus: tenant.subscriptionStatus,
-        plan: tenant.plan,
-      });
-    }
-
+    // A plan smaller than the team is allowed: after paying they choose
+    // who to keep (same screen as after a trial). Nothing is deleted.
     const breach = await findLimitBreach(tenantId, plan);
-    if (breach) {
-      return res.status(409).json({
-        message: `The ${PLANS[plan].label} plan allows ${breach.limit} ${breach.kind}; you have ${breach.used}.`,
-        errorCode: "PLAN_BELOW_USAGE",
-        ...breach,
-      });
+
+    // Already subscribed? Check with Stripe (our copy can be stale, e.g.
+    // after a cancellation we didn't hear about, or older data).
+    if (tenant.stripeSubscriptionId) {
+      let live = null;
+      try {
+        live = await stripe.subscriptions.retrieve(tenant.stripeSubscriptionId);
+      } catch (err) {
+        if (err?.statusCode !== 404 && err?.code !== "resource_missing") throw err;
+      }
+      if (live && PAID_STATUSES.includes(live.status)) {
+        // Switch the existing subscription instead of starting a second one.
+        if (normalizePlanKey(tenant.plan) === plan && tenant.billingInterval === interval && tenant.subscriptionStatus === live.status) {
+          return res.status(400).json({ message: "You're already on this plan" });
+        }
+        const updated = await switchSubscriptionPlan(tenant, plan, interval, live);
+        return res.status(200).json({
+          changed: true,
+          plan,
+          interval,
+          subscriptionStatus: updated.status,
+          needsFit: Boolean(breach),
+        });
+      }
+      // It ended in Stripe: forget it and start a fresh checkout.
+      tenant.stripeSubscriptionId = null;
+      tenant.subscriptionStatus = live?.status || "canceled";
+      await tenant.save();
     }
 
     const trialDays = checkoutTrialDays(tenant, interval);
@@ -275,7 +348,7 @@ exports.createCheckoutSession = async (req, res, next) => {
       cancel_url: `${frontendUrl}/billing/cancel`,
     });
 
-    res.status(200).json({ url: session.url, id: session.id, trialDays });
+    res.status(200).json({ url: session.url, id: session.id, trialDays, needsFit: Boolean(breach) });
   } catch (err) {
     next(err);
   }
@@ -310,47 +383,20 @@ exports.changePlan = async (req, res, next) => {
         .json({ message: "You're already on this plan" });
     }
 
+    // Smaller than the team is fine: they choose who to keep afterwards.
     const breach = await findLimitBreach(tenant._id, plan);
-    if (breach) {
-      return res.status(409).json({
-        message: `The ${PLANS[plan].label} plan allows ${breach.limit} ${breach.kind}; you have ${breach.used}. Archive some first or pick a bigger plan.`,
-        errorCode: "PLAN_BELOW_USAGE",
-        ...breach,
-      });
-    }
 
     const subscription = await stripe.subscriptions.retrieve(
       tenant.stripeSubscriptionId,
     );
-    const currentItem = subscription.items?.data?.[0];
-    if (!currentItem) {
-      return res.status(409).json({
-        message: "Subscription has no billable item to update",
-        errorCode: "SUBSCRIPTION_ITEM_MISSING",
-      });
-    }
-
-    const price = await ensurePriceId(plan, interval);
-    const updated = await stripe.subscriptions.update(
-      tenant.stripeSubscriptionId,
-      {
-        items: [{ id: currentItem.id, price }],
-        proration_behavior: "create_prorations",
-        metadata: { tenantId: String(tenant._id), plan, interval },
-      },
-    );
-
-    tenant.plan = plan;
-    tenant.billingInterval = interval;
-    tenant.stripePriceId = price;
-    tenant.subscriptionStatus = updated.status;
-    await tenant.save();
+    const updated = await switchSubscriptionPlan(tenant, plan, interval, subscription);
 
     res.status(200).json({
       success: true,
       plan,
       interval,
       subscriptionStatus: updated.status,
+      needsFit: Boolean(breach),
     });
   } catch (err) {
     next(err);
@@ -372,7 +418,7 @@ exports.createPortalSession = async (req, res, next) => {
     }
     const session = await stripe.billingPortal.sessions.create({
       customer: tenant.stripeCustomerId,
-      return_url: `${frontendUrl}/settings/billing`,
+      return_url: `${frontendUrl}/billing`,
     });
     res.status(200).json({ url: session.url });
   } catch (err) {
@@ -539,4 +585,5 @@ exports.handleWebhook = async (req, res) => {
 exports._planFromPriceId = planFromPriceId;
 exports._priceSpecFor = priceSpecFor;
 exports._buildSubscriptionUpdate = buildSubscriptionUpdate;
+exports._breachMessage = breachMessage;
 exports._checkoutTrialDays = checkoutTrialDays;

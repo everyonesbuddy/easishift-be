@@ -232,6 +232,8 @@ const findScheduleForClockAction = async ({
     tenantId,
     staffId,
     status: { $in: ["scheduled", "in_progress"] },
+    // Not-yet-sent (draft) shifts can't be clocked into.
+    state: { $ne: "draft" },
     startTime: { $lte: earlyBoundary },
     endTime: { $gte: lateBoundary },
   };

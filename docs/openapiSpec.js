@@ -16,6 +16,7 @@ const ROUTES = [
   ["post", "/auth/signup/tenant", "Auth", "Old signup path (same as /auth/signup; also accepts the old body)", { auth: "none" }],
   ["post", "/auth/login/staff", "Auth", "Old login path (same as /auth/login)", { auth: "none" }],
   ["get", "/auth/me", "Auth", "Current user, workspace, effective plan, limits and usage"],
+  ["patch", "/auth/me", "Auth", "Update my name, phone or profile picture", { body: { name: "Maria Okafor", profilePicture: "data:image/png;base64,..." } }],
   ["patch", "/auth/change-password", "Auth", "Change password", { body: { currentPassword: "...", newPassword: "..." } }],
   ["post", "/auth/forgot-password", "Auth", "Email a reset link", { auth: "none", body: { email: "maria@example.com" } }],
   ["post", "/auth/reset-password", "Auth", "Set a password from a reset or invite link", { auth: "none", body: { token: "...", newPassword: "..." } }],

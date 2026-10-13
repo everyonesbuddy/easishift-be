@@ -515,3 +515,47 @@ exports.getMe = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * UPDATE MY PROFILE
+ * -----------------
+ * Route: PATCH /api/v1/auth/me
+ * Body: { name?, userPhone?, userPhoneCountryCode?, profilePicture? }
+ * (Email and role changes go through the owner under /members.)
+ */
+const PROFILE_PICTURE_MAX_CHARS = 3 * 1024 * 1024; // ~2 MB image as base64
+
+exports.updateMe = async (req, res, next) => {
+  try {
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const { name, userPhone, userPhoneCountryCode, profilePicture } =
+      req.body || {};
+    if (name !== undefined) {
+      const trimmed = String(name || "").trim();
+      if (!trimmed) return res.status(400).json({ message: "Name is required" });
+      user.name = trimmed.slice(0, 120);
+    }
+    if (userPhone !== undefined) user.userPhone = userPhone || null;
+    if (userPhoneCountryCode !== undefined)
+      user.userPhoneCountryCode = userPhoneCountryCode || null;
+    if (profilePicture !== undefined) {
+      if (
+        profilePicture &&
+        (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(profilePicture) ||
+          profilePicture.length > PROFILE_PICTURE_MAX_CHARS)
+      ) {
+        return res
+          .status(400)
+          .json({ message: "Profile picture must be an image under 2 MB" });
+      }
+      user.profilePicture = profilePicture || null;
+    }
+
+    await user.save();
+    res.status(200).json({ user: getUserResponse(user) });
+  } catch (err) {
+    next(err);
+  }
+};

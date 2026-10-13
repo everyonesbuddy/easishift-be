@@ -6,8 +6,6 @@
  */
 const StaffingTemplate = require("../models/staffingTemplateModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
-const Coverage = require("../models/coverageModel");
-const User = require("../models/userModel");
 const {
   buildShiftSlotLookup,
   normalizeShiftType,
@@ -21,41 +19,10 @@ const normalizeKey = (value) =>
     .trim()
     .toLowerCase();
 
-// Every unit area / certification this facility already uses anywhere:
-// preferences, staff tags and existing coverage. These are the choices
-// offered in Weekly Needs, so a rule matches the staff tagged the same way.
-const collectOptions = async (tenantId, prefs) => {
-  const [staffAreas, staffCerts, coverageAreas, coverageCerts] = await Promise.all([
-    User.distinct("allowedAreas", { tenantId }),
-    User.distinct("certificationTags", { tenantId }),
-    Coverage.distinct("unitArea", { tenantId }),
-    Coverage.distinct("requiredCertificationTags", { tenantId }),
-  ]);
-  const merge = (...lists) => {
-    const byKey = new Map();
-    for (const value of lists.flat()) {
-      const key = tagKey(value);
-      if (key && !byKey.has(key)) byKey.set(key, key);
-    }
-    return [...byKey.values()].sort();
-  };
-  return {
-    unitAreas: merge(prefs?.unitAreas || [], staffAreas, coverageAreas),
-    certificationTags: merge(prefs?.certificationTags || [], staffCerts, coverageCerts),
-  };
-};
-exports._collectOptions = collectOptions;
-
 exports.getTemplate = async (req, res, next) => {
   try {
-    const [template, prefs] = await Promise.all([
-      StaffingTemplate.findOne({ tenantId: req.tenantId }).lean(),
-      FacilityPreferences.findOne({ tenantId: req.tenantId })
-        .select("unitAreas certificationTags")
-        .lean(),
-    ]);
-    const options = await collectOptions(req.tenantId, prefs);
-    res.json({ ...(template || { tenantId: req.tenantId, rules: [] }), options });
+    const template = await StaffingTemplate.findOne({ tenantId: req.tenantId });
+    res.json(template || { tenantId: req.tenantId, rules: [] });
   } catch (err) {
     next(err);
   }
@@ -73,22 +40,27 @@ exports.saveTemplate = async (req, res, next) => {
         .json({ message: "applyTo must be unpublished or all_future" });
     }
 
-    const prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId })
-      .select("roleFamilies shiftTypeDefinitions unitAreas certificationTags")
-      .lean();
+    const [prefs, current] = await Promise.all([
+      FacilityPreferences.findOne({ tenantId: req.tenantId })
+        .select("roleFamilies shiftTypeDefinitions unitAreas certificationTags")
+        .lean(),
+      StaffingTemplate.findOne({ tenantId: req.tenantId }).select("rules").lean(),
+    ]);
     const slotLookup = buildShiftSlotLookup(prefs);
     const roles = new Set((prefs?.roleFamilies || []).map(normalizeKey));
-    // New areas and certifications are added to facility preferences on
-    // save, so staff can be tagged with the same values and matched.
-    const areaByKey = new Map(
-      (prefs?.unitAreas || []).map((area) => [tagKey(area), area]),
-    );
-    const certByKey = new Map(
-      (prefs?.certificationTags || []).map((tag) => [tagKey(tag), tag]),
-    );
+    // Unit areas and certifications come from facility preferences (the
+    // same list staff are tagged from). Values already on the saved
+    // template stay valid so older data can still be saved.
+    const savedRules = current?.rules || [];
+    const areaKeys = new Set([
+      ...(prefs?.unitAreas || []).map(tagKey),
+      ...savedRules.map((r) => tagKey(r.unitArea)).filter(Boolean),
+    ]);
+    const certKeys = new Set([
+      ...(prefs?.certificationTags || []).map(tagKey),
+      ...savedRules.flatMap((r) => (r.requiredCertificationTags || []).map(tagKey)),
+    ]);
 
-    const newAreas = [];
-    const newCerts = [];
     const seen = new Set();
     const cleaned = [];
     for (const [index, input] of rules.entries()) {
@@ -117,31 +89,21 @@ exports.saveTemplate = async (req, res, next) => {
           message: `Rule ${index + 1}: countsByWeekday must be 7 whole numbers (Sunday first) between 0 and 50`,
         });
       }
-      if (areaKey && !areaByKey.has(areaKey)) {
-        if (areaKey.length > 60) {
-          return res.status(400).json({
-            message: `Rule ${index + 1}: unit area '${input.unitArea}' is too long`,
-          });
-        }
-        areaByKey.set(areaKey, areaKey);
-        newAreas.push(areaKey);
+      if (areaKey && !areaKeys.has(areaKey)) {
+        return res.status(400).json({
+          message: `Rule ${index + 1}: unknown unit area '${input.unitArea}'. Add it in Facility Preferences first.`,
+        });
       }
       // Stored as lowercase_with_underscores; matching ignores spaces vs underscores.
       const unitArea = areaKey || null;
       const certInputs = Array.isArray(input?.requiredCertificationTags)
         ? input.requiredCertificationTags.map(tagKey).filter(Boolean)
         : [];
-      const longCert = certInputs.find((tag) => tag.length > 60);
-      if (longCert) {
+      const unknownCert = certInputs.find((tag) => !certKeys.has(tag));
+      if (unknownCert) {
         return res.status(400).json({
-          message: `Rule ${index + 1}: certification '${longCert}' is too long`,
+          message: `Rule ${index + 1}: unknown certification '${unknownCert}'. Add it in Facility Preferences first.`,
         });
-      }
-      for (const tag of certInputs) {
-        if (!certByKey.has(tag)) {
-          certByKey.set(tag, tag);
-          newCerts.push(tag);
-        }
       }
       const requiredCertificationTags = Array.from(new Set(certInputs));
 
@@ -164,18 +126,6 @@ exports.saveTemplate = async (req, res, next) => {
       });
     }
 
-    if (newAreas.length || newCerts.length) {
-      await FacilityPreferences.updateOne(
-        { tenantId: req.tenantId },
-        {
-          $addToSet: {
-            unitAreas: { $each: newAreas },
-            certificationTags: { $each: newCerts },
-          },
-        },
-      );
-    }
-
     const template = await StaffingTemplate.findOneAndUpdate(
       { tenantId: req.tenantId },
       { $set: { rules: cleaned, updatedBy: req.user._id } },
@@ -187,11 +137,7 @@ exports.saveTemplate = async (req, res, next) => {
       applyTo,
     });
 
-    res.json({
-      template,
-      weeksUpdated,
-      addedToPreferences: { unitAreas: newAreas, certificationTags: newCerts },
-    });
+    res.json({ template, weeksUpdated });
   } catch (err) {
     next(err);
   }

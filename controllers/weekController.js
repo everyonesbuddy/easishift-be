@@ -463,24 +463,18 @@ exports.addSlot = async (req, res, next) => {
     if (!(prefs?.roleFamilies || []).map(norm).includes(role)) {
       return res.status(400).json({ message: `Unknown role '${body.role}'` });
     }
-    // Areas and certifications are stored as lowercase_with_underscores;
-    // new ones are added to facility preferences so staff can be tagged.
+    // Areas and certifications must exist in facility preferences.
     const unitArea = body.unitArea ? tagKey(body.unitArea) : null;
+    if (unitArea && !(prefs?.unitAreas || []).map(tagKey).includes(unitArea)) {
+      return res.status(400).json({ message: `Unknown unit area '${body.unitArea}'. Add it in Facility Preferences first.` });
+    }
     const certs = Array.isArray(body.requiredCertificationTags)
       ? Array.from(new Set(body.requiredCertificationTags.map(tagKey).filter(Boolean)))
       : [];
-    if ([unitArea, ...certs].some((v) => v && v.length > 60)) {
-      return res.status(400).json({ message: "Unit area or certification is too long" });
-    }
-    const knownAreas = (prefs?.unitAreas || []).map(tagKey);
     const knownCerts = (prefs?.certificationTags || []).map(tagKey);
-    const newAreas = unitArea && !knownAreas.includes(unitArea) ? [unitArea] : [];
-    const newCerts = certs.filter((c) => !knownCerts.includes(c));
-    if (newAreas.length || newCerts.length) {
-      await FacilityPreferences.updateOne(
-        { tenantId: req.tenantId },
-        { $addToSet: { unitAreas: { $each: newAreas }, certificationTags: { $each: newCerts } } },
-      );
+    const unknownCert = certs.find((c) => !knownCerts.includes(c));
+    if (unknownCert) {
+      return res.status(400).json({ message: `Unknown certification '${unknownCert}'. Add it in Facility Preferences first.` });
     }
 
     await ensureWeek({ tenantId: req.tenantId, weekStart, settings });

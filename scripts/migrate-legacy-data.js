@@ -26,7 +26,9 @@
  *   5. Old shifts are marked published, and every week that has shifts is
  *      marked published (so nobody gets re-texted and template needs aren't
  *      added on top of existing schedules).
- *   6. The old global unique index on users.email is dropped (an account and
+ *   6. Unit areas and certifications used on staff, shifts or coverage are
+ *      added to facility preferences (Weekly Needs only offers those).
+ *   7. The old global unique index on users.email is dropped (an account and
  *      a staff contact may share an email later) and the new indexes built.
  *
  * Usage:
@@ -41,6 +43,8 @@ const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Schedule = require("../models/scheduleModel");
+const Coverage = require("../models/coverageModel");
+const { tagKey } = require("../utils/tagKey");
 const ScheduleWeek = require("../models/scheduleWeekModel");
 const TimeOff = require("../models/timeOffModel");
 const TimeEntry = require("../models/timeEntryModel");
@@ -73,7 +77,7 @@ const LEGACY_PLAN_KEYS = {
 };
 
 const log = (...args) => console.log(...args);
-const summary = { accounts: 0, staff: 0, jobRolesDropped: 0, duplicatesMerged: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
+const summary = { tagsAdded: 0, accounts: 0, staff: 0, jobRolesDropped: 0, duplicatesMerged: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
 
 const ACCOUNT_FINAL = new Set(["owner", "scheduler", "viewer"]);
 
@@ -237,6 +241,32 @@ async function migrateTenant(tenant) {
       }
     }
   }
+  // Unit areas and certifications used on staff, shifts or coverage become
+  // facility preferences, so they're choices in Weekly Needs and on staff.
+  if (prefs) {
+    const [staffAreas, staffCerts, covAreas, covCerts, schedAreas] = await Promise.all([
+      User.distinct("allowedAreas", { tenantId }),
+      User.distinct("certificationTags", { tenantId }),
+      Coverage.distinct("unitArea", { tenantId }),
+      Coverage.distinct("requiredCertificationTags", { tenantId }),
+      Schedule.distinct("unitArea", { tenantId }),
+    ]);
+    const addMissing = (field, used) => {
+      const have = new Set((prefs[field] || []).map(tagKey));
+      const missing = [...new Set(used.map(tagKey).filter(Boolean))].filter((v) => !have.has(v));
+      if (missing.length) {
+        log(`  ${field === "unitAreas" ? "areas   " : "certs   "} add to facility preferences: ${missing.join(", ")}`);
+        summary.tagsAdded += missing.length;
+        prefs[field] = [...(prefs[field] || []), ...missing];
+      }
+      return missing.length;
+    };
+    const added =
+      addMissing("unitAreas", [...staffAreas, ...covAreas, ...schedAreas]) +
+      addMissing("certificationTags", [...staffCerts, ...covCerts]);
+    if (added && APPLY) await prefs.save({ validateBeforeSave: false });
+  }
+
   const tenantSet = {};
   if (!tenant.setupCompletedAt) tenantSet.setupCompletedAt = new Date();
   const legacy = LEGACY_PLAN_KEYS[tenant.planKey];

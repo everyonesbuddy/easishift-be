@@ -86,6 +86,15 @@ const facilityPreferencesSchema = new mongoose.Schema(
     },
 
     /**
+     * Staff must enter a 4-digit PIN the first time they open their
+     * personal link on each phone or computer.
+     */
+    staffLinkPinRequired: {
+      type: Boolean,
+      default: false,
+    },
+
+    /**
      * IANA timezone for local facility scheduling definitions.
      * Examples: "America/Chicago", "Europe/London".
      */

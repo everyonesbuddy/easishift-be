@@ -39,6 +39,7 @@ const ROUTES = [
   ["delete", "/staff/{id}", "Staff", "Delete (only if no history)"],
   ["get", "/staff/{id}/link", "Staff", "Their personal link"],
   ["post", "/staff/{id}/send-link", "Staff", "Text/email their link now"],
+  ["post", "/staff/{id}/reset-pin", "Staff", "Forget their link PIN and sign out all their devices"],
   ["post", "/staff/{id}/rotate-link", "Staff", "New link; old one stops working", { body: { send: true } }],
 
   // ── Members (accounts) ────────────────────────────────────────────────────
@@ -134,6 +135,9 @@ const ROUTES = [
 
   // ── Staff link (no login) ─────────────────────────────────────────────────
   ["get", "/s/{token}/me", "Staff link", "Who I am, my facility, what's turned on", { auth: "link" }],
+  ["post", "/s/{token}/pin/setup", "Staff link", "First time (PIN required): choose a 4-digit PIN; returns a device token", { auth: "link", body: { pin: "1234" } }],
+  ["post", "/s/{token}/pin/verify", "Staff link", "New device: enter the PIN; returns a device token (5 tries, then 15-minute lock)", { auth: "link", body: { pin: "1234" } }],
+  ["post", "/s/{token}/pin/sign-out", "Staff link", "Forget this device", { auth: "link" }],
   ["get", "/s/{token}/schedule", "Staff link", "My published shifts", { auth: "link", query: ["weekStart", "weeks", "from", "to"] }],
   ["get", "/s/{token}/open-shifts", "Staff link", "Open shifts I can take", { auth: "link", plan: "starter" }],
   ["post", "/s/{token}/open-shifts/pick-up", "Staff link", "Take an open shift", { auth: "link", plan: "starter", body: { coverageId: "..." } }],

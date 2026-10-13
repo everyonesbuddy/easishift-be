@@ -14,6 +14,7 @@ const {
   getStaffLink,
   sendStaffLink,
   rotateStaffLink,
+  resetLinkPin,
 } = require("../controllers/staffController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -53,5 +54,6 @@ router.delete("/:id", canManage, deleteStaff);
 router.get("/:id/link", canManage, getStaffLink);
 router.post("/:id/send-link", canManage, sendStaffLink);
 router.post("/:id/rotate-link", canManage, rotateStaffLink);
+router.post("/:id/reset-pin", canManage, resetLinkPin);
 
 module.exports = router;

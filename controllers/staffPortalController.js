@@ -64,7 +64,7 @@ exports.getMe = async (req, res, next) => {
 
 /**
  * GET /s/:token/schedule?weekStart=YYYY-MM-DD   (default: this week + next 3)
- *     or ?from=ISO&to=ISO
+ *     or ?from=ISO&to=ISO (past shifts too; up to ~3 months per request)
  * Only my published shifts.
  */
 exports.getMySchedule = async (req, res, next) => {
@@ -86,6 +86,11 @@ exports.getMySchedule = async (req, res, next) => {
     }
     if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
       return res.status(400).json({ message: "Invalid date range" });
+    }
+    // One request covers at most ~3 months (the page loads history in steps).
+    const MAX_RANGE_MS = 92 * 86400000;
+    if (to.getTime() - from.getTime() > MAX_RANGE_MS) {
+      from = new Date(to.getTime() - MAX_RANGE_MS);
     }
 
     const shifts = await Schedule.find({

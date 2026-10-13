@@ -1035,12 +1035,35 @@ const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
 
   // Coverage tied to an in-progress AI draft is still open for pickup until a
   // live Schedule exists for it (see remaining/assignedCount below).
-  const eligibleCoverages = coverages.filter((coverage) =>
-    isStaffCompatibleWithCoverage({
-      staff,
-      coverage,
-      facilityConfig,
-    }),
+  // Hide slots I'm already on, called out of, or that overlap my shifts.
+  const myShifts = await Schedule.find({
+    tenantId,
+    staffId: staff._id,
+    endTime: { $gt: now },
+    status: { $in: [...PICKUP_ACTIVE_STATUSES, "call_out"] },
+  })
+    .select("coverageId startTime endTime status")
+    .lean();
+  const myCoverageIds = new Set(
+    myShifts.filter((s) => s.coverageId).map((s) => String(s.coverageId)),
+  );
+  const overlapsMyShift = (coverage) =>
+    myShifts.some(
+      (s) =>
+        s.status !== "call_out" &&
+        new Date(s.startTime) < new Date(coverage.endTime) &&
+        new Date(s.endTime) > new Date(coverage.startTime),
+    );
+
+  const eligibleCoverages = coverages.filter(
+    (coverage) =>
+      !myCoverageIds.has(String(coverage._id)) &&
+      !overlapsMyShift(coverage) &&
+      isStaffCompatibleWithCoverage({
+        staff,
+        coverage,
+        facilityConfig,
+      }),
   );
   if (!eligibleCoverages.length) return [];
 

@@ -6,10 +6,10 @@
  * The first checkout gets a card trial: 7 days monthly, 30 days yearly
  * (skipped if the in-app trial was already used). Enterprise is sales-led.
  *
- * Prices live in Stripe; we only keep their Price IDs in env:
- *   STRIPE_PRICE_STARTER_MONTHLY, STRIPE_PRICE_STARTER_YEARLY,
- *   STRIPE_PRICE_GROWTH_MONTHLY,  STRIPE_PRICE_GROWTH_YEARLY,
- *   STRIPE_PRICE_PREMIUM_MONTHLY, STRIPE_PRICE_PREMIUM_YEARLY
+ * Prices come from PLAN_PRICES in config/plans.js: checkout sends the amount
+ * inline (price_data), so nothing has to be created in Stripe or added to
+ * env. Optional: set STRIPE_PRICE_{STARTER,GROWTH,PREMIUM}_{MONTHLY,YEARLY}
+ * to use Prices you made in the Stripe dashboard instead.
  */
 const Stripe = require("stripe");
 const Tenant = require("../models/tenantModel");
@@ -49,6 +49,42 @@ const priceEnvName = (plan, interval) =>
 const getPriceId = (plan, interval) =>
   process.env[priceEnvName(plan, interval)] || null;
 
+/** What to charge: a dashboard Price if configured, else the amount inline. */
+const priceSpecFor = (plan, interval) => {
+  const priceId = getPriceId(plan, interval);
+  if (priceId) return { price: priceId };
+  return {
+    price_data: {
+      currency: "usd",
+      product_data: { name: `WiserShifts ${PLANS[plan].label}` },
+      unit_amount: PLAN_PRICES[plan][interval],
+      recurring: { interval },
+    },
+  };
+};
+
+/** A Price ID for subscription updates (which can't take product_data). */
+const ensurePriceId = async (plan, interval) => {
+  const configured = getPriceId(plan, interval);
+  if (configured) return configured;
+  const price = await stripe.prices.create({
+    currency: "usd",
+    unit_amount: PLAN_PRICES[plan][interval],
+    recurring: { interval },
+    product_data: { name: `WiserShifts ${PLANS[plan].label}` },
+    metadata: { plan, interval },
+  });
+  return price.id;
+};
+
+/** Plan from an amount + interval (for inline prices). */
+const planFromAmount = (unitAmount, interval) => {
+  for (const plan of PAID_PLAN_KEYS) {
+    if (PLAN_PRICES[plan]?.[interval] === unitAmount) return { plan, interval };
+  }
+  return null;
+};
+
 /** Reverse lookup: Stripe Price ID → { plan, interval }. */
 const planFromPriceId = (priceId) => {
   if (!priceId) return null;
@@ -75,12 +111,6 @@ const validatePlanChoice = (plan, interval) => {
   }
   return null;
 };
-
-const billingNotConfigured = (res, plan, interval) =>
-  res.status(500).json({
-    message: `Billing is not configured: missing ${priceEnvName(plan, interval)}`,
-    errorCode: "BILLING_NOT_CONFIGURED",
-  });
 
 /** Usage vs a target plan; returns the first limit that would be exceeded. */
 const findLimitBreach = async (tenantId, planKey) => {
@@ -195,9 +225,6 @@ exports.createCheckoutSession = async (req, res, next) => {
     const choiceError = validatePlanChoice(plan, interval);
     if (choiceError) return res.status(400).json({ message: choiceError });
 
-    const price = getPriceId(plan, interval);
-    if (!price) return billingNotConfigured(res, plan, interval);
-
     if (
       tenant.stripeSubscriptionId &&
       PAID_STATUSES.includes(tenant.subscriptionStatus)
@@ -230,7 +257,7 @@ exports.createCheckoutSession = async (req, res, next) => {
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
-      line_items: [{ price, quantity: 1 }],
+      line_items: [{ ...priceSpecFor(plan, interval), quantity: 1 }],
       client_reference_id: tenantId,
       metadata,
       // Reusing the saved customer keeps billing history on one customer.
@@ -265,9 +292,6 @@ exports.changePlan = async (req, res, next) => {
 
     const choiceError = validatePlanChoice(plan, interval);
     if (choiceError) return res.status(400).json({ message: choiceError });
-
-    const price = getPriceId(plan, interval);
-    if (!price) return billingNotConfigured(res, plan, interval);
 
     if (
       !tenant.stripeSubscriptionId ||
@@ -306,6 +330,7 @@ exports.changePlan = async (req, res, next) => {
       });
     }
 
+    const price = await ensurePriceId(plan, interval);
     const updated = await stripe.subscriptions.update(
       tenant.stripeSubscriptionId,
       {
@@ -401,8 +426,18 @@ exports.cancelSubscription = async (req, res, next) => {
  */
 const buildSubscriptionUpdate = (subscription) => {
   const update = { subscriptionStatus: subscription.status };
-  const priceId = subscription.items?.data?.[0]?.price?.id || null;
-  const mapped = planFromPriceId(priceId);
+  const item = subscription.items?.data?.[0];
+  const priceId = item?.price?.id || null;
+  // Dashboard Price ID → subscription metadata (set at checkout / change) →
+  // amount + interval (inline prices).
+  const metaPlan = subscription.metadata?.plan;
+  const metaInterval = subscription.metadata?.interval;
+  const mapped =
+    planFromPriceId(priceId) ||
+    (PAID_PLAN_KEYS.includes(metaPlan) && ["month", "year"].includes(metaInterval)
+      ? { plan: metaPlan, interval: metaInterval }
+      : null) ||
+    planFromAmount(item?.price?.unit_amount, item?.price?.recurring?.interval);
   if (mapped) {
     update.plan = mapped.plan;
     update.billingInterval = mapped.interval;
@@ -502,5 +537,6 @@ exports.handleWebhook = async (req, res) => {
 
 // Exposed for unit tests.
 exports._planFromPriceId = planFromPriceId;
+exports._priceSpecFor = priceSpecFor;
 exports._buildSubscriptionUpdate = buildSubscriptionUpdate;
 exports._checkoutTrialDays = checkoutTrialDays;

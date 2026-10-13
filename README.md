@@ -164,7 +164,7 @@ npm test                           # node --test tests/*.test.js
 | `PASSWORD_SETUP_TTL_MINUTES`, `PASSWORD_RESET_TTL_MINUTES` | no | invite / reset link lifetimes |
 | `DEFAULT_COUNTRY_CODE` | no | for phone numbers typed without one; default `+1` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | yes for billing | |
-| `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_STARTER_YEARLY`, `STRIPE_PRICE_GROWTH_MONTHLY`, `STRIPE_PRICE_GROWTH_YEARLY`, `STRIPE_PRICE_PREMIUM_MONTHLY`, `STRIPE_PRICE_PREMIUM_YEARLY` | yes for billing | Stripe **Price IDs** ($500/mo, $4,800/yr; $800/mo, $7,700/yr; $1,000/mo, $9,600/yr) |
+| `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_STARTER_YEARLY`, `STRIPE_PRICE_GROWTH_MONTHLY`, `STRIPE_PRICE_GROWTH_YEARLY`, `STRIPE_PRICE_PREMIUM_MONTHLY`, `STRIPE_PRICE_PREMIUM_YEARLY` | no | Only if you'd rather use Prices made in the Stripe dashboard. Without them, checkout charges the amounts in `config/plans.js` (`PLAN_PRICES`) directly. |
 | `POSTMARK_API_TOKEN`, `POSTMARK_SENDER_EMAIL` | yes for email | or SMTP: `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_SECURE`, `EMAIL_FALLBACK_TO_SMTP` |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | yes for texting | |
 | `TWILIO_MESSAGING_SERVICE_SID` | recommended | A2P 10DLC messaging service (else `TWILIO_PHONE_NUMBER`) |
@@ -176,8 +176,8 @@ No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDIN
 1. **Database:** start from an empty database (the data model changed; there are no migrations).
 2. **Env:** set `STAFF_LINK_KEY`, `FRONTEND_URL`, `API_PUBLIC_URL`, and rename `TWILIO_SID` → `TWILIO_ACCOUNT_SID`.
 3. **Stripe:**
-   - Create three products (Starter, Growth, Premium), each with a monthly and a yearly recurring price, and set the six `STRIPE_PRICE_*` IDs.
-   - Trials are set per checkout by the app; don't add trial days on the prices.
+   - Nothing to create: checkout sends the plan's amount from `config/plans.js`. To change a price, edit `PLAN_PRICES` there (existing subscribers keep what they signed up at).
+   - (Optional) To manage prices in the Stripe dashboard instead, create them and set the six `STRIPE_PRICE_*` IDs.
    - Enable the customer portal.
    - Webhook events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`.
 4. **Twilio:**

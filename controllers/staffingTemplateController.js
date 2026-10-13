@@ -40,10 +40,18 @@ exports.saveTemplate = async (req, res, next) => {
     }
 
     const prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId })
-      .select("roleFamilies shiftTypeDefinitions")
+      .select("roleFamilies shiftTypeDefinitions unitAreas certificationTags")
       .lean();
     const slotLookup = buildShiftSlotLookup(prefs);
     const roles = new Set((prefs?.roleFamilies || []).map(normalizeKey));
+    // Areas and certifications must exist in facility preferences (so staff
+    // can be tagged with the same values and matched).
+    const areaByKey = new Map(
+      (prefs?.unitAreas || []).map((area) => [normalizeKey(area), area]),
+    );
+    const certByKey = new Map(
+      (prefs?.certificationTags || []).map((tag) => [normalizeKey(tag), tag]),
+    );
 
     const seen = new Set();
     const cleaned = [];
@@ -51,7 +59,7 @@ exports.saveTemplate = async (req, res, next) => {
       const shiftType = normalizeShiftType(input?.shiftType);
       const shiftTag = normalizeShiftTag(input?.shiftTag);
       const role = normalizeKey(input?.role);
-      const unitArea = input?.unitArea ? normalizeKey(input.unitArea) : null;
+      const areaKey = input?.unitArea ? normalizeKey(input.unitArea) : null;
       const counts = input?.countsByWeekday;
 
       if (!slotLookup.has(`${shiftType}:${shiftTag}`)) {
@@ -73,10 +81,28 @@ exports.saveTemplate = async (req, res, next) => {
           message: `Rule ${index + 1}: countsByWeekday must be 7 whole numbers (Sunday first) between 0 and 50`,
         });
       }
-      const key = [shiftType, shiftTag, role, unitArea || ""].join("|");
+      if (areaKey && !areaByKey.has(areaKey)) {
+        return res.status(400).json({
+          message: `Rule ${index + 1}: unknown unit area '${input.unitArea}'. Add it under unit areas first.`,
+        });
+      }
+      // Stored lowercase, like coverage and staff tags.
+      const unitArea = areaKey || null;
+      const certInputs = Array.isArray(input?.requiredCertificationTags)
+        ? input.requiredCertificationTags.map(normalizeKey).filter(Boolean)
+        : [];
+      const unknownCert = certInputs.find((tag) => !certByKey.has(tag));
+      if (unknownCert) {
+        return res.status(400).json({
+          message: `Rule ${index + 1}: unknown certification '${unknownCert}'. Add it under certification tags first.`,
+        });
+      }
+      const requiredCertificationTags = Array.from(new Set(certInputs));
+
+      const key = [shiftType, shiftTag, role, areaKey || ""].join("|");
       if (seen.has(key)) {
         return res.status(400).json({
-          message: `Rule ${index + 1}: ${role} on ${shiftType} is listed twice`,
+          message: `Rule ${index + 1}: ${role} on ${shiftType}${unitArea ? ` in ${unitArea}` : ""} is listed twice`,
         });
       }
       seen.add(key);
@@ -87,9 +113,7 @@ exports.saveTemplate = async (req, res, next) => {
         shiftTag,
         role,
         unitArea,
-        requiredCertificationTags: Array.isArray(input?.requiredCertificationTags)
-          ? input.requiredCertificationTags.map(normalizeKey).filter(Boolean)
-          : [],
+        requiredCertificationTags,
         countsByWeekday: counts,
       });
     }

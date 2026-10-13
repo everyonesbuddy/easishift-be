@@ -7,6 +7,7 @@ const {
   updateMember,
   transferOwnership,
   removeMember,
+  addStaffProfile,
 } = require("../controllers/memberController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -24,5 +25,7 @@ router.post("/:id/resend-invite", ownerOnly, resendInvite);
 router.patch("/:id", ownerOnly, updateMember);
 router.post("/:id/make-owner", ownerOnly, transferOwnership);
 router.delete("/:id", ownerOnly, removeMember);
+// "Also put me on the schedule"
+router.post("/:id/staff-profile", requirePermission("staff.manage"), addStaffProfile);
 
 module.exports = router;

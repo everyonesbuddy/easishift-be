@@ -237,8 +237,13 @@ async function syncTemplateToWeeks({ tenantId, applyTo = "unpublished" }) {
       if (row.overridden) continue;
 
       if (op) {
-        if (row.requiredCount !== op.count) {
+        const certs = op.rule.requiredCertificationTags || [];
+        const certsChanged =
+          certs.length !== (row.requiredCertificationTags || []).length ||
+          certs.some((tag, i) => tag !== row.requiredCertificationTags[i]);
+        if (row.requiredCount !== op.count || certsChanged) {
           row.requiredCount = op.count;
+          row.requiredCertificationTags = certs;
           await row.save();
         }
         continue;
@@ -280,6 +285,7 @@ async function syncTemplateToWeeks({ tenantId, applyTo = "unpublished" }) {
 }
 
 module.exports = {
+  buildTemplateOps,
   getWeekSettings,
   assertWeekStart,
   ensureWeek,

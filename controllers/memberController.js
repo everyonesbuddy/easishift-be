@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const User = require("../models/userModel");
 const { getUserRoles } = require("../config/authorization");
 const { assertLimit } = require("../utils/planLimits");
+const { createStaffContact } = require("./staffController");
 const { sendEmail } = require("../utils/sendEmail");
 const {
   createPasswordSetupLink,
@@ -80,7 +81,22 @@ exports.listMembers = async (req, res, next) => {
     })
       .select("+passwordHash")
       .sort({ createdAt: 1 });
-    res.json(members.map(toMemberResponse));
+    // Members who are also on the schedule have a staff contact with their email.
+    const staffProfiles = await User.find({
+      tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
+      email: { $in: members.map((m) => m.email).filter(Boolean) },
+    })
+      .select("email")
+      .lean();
+    const staffIdByEmail = new Map(staffProfiles.map((s) => [s.email, s._id]));
+    res.json(
+      members.map((m) => ({
+        ...toMemberResponse(m),
+        staffProfileId: staffIdByEmail.get(m.email) || null,
+      })),
+    );
   } catch (err) {
     next(err);
   }
@@ -256,4 +272,32 @@ exports.removeMember = async (req, res, next) => {
 };
 
 // Exposed for unit tests.
+/**
+ * POST /api/v1/members/:id/staff-profile
+ * Body: { role | roles[], userPhone?, userPhoneCountryCode? }
+ * "Also put me on the schedule": creates a staff contact for a member (same
+ * name and email) so they can be assigned shifts and get a staff link.
+ */
+exports.addStaffProfile = async (req, res, next) => {
+  try {
+    const member = await findMember(req);
+    if (!member) return res.status(404).json({ message: "Member not found" });
+    const body = req.body || {};
+    const { status, body: result } = await createStaffContact(req, {
+      name: member.name,
+      email: member.email,
+      role: body.role,
+      roles: body.roles,
+      userPhone: body.userPhone !== undefined ? body.userPhone : member.userPhone,
+      userPhoneCountryCode:
+        body.userPhoneCountryCode !== undefined
+          ? body.userPhoneCountryCode
+          : member.userPhoneCountryCode,
+    });
+    res.status(status).json(result);
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports._getMemberRole = getMemberRole;

@@ -25,21 +25,37 @@ Node.js + Express · MongoDB + Mongoose · Stripe · Postmark/SMTP · Twilio · 
 - `admin` is a legacy alias of `scheduler`.
 
 ### Plans (`config/plans.js`)
-| Plan | Schedulers | Staff | Adds |
-|---|---|---|---|
-| Free | 1 | 15 | email notifications |
-| Pro ($49/mo, $490/yr) | 3 | 75 | texting, swaps, open-shift pickup, call-out texts, CSV import, reminders |
-| Facility ($179/mo, $1,790/yr) | 10 | 200 | auto-fill, time clock, timesheets & payroll export, messaging, dashboard |
-| Organization (custom) | ∞ | ∞ | white-label branding |
+| Plan | Monthly | Yearly | Active staff | Schedulers | Support |
+|---|---|---|---|---|---|
+| Free | $0 | – | 15 | 1 | help docs |
+| Starter | $500 | $4,800 | 50 | 3 | standard |
+| Growth | $800 | $7,700 | 100 | 5 | standard |
+| Premium | $1,000 | $9,600 | 150 | 10 | priority |
+| Enterprise | custom | custom annual | unlimited | unlimited | priority |
 
-- Everyone starts on **Free**. The owner can start a one-time, no-card **14-day Pro trial** (`POST /billing/start-trial`).
-- `getEffectivePlanKey(tenant)` picks the plan in this order: paid plan in good standing → active trial → Free.
-- Plan errors are **402**:
-  - `PLAN_FEATURE_REQUIRED`: the feature isn't on your plan.
-  - `PLAN_LIMIT_REACHED`: adding staff/schedulers past the limit.
-  - `OVER_PLAN_LIMIT`: publishing while over the limit, e.g. after a trial ends.
-  - Each includes `trialAvailable` so the app can offer the trial.
-- Over the limit, nothing is deleted. Publishing new weeks and adding people are blocked until the owner upgrades or archives staff.
+- **Free** has the core: Weekly Needs, the week schedule, areas and certifications, staff directory, publish by email, staff links and time off.
+- **Starter, Growth and Premium** have the same features: texting, swaps, open-shift pickup, call-outs by text, CSV import, reminders, automated scheduling, time clock, timesheets and payroll export, messaging and the dashboard. They differ by size and support.
+- **Enterprise** adds branding and multiple facilities, and is sales-led (not sold through checkout).
+- Viewers (read-only accounts) are always free.
+
+**Trials**
+- In the app, the owner can start a one-time, no-card **14-day Starter trial** (`POST /billing/start-trial`).
+- The first Stripe checkout gets a card trial: **7 days monthly, 30 days yearly**. It's skipped if the workspace already had the in-app trial.
+
+**Effective plan:** `getEffectivePlanKey(tenant)` picks, in order: a paid plan in good standing, then an active trial, then Free. Older keys (`pro`, `facility`, `organization`) read as Starter, Growth and Enterprise.
+
+**Plan errors are 402:**
+- `PLAN_FEATURE_REQUIRED`: the feature isn't on your plan.
+- `PLAN_LIMIT_REACHED`: adding staff or schedulers past the limit.
+- `OVER_PLAN_LIMIT`: publishing while over the limit.
+- `SCHEDULER_READ_ONLY`: see below.
+- Each includes `trialAvailable` so the app can offer the trial.
+
+**When a trial ends (or a plan is cancelled) over the limits:**
+- **Nothing is deleted.** Published weeks and staff links keep working.
+- **One grace week:** within 14 days of the trial ending, one week can still be published (and re-sent). `GET /auth/me` returns `grace`.
+- **Read-only schedulers:** while over the scheduler limit, schedulers other than the owner can look but not change anything (`readOnlyReason` in `/auth/me`; 402 `SCHEDULER_READ_ONLY` on changes).
+- **Paused:** adding people and publishing further weeks, until the owner upgrades or runs **`POST /billing/fit-to-plan`**. That picks which staff stay active (the rest are archived and can be restored) and which schedulers stay (the rest become viewers).
 
 ### Building a week
 1. **Onboarding:**
@@ -48,11 +64,17 @@ Node.js + Express · MongoDB + Mongoose · Stripe · Postmark/SMTP · Twilio · 
    - `PUT /staffing-template` saves the needs.
    - `POST /staff/bulk` adds staff.
    - `POST /setup/complete` finishes.
-2. **The staffing template** (`StaffingTemplate`) says how many of each role every shift needs on each weekday (`countsByWeekday`, Sunday = 0).
+2. **Weekly Needs** (`StaffingTemplate`, one per workspace) says how many of each role every shift needs on each weekday (`countsByWeekday`, Sunday = 0).
+   - A rule can also name a unit area and required certifications, e.g. "2 caregivers with Med Pass in Memory Care". These must exist in facility preferences, and are stored lowercase.
+   - The same shift and role can appear once per area.
 3. **`GET /weeks/:weekStart`** (`YYYY-MM-DD`, the facility's first weekday):
    - The first time a week is opened, its `Coverage` rows (one per day/shift/role with `requiredCount`) are created from the template.
    - Returns everything the schedule screen needs: coverage with `assignedCount`/`remaining`, shifts, staff, time off and counts.
-4. **Edit one day** with `PUT /coverage/:id`. That marks the row `overridden`, so later template changes leave it alone.
+4. **Edit one day:**
+   - `PUT /coverage/:id` changes a slot.
+   - `POST /weeks/:weekStart/slots` adds a one-off need.
+   - Both mark the row `overridden`, so later Weekly Needs changes leave it alone.
+   - `GET /weeks?from=&to=` opens every week in a range (up to 8). The month and roster views use it so slots exist whatever view is opened.
 5. **Assign** with `POST /schedules`; `GET /weeks/:weekStart/candidates?coverageId=` lists who can take a slot and why others can't. Assignments in an unpublished week are **drafts** (`Schedule.state = "draft"`) and send nothing.
 6. **Publish** with `POST /weeks/:weekStart/publish`:
    - Drafts go live and each person gets **one** text or email listing their shifts, plus their link.
@@ -68,10 +90,10 @@ Node.js + Express · MongoDB + Mongoose · Stripe · Postmark/SMTP · Twilio · 
 ### Notifications (`utils/notify.js`)
 | Situation | Channel |
 |---|---|
-| Pro+, has a phone, opted in to texts | SMS |
+| Paid plan, has a phone, opted in to texts | SMS |
 | otherwise, has email | email |
-| Pro+, phone, hasn't answered yet | one opt-in text ("Reply START…") |
-| Free with phone only / opted out / no contact | not reached (`sms_needs_pro`, `opted_out`, `no_contact`) |
+| Paid plan, phone, hasn't answered yet | one opt-in text ("Reply START…") |
+| Free with phone only / opted out / no contact | not reached (`sms_needs_upgrade`, `opted_out`, `no_contact`) |
 
 Every send is logged in `OutboundMessage`. Schedulers get email (`notifySchedulers`).
 
@@ -87,7 +109,7 @@ Every send is logged in `OutboundMessage`. Schedulers get email (`notifySchedule
 ### Background jobs (`app.js`)
 | When | Job |
 |---|---|
-| hourly at :05 | shift reminders (`utils/reminderJobs.js`, Pro+) |
+| hourly at :05 | shift reminders (`utils/reminderJobs.js`, paid plans) |
 | daily 14:00 UTC | trial ending / ended emails (`utils/trialJobs.js`) |
 | every 2 hours | close out past shifts (`completed`, or `no_show` when the time clock is on) |
 
@@ -142,21 +164,20 @@ npm test                           # node --test tests/*.test.js
 | `PASSWORD_SETUP_TTL_MINUTES`, `PASSWORD_RESET_TTL_MINUTES` | no | invite / reset link lifetimes |
 | `DEFAULT_COUNTRY_CODE` | no | for phone numbers typed without one; default `+1` |
 | `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET` | yes for billing | |
-| `STRIPE_PRICE_PRO_MONTHLY`, `STRIPE_PRICE_PRO_YEARLY`, `STRIPE_PRICE_FACILITY_MONTHLY`, `STRIPE_PRICE_FACILITY_YEARLY` | yes for billing | Stripe **Price IDs** |
-| `STRIPE_FOUNDING_COUPON_ID` | no | $20-off-forever coupon applied to the first 20 Pro monthly checkouts |
+| `STRIPE_PRICE_STARTER_MONTHLY`, `STRIPE_PRICE_STARTER_YEARLY`, `STRIPE_PRICE_GROWTH_MONTHLY`, `STRIPE_PRICE_GROWTH_YEARLY`, `STRIPE_PRICE_PREMIUM_MONTHLY`, `STRIPE_PRICE_PREMIUM_YEARLY` | yes for billing | Stripe **Price IDs** ($500/mo, $4,800/yr; $800/mo, $7,700/yr; $1,000/mo, $9,600/yr) |
 | `POSTMARK_API_TOKEN`, `POSTMARK_SENDER_EMAIL` | yes for email | or SMTP: `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_SECURE`, `EMAIL_FALLBACK_TO_SMTP` |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | yes for texting | |
 | `TWILIO_MESSAGING_SERVICE_SID` | recommended | A2P 10DLC messaging service (else `TWILIO_PHONE_NUMBER`) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | no | AI form parsing / AI fill |
 
-No longer used: `TWILIO_SID`, `TENANT_ROOT_DOMAIN`, `TENANT_APP_URL_SCHEME`, `TENANT_APP_URL_PORT`, `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, `FRONTEND_BASE_URL`.
+No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDING_COUPON_ID`, `TWILIO_SID`, `TENANT_ROOT_DOMAIN`, `TENANT_APP_URL_SCHEME`, `TENANT_APP_URL_PORT`, `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, `FRONTEND_BASE_URL`.
 
 ## Going live checklist
 1. **Database:** start from an empty database (the data model changed; there are no migrations).
 2. **Env:** set `STAFF_LINK_KEY`, `FRONTEND_URL`, `API_PUBLIC_URL`, and rename `TWILIO_SID` → `TWILIO_ACCOUNT_SID`.
 3. **Stripe:**
-   - Create the Pro and Facility prices (monthly + yearly) and set the four `STRIPE_PRICE_*` IDs.
-   - Optionally add the founding coupon.
+   - Create three products (Starter, Growth, Premium), each with a monthly and a yearly recurring price, and set the six `STRIPE_PRICE_*` IDs.
+   - Trials are set per checkout by the app; don't add trial days on the prices.
    - Enable the customer portal.
    - Webhook events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`.
 4. **Twilio:**

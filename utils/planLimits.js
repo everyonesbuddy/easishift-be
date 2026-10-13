@@ -5,7 +5,11 @@
  * Schedulers = owner + schedulers (+ legacy admins). Viewers are free.
  */
 const User = require("../models/userModel");
-const { trialAvailable, serializeLimit } = require("../config/plans");
+const {
+  trialAvailable,
+  serializeLimit,
+  inPostTrialGrace,
+} = require("../config/plans");
 
 const SCHEDULER_ROLES = ["owner", "admin", "scheduler"];
 const ACCOUNT_ROLES = [...SCHEDULER_ROLES, "viewer"];
@@ -69,6 +73,14 @@ const assertLimit = async (req, kind, adding = 1) => {
 };
 
 /**
+ * After a trial ends over the limits, one week can still be published in the
+ * grace window. Returns true if `weekStart` may use it.
+ */
+const canUseGraceWeek = (tenant, weekStart) =>
+  inPostTrialGrace(tenant) &&
+  (!tenant.graceWeekStart || tenant.graceWeekStart === weekStart);
+
+/**
  * Throws 402 OVER_PLAN_LIMIT when the workspace already has more staff or
  * schedulers than its plan allows (e.g. after a trial ends or a cancel).
  */
@@ -87,6 +99,8 @@ const assertNotOverLimit = async (req) => {
       },
       currentPlan: req.plan.key,
       trialAvailable: trialAvailable(req.tenant),
+      graceWeekAvailable:
+        inPostTrialGrace(req.tenant) && !req.tenant.graceWeekStart,
     },
   );
 };
@@ -99,5 +113,6 @@ module.exports = {
   getUsage,
   assertLimit,
   assertNotOverLimit,
+  canUseGraceWeek,
   planError,
 };

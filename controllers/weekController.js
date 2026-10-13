@@ -4,6 +4,8 @@
  * GET /api/v1/weeks/current                      -> { weekStart }
  * GET /api/v1/weeks/:weekStart                   -> week, coverage, schedules, staff, time off
  * GET /api/v1/weeks/:weekStart/candidates?coverageId=  -> who can take a slot
+ * GET /api/v1/weeks?from=&to=                    -> summaries; opens each week (month/roster views)
+ * POST /api/v1/weeks/:weekStart/slots            -> add a one-off need on one day
  */
 const mongoose = require("mongoose");
 const Coverage = require("../models/coverageModel");
@@ -13,7 +15,11 @@ const User = require("../models/userModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
 const { getEffectivePlanKey } = require("../config/plans");
-const { assertNotOverLimit } = require("../utils/planLimits");
+const {
+  assertNotOverLimit,
+  getUsage,
+  canUseGraceWeek,
+} = require("../utils/planLimits");
 const {
   sendToStaff,
   shortShift,
@@ -34,7 +40,13 @@ const {
   weekStartFor,
   addDaysToKey,
 } = require("../utils/dateUtils");
-const { getWeekSettings, ensureWeek } = require("../utils/weekService");
+const {
+  getWeekSettings,
+  ensureWeek,
+  buildTemplateOps,
+  assertWeekStart,
+} = require("../utils/weekService");
+const { isDateKey, buildShiftSlotLookup } = require("../utils/dateUtils");
 const {
   getCompatibleFacilityConfig,
   eligibleStaffForCoverage,
@@ -216,8 +228,13 @@ exports.publishWeek = async (req, res, next) => {
     const includeEveryone = req.body?.includeEveryone === true;
     const resendAll = req.body?.resendAll === true;
 
-    // Over the plan's limits (e.g. trial ended with 40 staff): no new weeks.
-    await assertNotOverLimit(req);
+    // Over the plan's limits (e.g. trial ended with 40 staff): no new weeks,
+    // except one grace week right after a trial ends.
+    let usedGraceWeek = false;
+    if ((await getUsage(req)).overLimit) {
+      if (canUseGraceWeek(req.tenant, weekStart)) usedGraceWeek = true;
+      else await assertNotOverLimit(req);
+    }
 
     const settings = await getWeekSettings(req.tenantId);
     const week = await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
@@ -332,7 +349,13 @@ exports.publishWeek = async (req, res, next) => {
     week.lastPublish = { sms: sent.sms, email: sent.email, notReached };
     await week.save();
 
+    if (usedGraceWeek && req.tenant.graceWeekStart !== weekStart) {
+      req.tenant.graceWeekStart = weekStart;
+      await req.tenant.save();
+    }
+
     res.json({
+      usedGraceWeek,
       week: toWeekResponse(week),
       firstPublish,
       messaged: recipients.length,
@@ -340,6 +363,170 @@ exports.publishWeek = async (req, res, next) => {
       notReached,
     });
   } catch (err) {
+    next(err);
+  }
+};
+
+const MAX_RANGE_WEEKS = 8;
+
+/**
+ * GET /api/v1/weeks?from=YYYY-MM-DD&to=YYYY-MM-DD
+ * Opens every week touching the range (creating its open slots from the
+ * template the first time) and returns one summary per week. Used by the
+ * month and roster views so slots exist whatever view is opened.
+ */
+exports.getWeeksInRange = async (req, res, next) => {
+  try {
+    const { from, to } = req.query;
+    if (!isDateKey(from) || !isDateKey(to) || to < from) {
+      return res
+        .status(400)
+        .json({ message: "from and to must be YYYY-MM-DD, in order" });
+    }
+    const settings = await getWeekSettings(req.tenantId);
+    const weekStarts = [];
+    let key = weekStartFor(
+      new Date(`${from}T12:00:00Z`),
+      "UTC",
+      settings.weekStartsOn,
+    );
+    while (key <= to) {
+      weekStarts.push(key);
+      if (weekStarts.length > MAX_RANGE_WEEKS) {
+        return res.status(400).json({
+          message: `Ask for at most ${MAX_RANGE_WEEKS} weeks at a time`,
+        });
+      }
+      key = addDaysToKey(key, 7);
+    }
+
+    const weeks = [];
+    for (const weekStart of weekStarts) {
+      const week = await ensureWeek({
+        tenantId: req.tenantId,
+        weekStart,
+        settings,
+      });
+      const coverage = await Coverage.find({
+        tenantId: req.tenantId,
+        date: { $in: weekDays(weekStart).map(dateKeyToCoverageDate) },
+      })
+        .select("requiredCount")
+        .lean();
+      const assigned = await countAssignmentsByCoverage({
+        tenantId: req.tenantId,
+        coverageIds: coverage.map((row) => row._id),
+      });
+      const openSlots = coverage.reduce(
+        (sum, row) =>
+          sum + Math.max(0, row.requiredCount - (assigned.get(String(row._id)) || 0)),
+        0,
+      );
+      weeks.push({ ...toWeekResponse(week), openSlots });
+    }
+    res.json({ weeks });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * POST /api/v1/weeks/:weekStart/slots
+ * Body: { date: YYYY-MM-DD, shiftType, shiftTag, role, unitArea?,
+ *         requiredCertificationTags?, count = 1 }
+ * Adds a one-off need on one day (e.g. an extra caregiver Friday). If the
+ * same slot already exists, its count goes up. Marked as hand-edited so
+ * Weekly Needs changes leave it alone.
+ */
+exports.addSlot = async (req, res, next) => {
+  try {
+    const { weekStart } = req.params;
+    const body = req.body || {};
+    const settings = await getWeekSettings(req.tenantId);
+    assertWeekStart(weekStart, settings.weekStartsOn);
+    if (!weekDays(weekStart).includes(body.date)) {
+      return res
+        .status(400)
+        .json({ message: "date must be a day in this week (YYYY-MM-DD)" });
+    }
+    const count = body.count === undefined ? 1 : Number(body.count);
+    if (!Number.isInteger(count) || count < 1 || count > 50) {
+      return res.status(400).json({ message: "count must be 1–50" });
+    }
+
+    const prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId })
+      .select("roleFamilies shiftTypeDefinitions unitAreas certificationTags")
+      .lean();
+    const norm = (v) => String(v || "").trim().toLowerCase();
+    const role = norm(body.role);
+    if (!(prefs?.roleFamilies || []).map(norm).includes(role)) {
+      return res.status(400).json({ message: `Unknown role '${body.role}'` });
+    }
+    const unitArea = body.unitArea ? norm(body.unitArea) : null;
+    if (unitArea && !(prefs?.unitAreas || []).map(norm).includes(unitArea)) {
+      return res.status(400).json({ message: `Unknown unit area '${body.unitArea}'` });
+    }
+    const certs = Array.isArray(body.requiredCertificationTags)
+      ? Array.from(new Set(body.requiredCertificationTags.map(norm).filter(Boolean)))
+      : [];
+    const knownCerts = (prefs?.certificationTags || []).map(norm);
+    const unknownCert = certs.find((c) => !knownCerts.includes(c));
+    if (unknownCert) {
+      return res.status(400).json({ message: `Unknown certification '${unknownCert}'` });
+    }
+
+    await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
+
+    const weekday = new Date(`${body.date}T12:00:00Z`).getUTCDay();
+    const countsByWeekday = [0, 0, 0, 0, 0, 0, 0];
+    countsByWeekday[weekday] = count;
+    const [op] = buildTemplateOps({
+      tenantId: req.tenantId,
+      rules: [
+        {
+          shiftType: norm(body.shiftType),
+          shiftTag: norm(body.shiftTag),
+          role,
+          unitArea,
+          requiredCertificationTags: certs,
+          countsByWeekday,
+        },
+      ],
+      dayKeys: [body.date],
+      slotLookup: buildShiftSlotLookup(prefs),
+      timezone: settings.timezone,
+    });
+    if (!op) {
+      return res.status(400).json({
+        message: `Unknown shift '${body.shiftType}:${body.shiftTag}'. Add it under shift times first.`,
+      });
+    }
+
+    const existing = await Coverage.findOne(op.filter);
+    let row;
+    if (existing) {
+      existing.requiredCount = Math.min(50, existing.requiredCount + count);
+      existing.overridden = true;
+      row = await existing.save();
+    } else {
+      row = await Coverage.create({
+        ...op.filter,
+        requiredCount: count,
+        requiredCertificationTags: certs,
+        source: "manual",
+        overridden: true,
+      });
+    }
+    res.status(existing ? 200 : 201).json({
+      ...row.toObject(),
+      dateKey: coverageDateToKey(row.date),
+    });
+  } catch (err) {
+    if (err && err.statusCode) {
+      return res
+        .status(err.statusCode)
+        .json({ message: err.message, errorCode: err.errorCode });
+    }
     next(err);
   }
 };

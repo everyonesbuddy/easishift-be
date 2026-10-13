@@ -18,6 +18,10 @@ const {
   getEffectivePlanKey,
   describePlan,
   trialAvailable,
+  TRIAL_PLAN,
+  GRACE_DAYS,
+  DAY_MS,
+  inPostTrialGrace,
 } = require("../config/plans");
 const { getUsage } = require("../utils/planLimits");
 const {
@@ -508,8 +512,19 @@ exports.getMe = async (req, res, next) => {
       paidPlan: tenant.plan,
       subscriptionStatus: tenant.subscriptionStatus,
       trialAvailable: trialAvailable(tenant),
+      trialPlan: TRIAL_PLAN,
       trialEndsAt: tenant.trialEndsAt,
       usage,
+      // Non-owner schedulers can only look while over the scheduler limit.
+      readOnlyReason: req.readOnlyReason || null,
+      // One week can still be published right after a trial ends over limits.
+      grace: inPostTrialGrace(tenant)
+        ? {
+            endsAt: new Date(new Date(tenant.trialEndsAt).getTime() + GRACE_DAYS * DAY_MS),
+            weekStart: tenant.graceWeekStart || null,
+            available: usage.overLimit,
+          }
+        : null,
     });
   } catch (err) {
     next(err);

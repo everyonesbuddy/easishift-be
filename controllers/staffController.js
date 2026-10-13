@@ -263,6 +263,62 @@ exports.getStaff = async (req, res, next) => {
 };
 
 /**
+ * Creates one staff contact from an input payload.
+ * Returns { status, body } (201 with the staff, or a 4xx error body).
+ * Throws plan-limit errors (402) for the caller's error handler.
+ */
+const createStaffContact = async (req, input) => {
+  const facilityRoles = await getFacilityRoleSet(req.tenantId);
+  const { value, error, allowedRoles } = normalizeStaffInput(
+    input || {},
+    facilityRoles,
+  );
+  if (error) return { status: 400, body: { message: error, allowedRoles } };
+
+  const phoneE164 = buildE164Number(value.userPhoneCountryCode, value.userPhone);
+  if (!value.email && !phoneE164) {
+    return {
+      status: 400,
+      body: { message: "Add a phone number or an email address" },
+    };
+  }
+
+  const existing = await findDuplicate({
+    tenantId: req.tenantId,
+    email: value.email,
+    phoneE164,
+  });
+  if (existing) {
+    return {
+      status: 409,
+      body: {
+        message:
+          existing.status === "archived"
+            ? `${existing.name} is archived with this phone or email. Restore them instead.`
+            : `${existing.name} already has this phone or email.`,
+        errorCode: "DUPLICATE_STAFF",
+        existingStaffId: existing._id,
+        existingStatus: existing.status,
+      },
+    };
+  }
+
+  await assertLimit(req, "staff");
+
+  const smsConsent = await inheritedSmsConsent(phoneE164);
+  const staff = await User.create({
+    ...value,
+    ...(smsConsent ? { smsConsent } : {}),
+    tenantId: req.tenantId,
+    loginEnabled: false,
+    status: "active",
+  });
+  await createStaffLink(staff);
+  return { status: 201, body: toStaffResponse(staff) };
+};
+exports.createStaffContact = createStaffContact;
+
+/**
  * POST /api/v1/staff
  * Body: { name, phone|userPhone, countryCode|userPhoneCountryCode, email,
  *         roles[] | role, allowedShiftTypes[], allowedAreas[],
@@ -271,43 +327,8 @@ exports.getStaff = async (req, res, next) => {
  */
 exports.createStaff = async (req, res, next) => {
   try {
-    const facilityRoles = await getFacilityRoleSet(req.tenantId);
-    const { value, error, allowedRoles } = normalizeStaffInput(
-      req.body || {},
-      facilityRoles,
-    );
-    if (error) return res.status(400).json({ message: error, allowedRoles });
-
-    const phoneE164 = buildE164Number(
-      value.userPhoneCountryCode,
-      value.userPhone,
-    );
-    if (!value.email && !phoneE164) {
-      return res
-        .status(400)
-        .json({ message: "Add a phone number or an email address" });
-    }
-
-    const existing = await findDuplicate({
-      tenantId: req.tenantId,
-      email: value.email,
-      phoneE164,
-    });
-    if (existing) return duplicateResponse(res, existing);
-
-    await assertLimit(req, "staff");
-
-    const smsConsent = await inheritedSmsConsent(phoneE164);
-    const staff = await User.create({
-      ...value,
-      ...(smsConsent ? { smsConsent } : {}),
-      tenantId: req.tenantId,
-      loginEnabled: false,
-      status: "active",
-    });
-    await createStaffLink(staff);
-
-    res.status(201).json(toStaffResponse(staff));
+    const { status, body } = await createStaffContact(req, req.body);
+    res.status(status).json(body);
   } catch (err) {
     if (err && err.code === 11000) {
       return res.status(409).json({
@@ -439,7 +460,7 @@ const mapCsvRecord = (record) => {
 
 /**
  * POST /api/v1/staff/import  (multipart "file", or JSON { csv })
- * Pro feature.
+ * Paid-plan feature.
  */
 exports.importStaffCsv = async (req, res, next) => {
   try {
@@ -528,39 +549,46 @@ exports.updateStaff = async (req, res, next) => {
  * POST /api/v1/staff/:id/archive
  * Keeps history; removes them from future shifts and pending swaps.
  */
+/**
+ * Archives one staff contact: removes their future shifts, cancels pending
+ * swaps, turns off their link. History stays. Shared with fit-to-plan.
+ */
+const archiveStaffMember = async (tenantId, staff) => {
+  const now = new Date();
+  const [removedShifts, cancelledSwaps] = await Promise.all([
+    Schedule.deleteMany({
+      tenantId,
+      staffId: staff._id,
+      startTime: { $gt: now },
+      status: "scheduled",
+    }),
+    ShiftSwap.updateMany(
+      {
+        tenantId,
+        status: { $in: ["pending_admin", "pending_receiver"] },
+        $or: [{ requesterStaffId: staff._id }, { receiverStaffId: staff._id }],
+      },
+      { $set: { status: "cancelled", respondedAt: now } },
+    ),
+  ]);
+  staff.status = "archived";
+  await staff.save({ validateBeforeSave: false });
+  await revokeStaffLinks(staff);
+  return {
+    removedFutureShifts: removedShifts.deletedCount || 0,
+    cancelledSwaps: cancelledSwaps.modifiedCount || 0,
+  };
+};
+exports.archiveStaffMember = archiveStaffMember;
+
 exports.archiveStaff = async (req, res, next) => {
   try {
     const staff = await findStaff(req);
     if (!staff) return res.status(404).json({ message: "Staff not found" });
     if (staff.status === "archived") return res.json(toStaffResponse(staff));
 
-    const now = new Date();
-    const [removedShifts, cancelledSwaps] = await Promise.all([
-      Schedule.deleteMany({
-        tenantId: req.tenantId,
-        staffId: staff._id,
-        startTime: { $gt: now },
-        status: "scheduled",
-      }),
-      ShiftSwap.updateMany(
-        {
-          tenantId: req.tenantId,
-          status: { $in: ["pending_admin", "pending_receiver"] },
-          $or: [{ requesterStaffId: staff._id }, { receiverStaffId: staff._id }],
-        },
-        { $set: { status: "cancelled", respondedAt: now } },
-      ),
-    ]);
-
-    staff.status = "archived";
-    await staff.save({ validateBeforeSave: false });
-    await revokeStaffLinks(staff);
-
-    res.json({
-      ...toStaffResponse(staff),
-      removedFutureShifts: removedShifts.deletedCount || 0,
-      cancelledSwaps: cancelledSwaps.modifiedCount || 0,
-    });
+    const result = await archiveStaffMember(req.tenantId, staff);
+    res.json({ ...toStaffResponse(staff), ...result });
   } catch (err) {
     next(err);
   }

@@ -5,25 +5,27 @@
  * workspace roles (owner/admin/scheduler) and job roles (cna, concierge...)
  * at once. Now:
  *   - Accounts (loginEnabled: true) have exactly ONE workspace role:
- *     owner, scheduler or viewer ("admin" becomes scheduler).
+ *     owner, scheduler or viewer.
  *   - Staff contacts (loginEnabled: false) have job roles only, and can
  *     have several (e.g. caregiver + med_tech).
  *
  * What it does (only to records that haven't been migrated yet):
- *   1. Users with a workspace role become accounts with that one role. If
- *      they also had job roles, a separate staff contact is created for them
- *      (same name/email/phone) and their shifts, time off, time entries,
- *      preferences and swaps move to that staff contact.
- *   2. Users with only job roles become staff contacts (keeping all roles).
- *   3. Each workspace ends up with exactly one owner.
+ *   1. Each workspace gets exactly one owner: an existing owner, else the
+ *      admin whose email is the workspace's email (who signed up), else the
+ *      earliest admin/scheduler.
+ *   2. Other users with a workspace role become accounts with that one role
+ *      ("admin" -> scheduler, "viewer" stays viewer). Any job roles they also
+ *      had are dropped (accounts can't be scheduled; add them under Staff
+ *      later if they really work shifts).
+ *   3. Users with only job roles become staff contacts (keeping all roles).
  *   4. Job roles in use are added to the facility's roles; old tenants are
  *      marked as set up (so they skip onboarding); old paid planKeys map to
  *      the new plan names.
  *   5. Old shifts are marked published, and every week that has shifts is
  *      marked published (so nobody gets re-texted and template needs aren't
  *      added on top of existing schedules).
- *   6. The old global unique index on users.email is dropped (accounts and
- *      staff contacts can now share an email) and the new indexes are built.
+ *   6. The old global unique index on users.email is dropped (an account and
+ *      a staff contact may share an email later) and the new indexes built.
  *
  * Usage:
  *   node scripts/migrate-legacy-data.js            # dry run: prints the plan
@@ -38,10 +40,6 @@ const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Schedule = require("../models/scheduleModel");
 const ScheduleWeek = require("../models/scheduleWeekModel");
-const TimeOff = require("../models/timeOffModel");
-const TimeEntry = require("../models/timeEntryModel");
-const Preferences = require("../models/preferencesModel");
-const ShiftSwap = require("../models/shiftSwapModel");
 const { buildE164Number } = require("../utils/phone");
 const { weekStartFor, dateKeyToCoverageDate, normalizeFacilityTimezone } = require("../utils/dateUtils");
 
@@ -68,26 +66,7 @@ const LEGACY_PLAN_KEYS = {
 };
 
 const log = (...args) => console.log(...args);
-const summary = { accounts: 0, staff: 0, splits: 0, movedRecords: 0, ownersFixed: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
-
-async function moveStaffRecords(fromId, toId, tenantId) {
-  const filter = (field) => ({ tenantId, [field]: fromId });
-  const ops = [
-    [Schedule, "staffId"],
-    [TimeOff, "staffId"],
-    [TimeEntry, "staffId"],
-    [Preferences, "staffId"],
-    [ShiftSwap, "requesterStaffId"],
-    [ShiftSwap, "receiverStaffId"],
-  ];
-  let moved = 0;
-  for (const [Model, field] of ops) {
-    const count = await Model.countDocuments(filter(field));
-    if (count && APPLY) await Model.updateMany(filter(field), { $set: { [field]: toId } });
-    moved += count;
-  }
-  return moved;
-}
+const summary = { accounts: 0, staff: 0, jobRolesDropped: 0, ownersFixed: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
 
 async function migrateTenant(tenant) {
   const tenantId = tenant._id;
@@ -95,6 +74,20 @@ async function migrateTenant(tenant) {
   const users = await User.collection.find({ tenantId, loginEnabled: { $exists: false } }).toArray();
   const prefs = await FacilityPreferences.findOne({ tenantId });
   const jobRolesInUse = new Set();
+
+  // Who owns the workspace: an existing owner, else the admin who signed up
+  // (their email is the workspace's email), else the earliest admin.
+  const existingAccounts = await User.collection.find({ tenantId, loginEnabled: true }).toArray();
+  const candidates = [...existingAccounts, ...users].filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r]));
+  const byAge = (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+  const tenantEmail = String(tenant.email || tenant.billingEmail || "").toLowerCase();
+  const owner =
+    candidates.filter((u) => rolesOf(u).includes("owner")).sort(byAge)[0] ||
+    candidates.find((u) => tenantEmail && String(u.email || "").toLowerCase() === tenantEmail && rolesOf(u).some((r) => ACCOUNT_RANK[r] >= 2)) ||
+    candidates.filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r] >= 2)).sort(byAge)[0] ||
+    null;
+  const ownerId = owner?._id || null;
+  if (!owner && candidates.length) summary.warnings.push(`${tenant.name}: no owner, admin or scheduler found`);
 
   for (const u of users) {
     const roles = rolesOf(u);
@@ -104,39 +97,19 @@ async function migrateTenant(tenant) {
     const phoneE164 = buildE164Number(u.userPhoneCountryCode, u.userPhone) || null;
 
     if (accountRoles.length) {
-      const top = accountRoles.sort((a, b) => ACCOUNT_RANK[b] - ACCOUNT_RANK[a])[0];
-      const role = top === "owner" ? "owner" : top === "viewer" ? "viewer" : "scheduler";
-      log(`  account  ${u.name} <${u.email}>: [${roles.join(", ")}] -> ${role}${jobRoles.length ? `  + staff contact [${jobRoles.join(", ")}]` : ""}`);
+      const role = String(u._id) === String(ownerId) ? "owner" : accountRoles.includes("viewer") && !accountRoles.some((r) => ACCOUNT_RANK[r] >= 2) ? "viewer" : "scheduler";
+      log(`  account  ${u.name} <${u.email}>: [${roles.join(", ")}] -> ${role}${jobRoles.length ? `  (job roles dropped: ${jobRoles.join(", ")})` : ""}`);
       summary.accounts += 1;
+      if (jobRoles.length) {
+        summary.jobRolesDropped += 1;
+        const shifts = await Schedule.collection.countDocuments({ tenantId, staffId: u._id });
+        if (shifts) summary.warnings.push(`${tenant.name}: ${u.name} had ${shifts} shift(s) as staff; they stay in history but ${u.name} won't be offered new shifts unless added under Staff`);
+      }
       if (APPLY) {
         await User.collection.updateOne(
           { _id: u._id },
           { $set: { loginEnabled: true, role, roles: [role], status: u.status || "active", phoneE164 } },
         );
-      }
-      if (jobRoles.length) {
-        summary.splits += 1;
-        let staffId = null;
-        if (APPLY) {
-          const staff = await User.create({
-            tenantId,
-            name: u.name,
-            email: u.email || null,
-            userPhone: u.userPhone || null,
-            userPhoneCountryCode: u.userPhoneCountryCode || null,
-            roles: jobRoles,
-            role: jobRoles[0],
-            allowedAreas: u.allowedAreas || [],
-            allowedShiftTypes: u.allowedShiftTypes || [],
-            certificationTags: u.certificationTags || [],
-            loginEnabled: false,
-            status: "active",
-          });
-          staffId = staff._id;
-        }
-        const moved = await moveStaffRecords(u._id, staffId, tenantId);
-        summary.movedRecords += moved;
-        if (moved) log(`           ${APPLY ? "moved" : "would move"} ${moved} shift/time-off/time-clock/preference/swap records to the staff contact`);
       }
     } else {
       if (!jobRoles.length) {
@@ -159,20 +132,12 @@ async function migrateTenant(tenant) {
     }
   }
 
-  // Exactly one owner.
-  const accounts = APPLY
-    ? await User.collection.find({ tenantId, loginEnabled: true }).sort({ createdAt: 1 }).toArray()
-    : users.filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r]));
-  const owners = accounts.filter((a) => rolesOf(a).includes("owner"));
-  if (accounts.length && owners.length !== 1) {
-    const keep = owners[0] || accounts.find((a) => rolesOf(a).some((r) => r === "admin" || r === "scheduler")) || accounts[0];
-    log(`  owner    ${owners.length} owner(s) -> keep ${keep.name} as the only owner`);
-    summary.ownersFixed += 1;
-    if (APPLY) {
-      await User.collection.updateOne({ _id: keep._id }, { $set: { role: "owner", roles: ["owner"] } });
-      const extra = owners.filter((o) => String(o._id) !== String(keep._id)).map((o) => o._id);
-      if (extra.length) await User.collection.updateMany({ _id: { $in: extra } }, { $set: { role: "scheduler", roles: ["scheduler"] } });
-    }
+  // Anyone already migrated as a second owner becomes a scheduler.
+  const extraOwners = existingAccounts.filter((a) => rolesOf(a).includes("owner") && String(a._id) !== String(ownerId));
+  if (extraOwners.length) {
+    log(`  owner    keep ${owner.name}; ${extraOwners.map((o) => o.name).join(", ")} -> scheduler`);
+    summary.ownersFixed += extraOwners.length;
+    if (APPLY) await User.collection.updateMany({ _id: { $in: extraOwners.map((o) => o._id) } }, { $set: { role: "scheduler", roles: ["scheduler"] } });
   }
 
   // Facility roles, setup, plan.

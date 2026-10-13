@@ -177,7 +177,9 @@ No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDIN
    - Back up the database first.
    - `node scripts/migrate-legacy-data.js` shows what will change (dry run).
    - `node scripts/migrate-legacy-data.js --apply` makes the changes. It's safe to run again.
-   - Accounts end up with one workspace role (owner, scheduler or viewer; "admin" becomes scheduler). Anyone who also had job roles gets a separate staff contact with those roles, and their shifts and time off move to it. Staff contacts can keep several job roles.
+   - Each workspace gets one owner: the admin whose email is the workspace's email (who signed up), else the earliest admin.
+   - Other accounts get one role: "admin" becomes scheduler, viewers stay viewers. Job roles on accounts are dropped.
+   - Staff (job roles only) become staff contacts and keep all their roles.
 2. **Env:** set `STAFF_LINK_KEY`, `FRONTEND_URL`, `API_PUBLIC_URL`, and rename `TWILIO_SID` → `TWILIO_ACCOUNT_SID`.
 3. **Stripe:**
    - Nothing to create: checkout sends the plan's amount from `config/plans.js`. To change a price, edit `PLAN_PRICES` there (existing subscribers keep what they signed up at).

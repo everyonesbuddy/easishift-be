@@ -8,9 +8,7 @@ const express = require("express");
 const multer = require("multer");
 const router = express.Router();
 const {
-  createTenant,
-  getTenants,
-  getTenantById,
+  getMyTenant,
   deleteTenantAccount,
   getMyBranding,
   updateMyBranding,
@@ -20,8 +18,8 @@ const {
 
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
-const restrictTo = require("../middleware/roleMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
+const { requireFeature } = require("../middleware/planMiddleware");
 
 const LOGO_MAX_BYTES = 512 * 1024;
 const LOGO_MIME_TYPES = ["image/png", "image/jpeg", "image/webp"];
@@ -43,16 +41,19 @@ const logoUpload = (req, res, next) => {
   });
 };
 
-// Only super-admins (you) can access this directly
-router
-  .route("/")
-  .get(auth, restrictTo("superadmin"), getTenants)
-  .post(auth, restrictTo("superadmin"), createTenant);
+// The signed-in user's own workspace
+router.get("/me", auth, tenant, getMyTenant);
 
 router
   .route("/me/branding")
   .get(auth, tenant, getMyBranding)
-  .patch(auth, tenant, requirePermission("tenant.settings"), updateMyBranding);
+  .patch(
+    auth,
+    tenant,
+    requirePermission("tenant.settings"),
+    requireFeature("branding"),
+    updateMyBranding,
+  );
 
 router
   .route("/me/logo")
@@ -60,14 +61,18 @@ router
     auth,
     tenant,
     requirePermission("tenant.settings"),
+    requireFeature("branding"),
     logoUpload,
     uploadMyLogo,
   )
   .delete(auth, tenant, requirePermission("tenant.settings"), deleteMyLogo);
 
-router
-  .route("/:id")
-  .get(auth, getTenantById)
-  .delete(auth, requirePermission("tenant.delete"), deleteTenantAccount);
+router.delete(
+  "/:id",
+  auth,
+  tenant,
+  requirePermission("tenant.delete"),
+  deleteTenantAccount,
+);
 
 module.exports = router;

@@ -4,14 +4,17 @@ const mongoose = require("mongoose");
 const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
 const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
-
-// Normalize to UTC midnight
-function normalizeToUTC(date) {
-  const d = new Date(date);
-  return new Date(
-    Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()),
-  );
-}
+const {
+  normalizeToUTC,
+  normalizeShiftType,
+  normalizeShiftTag,
+  normalizeFacilityTimezone,
+  parseClockTime,
+  dedupeStrings,
+  getConfiguredShiftTypes,
+  buildShiftSlotLookup,
+  buildWindowFromShiftSlot,
+} = require("../utils/dateUtils");
 
 function normalizeShiftWindow(startTime, endTime) {
   const parsedStart = new Date(startTime);
@@ -42,153 +45,13 @@ function normalizeAreaTag(value) {
     .toLowerCase();
 }
 
-function normalizeShiftType(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
 
-function normalizeShiftTag(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
-}
 
-function normalizeFacilityTimezone(value) {
-  const timezone = String(value || "UTC").trim();
-  return DateTime.local().setZone(timezone).isValid ? timezone : "UTC";
-}
 
-function parseClockTime(value) {
-  const text = String(value || "").trim();
-  const match = text.match(/^([01]\d|2[0-3]):([0-5]\d)$/);
-  if (!match) return null;
 
-  return {
-    hour: Number(match[1]),
-    minute: Number(match[2]),
-  };
-}
 
-function dedupeStrings(values) {
-  return Array.from(
-    new Set(
-      (Array.isArray(values) ? values : [])
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
-}
 
-function getConfiguredShiftTypes(facilityPrefs) {
-  const fromLegacyList = dedupeStrings(facilityPrefs?.shiftTypes || []).map(
-    normalizeShiftType,
-  );
-  const fromDefinitions = dedupeStrings(
-    (facilityPrefs?.shiftTypeDefinitions || []).map((item) => item?.key),
-  ).map(normalizeShiftType);
 
-  const merged = dedupeStrings([...fromLegacyList, ...fromDefinitions]);
-  if (merged.length) return merged;
-  return ["day", "evening", "night"];
-}
-
-function buildShiftSlotLookup(facilityPrefs) {
-  const lookup = new Map();
-
-  for (const definition of facilityPrefs?.shiftTypeDefinitions || []) {
-    const shiftType = normalizeShiftType(definition?.key);
-    if (!shiftType) continue;
-
-    for (const slot of definition?.timeSlots || []) {
-      const shiftTag = normalizeShiftTag(slot?.tag);
-      if (!shiftTag) continue;
-
-      const startLocal = String(slot?.startLocalTime || "").trim();
-      const endLocal = String(slot?.endLocalTime || "").trim();
-      if (!startLocal || !endLocal) continue;
-
-      lookup.set(`${shiftType}:${shiftTag}`, {
-        shiftType,
-        shiftTag,
-        startLocalTime: startLocal,
-        endLocalTime: endLocal,
-        spansOvernight: Boolean(slot?.spansOvernight),
-      });
-    }
-  }
-
-  return lookup;
-}
-
-function buildWindowFromShiftSlot({
-  date,
-  shiftType,
-  shiftTag,
-  slotLookup,
-  facilityTimezone,
-}) {
-  const slot = slotLookup.get(`${shiftType}:${shiftTag}`);
-  if (!slot) {
-    return {
-      error: `No shift slot configuration found for shiftType '${shiftType}' and shiftTag '${shiftTag}'`,
-    };
-  }
-
-  const startClock = parseClockTime(slot.startLocalTime);
-  const endClock = parseClockTime(slot.endLocalTime);
-  if (!startClock || !endClock) {
-    return {
-      error: `Invalid local slot time configuration for shiftType '${shiftType}' and shiftTag '${shiftTag}'`,
-    };
-  }
-
-  const anchorDate = new Date(date);
-  const year = anchorDate.getUTCFullYear();
-  const month = anchorDate.getUTCMonth() + 1;
-  const day = anchorDate.getUTCDate();
-
-  const localStart = DateTime.fromObject(
-    {
-      year,
-      month,
-      day,
-      hour: startClock.hour,
-      minute: startClock.minute,
-      second: 0,
-      millisecond: 0,
-    },
-    { zone: facilityTimezone },
-  );
-
-  let localEnd = DateTime.fromObject(
-    {
-      year,
-      month,
-      day,
-      hour: endClock.hour,
-      minute: endClock.minute,
-      second: 0,
-      millisecond: 0,
-    },
-    { zone: facilityTimezone },
-  );
-
-  if (!localStart.isValid || !localEnd.isValid) {
-    return {
-      error: `Failed to parse local slot window for shiftType '${shiftType}' and shiftTag '${shiftTag}' in timezone '${facilityTimezone}'`,
-    };
-  }
-
-  if (slot.spansOvernight || localEnd <= localStart) {
-    localEnd = localEnd.plus({ days: 1 });
-  }
-
-  return {
-    startTime: localStart.toUTC().toJSDate(),
-    endTime: localEnd.toUTC().toJSDate(),
-  };
-}
 
 function getCoverageArea(coverage) {
   return normalizeAreaTag(coverage?.unitArea);
@@ -588,7 +451,32 @@ exports.updateCoverage = async (req, res, next) => {
       return res.status(403).json({ message: "Admins only" });
 
     const id = req.params.id;
-    const update = { ...req.body };
+    // Only these fields can be changed (tenantId, source, etc. never).
+    const EDITABLE = [
+      "date",
+      "role",
+      "unitArea",
+      "shiftType",
+      "shiftTag",
+      "startTime",
+      "endTime",
+      "requiredCount",
+      "requiredCertificationTags",
+      "note",
+    ];
+    const update = {};
+    for (const key of EDITABLE) {
+      if (req.body?.[key] !== undefined) update[key] = req.body[key];
+    }
+    if (update.requiredCount !== undefined) {
+      const count = Number(update.requiredCount);
+      if (!Number.isInteger(count) || count < 0 || count > 50) {
+        return res
+          .status(400)
+          .json({ message: "requiredCount must be a whole number 0–50" });
+      }
+      update.requiredCount = count;
+    }
     const { allowedRoles, allowedShiftTypes, slotLookup, facilityTimezone } =
       await getCoverageConfig(req.tenantId);
 
@@ -696,6 +584,12 @@ exports.updateCoverage = async (req, res, next) => {
       update.shiftTag = effectiveShiftTag;
       update.startTime = slotWindow.startTime;
       update.endTime = slotWindow.endTime;
+    }
+
+    // A hand edit to a template row pins that day, so later template
+    // changes leave it alone.
+    if (existing.source === "template" && Object.keys(update).length) {
+      update.overridden = true;
     }
 
     const updated = await Coverage.findOneAndUpdate(
@@ -868,3 +762,6 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     next(err);
   }
 };
+
+// Exposed for unit tests.
+exports._normalizeToUTC = normalizeToUTC;

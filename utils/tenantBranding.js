@@ -1,10 +1,9 @@
 const Tenant = require("../models/tenantModel");
-const { getTenantAppUrl } = require("./tenantDomainUtils");
 
 const HEX_COLOR_PATTERN = /^#[0-9a-f]{6}$/i;
 const DISPLAY_NAME_MAX_LENGTH = 80;
 const DEFAULT_PRIMARY_COLOR = "#2563eb";
-const BRANDING_SELECT = "name subdomain branding";
+const BRANDING_SELECT = "name branding";
 const EMAIL_BRANDING_CACHE_TTL_MS = 5 * 60 * 1000;
 
 const emailBrandingCache = new Map();
@@ -16,6 +15,10 @@ const HTML_ESCAPES = {
   '"': "&quot;",
   "'": "&#39;",
 };
+
+// One app URL for every workspace (no per-tenant subdomains).
+const getAppUrl = () =>
+  String(process.env.FRONTEND_URL || "").replace(/\/+$/, "") || null;
 
 const escapeHtml = (value) =>
   String(value ?? "").replace(/[&<>"']/g, (char) => HTML_ESCAPES[char]);
@@ -40,8 +43,7 @@ const getPublicBranding = (tenant) => {
     tenantId: String(tenant._id),
     name: tenant.name,
     displayName: branding.displayName || tenant.name,
-    subdomain: tenant.subdomain || null,
-    appUrl: getTenantAppUrl(tenant),
+    appUrl: getAppUrl(),
     logoUrl: getAbsoluteLogoUrl(tenant) || getLogoPath(tenant),
     primaryColor: branding.primaryColor || null,
     secondaryColor: branding.secondaryColor || null,
@@ -92,7 +94,7 @@ const getEmailBranding = async (tenantId) => {
         displayName: tenant.branding?.displayName || tenant.name,
         primaryColor: tenant.branding?.primaryColor || null,
         logoUrl: getAbsoluteLogoUrl(tenant),
-        appUrl: getTenantAppUrl(tenant),
+        appUrl: getAppUrl(),
       }
     : null;
 

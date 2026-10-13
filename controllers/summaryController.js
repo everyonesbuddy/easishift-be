@@ -106,8 +106,10 @@ exports.getAdminSummary = async (req, res, next) => {
     const adminId = req.params.adminId;
 
     // Validate admin belongs to tenant
+    // The route already requires staff.view; this only checks the id is a
+    // user in the same workspace (owners have role "owner", not "admin").
     const admin = await User.findOne({ _id: adminId, tenantId });
-    if (!admin || admin.role !== "admin") {
+    if (!admin) {
       return res
         .status(403)
         .json({ message: "Admin not found or not authorized" });
@@ -136,7 +138,7 @@ exports.getAdminSummary = async (req, res, next) => {
 
         TimeOff.countDocuments({ tenantId, status: "pending" }),
 
-        User.countDocuments({ tenantId }),
+        User.countDocuments({ tenantId, loginEnabled: false, status: "active" }),
       ]);
 
     // Build a map of assigned schedules per coverage key (role-start-end)

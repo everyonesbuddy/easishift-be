@@ -3,6 +3,11 @@ const mongoose = require("mongoose");
 const dotenv = require("dotenv");
 
 dotenv.config({ path: "./config.env" });
+const { assertStaffLinkKey } = require("./utils/staffLinks");
+
+// Staff links can't be created or re-sent without this key; fail fast.
+assertStaffLinkKey();
+
 const app = require("./app");
 
 // ✅ Connect to MongoDB

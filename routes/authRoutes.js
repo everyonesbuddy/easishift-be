@@ -1,118 +1,40 @@
-/**
- * Auth Routes
- * ------------
- * Groups all authentication endpoints:
- *  - Tenant signup
- *  - Staff signup (by admin)
- *  - Logins (staff)
- */
-
 const express = require("express");
-const multer = require("multer");
 const router = express.Router();
-
-// Accept CSV uploads in memory only; reject non-CSV MIME types
-const csvUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 }, // 5 MB
-  fileFilter(_req, file, cb) {
-    const allowed = ["text/csv", "application/vnd.ms-excel", "text/plain"];
-    if (allowed.includes(file.mimetype) || file.originalname.endsWith(".csv")) {
-      cb(null, true);
-    } else {
-      cb(new Error("Only .csv files are accepted"));
-    }
-  },
-}).single("file");
 
 const {
   registerTenant,
-  registerStaff,
-  bulkRegisterStaff,
   loginStaff,
   changePassword,
   forgotPassword,
   sendPasswordReset,
   resetPassword,
-  getAllUsers,
-  getSwapDirectory,
-  getUserById,
-  updateUser,
-  deleteUser,
+  getMe,
+  updateMe,
 } = require("../controllers/authController");
-
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
 
-// Tenant signup (creates hospital + admin user)
-router.post("/signup/tenant", registerTenant);
+// Workspace signup (creates the workspace + its owner)
+router.post("/signup", registerTenant);
+router.post("/signup/tenant", registerTenant); // old path, kept for the current app
 
-// Staff signup (admin only)
-router.post(
-  "/signup/staff",
-  auth,
-  tenant,
-  requirePermission("staff.manage"),
-  registerStaff,
-);
-router.post(
-  "/signup/staff/bulk",
-  auth,
-  tenant,
-  requirePermission("staff.manage"),
-  csvUpload,
-  bulkRegisterStaff,
-);
-
-// Logins
-router.post("/login/staff", loginStaff);
-
-// Change passwords
+// Accounts (owner / schedulers / viewers). Staff don't log in — they use
+// their personal link. Staff are managed under /api/v1/staff, accounts
+// under /api/v1/members.
+router.post("/login", loginStaff);
+router.post("/login/staff", loginStaff); // old path, kept for the current app
+router.get("/me", auth, tenant, getMe);
+router.patch("/me", auth, updateMe);
 router.patch("/change-password", auth, changePassword);
-
-// Forgot/reset password
 router.post("/forgot-password", forgotPassword);
-router.post("/reset-password", resetPassword);
+router.post("/reset-password", resetPassword); // also accepts invites
 router.post(
   "/users/:id/send-password-reset",
   auth,
   tenant,
-  requirePermission("staff.reset_password"),
+  requirePermission("roles.manage"),
   sendPasswordReset,
-);
-
-// Get all users (optionally filter by role)
-router.get(
-  "/users",
-  auth,
-  tenant,
-  requirePermission("staff.view"),
-  getAllUsers,
-);
-
-// Minimal tenant staff directory used to select eligible shift-swap recipients.
-router.get(
-  "/users/directory",
-  auth,
-  tenant,
-  requirePermission("shift_swap.use"),
-  getSwapDirectory,
-);
-
-// Get single user by ID
-router.get("/:id", auth, tenant, requirePermission("staff.view"), getUserById);
-
-// Update user
-router.put("/:id", auth, tenant, requirePermission("staff.manage"), updateUser);
-
-// Delete user or own account
-router.delete(
-  "/:id",
-  auth,
-  tenant,
-  requirePermission("staff.manage"),
-  deleteUser,
 );
 
 module.exports = router;

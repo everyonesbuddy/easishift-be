@@ -61,6 +61,29 @@ const coverageSchema = new mongoose.Schema(
     },
 
     note: { type: String },
+
+    // Where this row came from. "template" rows are generated per week from
+    // the StaffingTemplate; "manual" rows were added by hand.
+    source: {
+      type: String,
+      enum: ["template", "manual"],
+      default: "manual",
+    },
+    templateRuleId: {
+      type: mongoose.Schema.Types.ObjectId,
+      default: null,
+    },
+    // true once the scheduler changes a template row's count by hand, so
+    // later template edits leave that day alone.
+    overridden: {
+      type: Boolean,
+      default: false,
+    },
+    // Short lock so only one pickup/YES at a time can claim this slot.
+    claimLockUntil: {
+      type: Date,
+      default: null,
+    },
   },
   { timestamps: true },
 );

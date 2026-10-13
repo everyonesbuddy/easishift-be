@@ -1,6 +1,7 @@
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
+const { hasFeature, requiredPlanFor, trialAvailable } = require("../config/plans");
 
 const isValidIanaZone = (value) =>
   DateTime.local().setZone(String(value || "").trim()).isValid;
@@ -92,6 +93,32 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
 
     const hasNestedTimeTrackingUpdate =
       updates.timeTracking && typeof updates.timeTracking === "object";
+
+    // Turning on the time clock is a paid-plan feature.
+    const enablingTimeClock =
+      (hasNestedTimeTrackingUpdate && updates.timeTracking.enabled === true) ||
+      updates["timeTracking.enabled"] === true;
+    if (enablingTimeClock && !hasFeature(req.plan?.key, "timeClock")) {
+      return res.status(402).json({
+        message: "The time clock needs the Starter plan",
+        errorCode: "PLAN_FEATURE_REQUIRED",
+        feature: "timeClock",
+        currentPlan: req.plan?.key || null,
+        requiredPlan: requiredPlanFor("timeClock"),
+        trialAvailable: trialAvailable(req.tenant),
+      });
+    }
+
+    if (
+      updates.weekStartsOn !== undefined &&
+      !(Number.isInteger(updates.weekStartsOn) &&
+        updates.weekStartsOn >= 0 &&
+        updates.weekStartsOn <= 6)
+    ) {
+      return res
+        .status(400)
+        .json({ message: "weekStartsOn must be 0 (Sunday) to 6 (Saturday)" });
+    }
 
     if (hasNestedTimeTrackingUpdate) {
       updates.timeTracking = {

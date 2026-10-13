@@ -1,5 +1,56 @@
 // controllers/scheduleController.js
 const Schedule = require("../models/scheduleModel");
+const { buildE164Number } = require("../utils/phone");
+const { findSchedulers } = require("../utils/schedulers");
+const {
+  sendToStaff,
+  notifySchedulers,
+  shortShift,
+  firstName,
+  escapeHtml,
+} = require("../utils/notify");
+const { getStaffLinkUrl } = require("../utils/staffLinks");
+const {
+  stateForNewSchedule,
+  getWeekSettings,
+} = require("../utils/weekService");
+const { getEffectivePlanKey } = require("../config/plans");
+const ScheduleWeek = require("../models/scheduleWeekModel");
+const Tenant = require("../models/tenantModel");
+const {
+  weekStartFor,
+  dateKeyToCoverageDate,
+  addDaysToKey,
+} = require("../utils/dateUtils");
+const {
+  normalizeRoleFamily,
+  getStaffFacilityRoles,
+  isStaffRoleCompatible,
+  getSchedulingCandidateTier,
+  isRoleCompatible,
+  normalizeAreaTag,
+  normalizeShiftType,
+  normalizeShiftTag,
+  inferShiftTypeFromWindow,
+  dedupeStrings,
+  getCoverageArea,
+  getCoverageShiftType,
+  getCoverageShiftTag,
+  getCoverageCertificationTags,
+  getStaffExplicitAreas,
+  getStaffExplicitShiftTypes,
+  getStaffAllowedAreas,
+  getStaffAllowedShiftTypes,
+  getStaffCertificationTags,
+  isCertificationCompatible,
+  isAreaCompatible,
+  isShiftTypeCompatible,
+  getFacilityShiftTypes,
+  getCompatibleFacilityConfig,
+  isEnabledScheduleRole,
+  isStaffCompatibleWithCoverage,
+} = require("../utils/eligibility");
+
 const Coverage = require("../models/coverageModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Preferences = require("../models/preferencesModel");
@@ -10,7 +61,9 @@ const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
 const {
   hasConflict,
   countAssignmentsByCoverage,
+  COVERAGE_OCCUPYING_STATUSES,
 } = require("../utils/scheduleUtils");
+const { markOfferFilledIfAny } = require("../utils/callouts");
 const {
   formatRangeInFacilityZone,
   formatInFacilityZone,
@@ -29,8 +82,6 @@ const {
 } = require("../config/authorization");
 
 const HOURS_TO_MINUTES = 60;
-const LEGACY_AREA_PREFIXES = ["al_", "il_", "mc_"];
-const SCHEDULE_SYSTEM_ROLES = new Set(["user", "staff", "other"]);
 const PICKUP_ACTIVE_STATUSES = ["scheduled", "in_progress"];
 const SELF_SERVICE_SCHEDULE_STATUSES = new Set(["scheduled", "call_out"]);
 
@@ -76,234 +127,6 @@ const stableHash = (value) => {
     hash = (hash * 31 + text.charCodeAt(index)) >>> 0;
   }
   return hash;
-};
-
-const normalizeRoleFamily = (role) => {
-  const value = String(role || "")
-    .trim()
-    .toLowerCase();
-
-  if (!value) return "";
-
-  for (const prefix of LEGACY_AREA_PREFIXES) {
-    if (value.startsWith(prefix)) {
-      return value.slice(prefix.length);
-    }
-  }
-
-  return value;
-};
-
-const getStaffFacilityRoles = (staff, facilityConfig) => {
-  const configuredRoles = new Set(
-    (facilityConfig?.roleFamilies || []).map(normalizeRole),
-  );
-  const roles = getUserRoles(staff);
-  const facilityRoles = roles.filter((role) => configuredRoles.has(role));
-
-  if (facilityRoles.length) return facilityRoles;
-
-  const legacyRole = normalizeRole(staff?.role);
-  return legacyRole && !SYSTEM_ROLES.has(legacyRole) ? [legacyRole] : [];
-};
-
-const isStaffRoleCompatible = (staff, coverageRole, facilityConfig) =>
-  getStaffFacilityRoles(staff, facilityConfig).some((role) =>
-    isRoleCompatible(role, coverageRole),
-  );
-
-const getSchedulingCandidateTier = (staff, facilityConfig) => {
-  const hasSystemRole = getSystemRoles(staff).length > 0;
-  const hasFacilityRole =
-    getStaffFacilityRoles(staff, facilityConfig).length > 0;
-
-  if (!hasFacilityRole) return null;
-  return hasSystemRole ? 2 : 1;
-};
-
-const isRoleCompatible = (staffRole, coverageRole) =>
-  normalizeRoleFamily(staffRole) === normalizeRoleFamily(coverageRole);
-
-const normalizeAreaTag = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const normalizeShiftType = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const normalizeShiftTag = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
-
-const inferShiftTypeFromWindow = (startTime, endTime) => {
-  const start = new Date(startTime);
-  const end = new Date(endTime);
-
-  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) {
-    return null;
-  }
-
-  const startHour = start.getUTCHours();
-  const crossesMidnight = end.getUTCDate() !== start.getUTCDate();
-
-  if (crossesMidnight || startHour >= 23 || startHour < 7) {
-    return "night";
-  }
-
-  if (startHour >= 15 && startHour < 23) {
-    return "evening";
-  }
-
-  return "day";
-};
-
-const dedupeStrings = (values) =>
-  Array.from(
-    new Set(
-      (Array.isArray(values) ? values : [])
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
-
-const getCoverageArea = (coverage) => normalizeAreaTag(coverage?.unitArea);
-
-const getCoverageShiftType = (coverage) =>
-  normalizeShiftType(coverage?.shiftType || coverage?.meta?.shiftType || "");
-
-const getCoverageShiftTag = (coverage) =>
-  normalizeShiftTag(coverage?.shiftTag || coverage?.meta?.shiftTag || "");
-
-const getCoverageCertificationTags = (coverage) =>
-  dedupeStrings(coverage?.requiredCertificationTags || []);
-
-const getStaffExplicitAreas = (staff) =>
-  dedupeStrings(staff?.allowedAreas).map(normalizeAreaTag);
-
-const getStaffExplicitShiftTypes = (staff) =>
-  dedupeStrings(staff?.allowedShiftTypes).map(normalizeShiftType);
-
-const getStaffAllowedAreas = (staff, facilityAreas) => {
-  const explicit = getStaffExplicitAreas(staff);
-  if (explicit.length) return explicit;
-
-  return dedupeStrings(facilityAreas).map(normalizeAreaTag);
-};
-
-const getStaffAllowedShiftTypes = (staff, facilityShiftTypes) => {
-  const explicit = getStaffExplicitShiftTypes(staff);
-  if (explicit.length) return explicit;
-
-  return dedupeStrings(facilityShiftTypes).map(normalizeShiftType);
-};
-
-const getStaffCertificationTags = (staff) =>
-  dedupeStrings(staff?.certificationTags);
-
-const isCertificationCompatible = (requiredTags, staffTags) => {
-  if (!requiredTags.length) return true;
-  const staffTagSet = new Set(
-    (staffTags || []).map((tag) => tag.toLowerCase()),
-  );
-  return requiredTags.every((tag) => staffTagSet.has(tag.toLowerCase()));
-};
-
-const isAreaCompatible = (staffAreas, coverageArea, hasAreaRestrictions) => {
-  if (!staffAreas || !staffAreas.length) return true;
-  if (!coverageArea) return !hasAreaRestrictions;
-  return staffAreas.includes(coverageArea);
-};
-
-const isShiftTypeCompatible = (
-  staffShiftTypes,
-  coverageShiftType,
-  coverageShiftTag,
-  hasShiftTypeRestrictions,
-) => {
-  if (!staffShiftTypes || !staffShiftTypes.length) return true;
-
-  const normalizedCoverageShiftType = normalizeShiftType(coverageShiftType);
-  const normalizedCoverageShiftTag = normalizeShiftTag(coverageShiftTag);
-
-  if (!normalizedCoverageShiftType) return !hasShiftTypeRestrictions;
-
-  const compositeCoverageKey = normalizedCoverageShiftTag
-    ? `${normalizedCoverageShiftType}:${normalizedCoverageShiftTag}`
-    : null;
-
-  return staffShiftTypes.some((value) => {
-    const normalizedValue = normalizeShiftType(value);
-    if (!normalizedValue) return false;
-
-    // Supports both plain type allow-list (e.g. "day") and slot-level
-    // allow-list (e.g. "day:day_1") stored in allowedShiftTypes.
-    return (
-      normalizedValue === normalizedCoverageShiftType ||
-      (compositeCoverageKey && normalizedValue === compositeCoverageKey)
-    );
-  });
-};
-
-const getFacilityShiftTypes = (facilityPreferences) => {
-  const configured = dedupeStrings(facilityPreferences?.shiftTypes).map(
-    normalizeShiftType,
-  );
-  const defined = dedupeStrings(
-    (facilityPreferences?.shiftTypeDefinitions || []).map((item) => item?.key),
-  ).map(normalizeShiftType);
-  const merged = dedupeStrings([...configured, ...defined]);
-  return merged.length ? merged : ["day", "evening", "night"];
-};
-
-const getCompatibleFacilityConfig = (facilityPreferences) => ({
-  roleFamilies: dedupeStrings(facilityPreferences?.roleFamilies).map(
-    normalizeRoleFamily,
-  ),
-  areas: (facilityPreferences?.unitAreas || ["al", "il", "mc"]).map(
-    normalizeAreaTag,
-  ),
-  shiftTypes: getFacilityShiftTypes(facilityPreferences),
-  certificationTags: dedupeStrings(facilityPreferences?.certificationTags),
-});
-
-const isEnabledScheduleRole = (role, facilityConfig) => {
-  const normalized = normalizeRoleFamily(role);
-  if (!normalized) return false;
-  if (SCHEDULE_SYSTEM_ROLES.has(normalized)) return true;
-  return (facilityConfig?.roleFamilies || []).includes(normalized);
-};
-
-const isStaffCompatibleWithCoverage = ({ staff, coverage, facilityConfig }) => {
-  const explicitStaffAreas = getStaffExplicitAreas(staff);
-  const explicitStaffShiftTypes = getStaffExplicitShiftTypes(staff);
-  const staffAreas = getStaffAllowedAreas(staff, facilityConfig.areas);
-  const staffShiftTypes = getStaffAllowedShiftTypes(
-    staff,
-    facilityConfig.shiftTypes,
-  );
-  const hasAreaRestrictions = explicitStaffAreas.length > 0;
-  const hasShiftTypeRestrictions = explicitStaffShiftTypes.length > 0;
-  const staffCerts = getStaffCertificationTags(staff);
-  const coverageArea = getCoverageArea(coverage);
-  const coverageShiftType = getCoverageShiftType(coverage);
-  const coverageShiftTag = getCoverageShiftTag(coverage);
-  const coverageCerts = getCoverageCertificationTags(coverage);
-
-  return (
-    isStaffRoleCompatible(staff, coverage.role, facilityConfig) &&
-    isAreaCompatible(staffAreas, coverageArea, hasAreaRestrictions) &&
-    isShiftTypeCompatible(
-      staffShiftTypes,
-      coverageShiftType,
-      coverageShiftTag,
-      hasShiftTypeRestrictions,
-    ) &&
-    isCertificationCompatible(coverageCerts, staffCerts)
-  );
 };
 
 const getEffectiveFacilityPolicy = (facilityPreferences) => {
@@ -807,23 +630,6 @@ const getNotSelectedReason = (candidateMetrics, cutoffMetrics) => {
   return "lower overall ranking score";
 };
 
-const buildE164Number = (countryCode, phone) => {
-  if (!phone) return null;
-
-  const rawPhone = String(phone).trim();
-  if (!rawPhone) return null;
-  if (rawPhone.startsWith("+")) return rawPhone;
-
-  if (!countryCode) return null;
-  const normalizedCountryCode = String(countryCode).trim();
-  if (!normalizedCountryCode) return null;
-
-  const prefix = normalizedCountryCode.startsWith("+")
-    ? normalizedCountryCode
-    : `+${normalizedCountryCode}`;
-
-  return `${prefix}${rawPhone}`;
-};
 
 const isEmailNotificationEnabled = (preferences) =>
   preferences?.emailNotificationsEnabled !== false;
@@ -851,16 +657,18 @@ const getFacilityTimezone = async (tenantId) => {
   return prefs?.facilityTimezone || "UTC";
 };
 
+// Accounts (schedulers) get email; staff contacts go through sendToStaff,
+// which respects the plan, SMS consent and their notification settings.
 const notifyUsersBestEffort = async ({
   tenantId,
   users,
   emailSubject,
   emailHtml,
   smsBody,
+  kind = "swap",
 }) => {
   const uniqueUsers = [];
   const seen = new Set();
-
   for (const user of users || []) {
     if (!user || !user._id) continue;
     const key = user._id.toString();
@@ -868,59 +676,82 @@ const notifyUsersBestEffort = async ({
     seen.add(key);
     uniqueUsers.push(user);
   }
-
   if (!uniqueUsers.length) return;
 
-  const preferenceDocs = await Preferences.find({
-    tenantId,
-    staffId: { $in: uniqueUsers.map((user) => user._id) },
-  })
-    .select("staffId emailNotificationsEnabled smsNotificationsEnabled")
-    .lean();
-
-  const preferenceMap = {};
-  preferenceDocs.forEach((pref) => {
-    preferenceMap[pref.staffId.toString()] = pref;
-  });
+  const tenant = await Tenant.findById(tenantId);
+  if (!tenant) return;
+  const planKey = getEffectivePlanKey(tenant);
 
   for (const user of uniqueUsers) {
-    const pref = preferenceMap[user._id.toString()];
-
     try {
-      if (user.email && isEmailNotificationEnabled(pref)) {
-        await sendEmail(user.email, emailSubject, emailHtml(user), null, {
-          tenantId,
-        });
+      if (user.loginEnabled) {
+        if (user.email) {
+          await sendEmail(user.email, emailSubject, emailHtml(user), null, {
+            tenantId,
+          });
+        }
+        continue;
       }
-
-      const to = isSmsNotificationEnabled(pref)
-        ? buildE164Number(user.userPhoneCountryCode, user.userPhone)
-        : null;
-
-      if (to) {
-        await sendSMS(to, smsBody(user));
-      }
+      await sendToStaff({
+        tenant,
+        planKey,
+        staff: user,
+        kind,
+        sms: smsBody(user),
+        emailSubject,
+        emailHtml: emailHtml(user),
+      });
     } catch (err) {
       console.error(
-        `Failed swap notification for user ${user._id}:`,
+        `Failed notification for user ${user._id}:`,
         err && err.message ? err.message : err,
       );
     }
   }
 };
 
-const getTenantAdmins = async (tenantId, excludeUserIds = []) => {
-  const excluded = excludeUserIds.map((id) => id.toString());
-  return User.find({
-    tenantId,
-    $or: [
-      { roles: "admin" },
-      { role: "admin" },
-      { roles: "owner" },
-      { role: "owner" },
-    ],
-    _id: { $nin: excluded },
-  });
+const getTenantAdmins = (tenantId, excludeUserIds = []) =>
+  findSchedulers(tenantId, excludeUserIds);
+
+/**
+ * Tell one staff member their published schedule changed (best-effort).
+ * kind: "shift_added" | "shift_changed" | "shift_removed"
+ */
+const notifyShiftChange = async ({ req, staffId, kind, schedule }) => {
+  try {
+    const staff = await User.findOne({
+      _id: staffId,
+      tenantId: req.tenantId,
+      loginEnabled: false,
+    }).lean();
+    if (!staff) return null;
+    const timezone = await getFacilityTimezone(req.tenantId);
+    const when = shortShift(schedule.startTime, schedule.endTime, timezone);
+    const facility = req.tenant?.name || "Your facility";
+    const lines = {
+      shift_added: `${facility}: you've been added to ${when} (${schedule.role}).`,
+      shift_changed: `${facility}: your shift changed. Now ${when} (${schedule.role}).`,
+      shift_removed: `${facility}: your ${when} shift was removed from the schedule.`,
+    };
+    const link = await getStaffLinkUrl(staff);
+    const text = `${lines[kind] || lines.shift_changed} ${link}`;
+    return sendToStaff({
+      tenant: req.tenant,
+      planKey: getEffectivePlanKey(req.tenant),
+      staff,
+      kind,
+      sms: text,
+      emailSubject: (() => {
+        const subject = text.replace(/^[^:]+: /, "");
+        return subject.charAt(0).toUpperCase() + subject.slice(1);
+      })(),
+      emailHtml: `<p>Hi ${escapeHtml(firstName(staff.name))},</p><p>${escapeHtml(text)}</p>`,
+      refId: schedule._id,
+    });
+  } catch (err) {
+    console.error("notifyShiftChange failed:", err.message);
+    return null;
+  }
 };
 
 const toObjectId = (value) =>
@@ -1164,11 +995,38 @@ const restoreAutoRemovedDraftAssignment = async ({ tenantId, schedule }) => {
   }
 };
 
+// Date keys (YYYY-MM-DD) of every day in a published week from last week on.
+const getPublishedDates = async (tenantId) => {
+  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  const lastWeek = addDaysToKey(
+    weekStartFor(new Date(), timezone, weekStartsOn),
+    -7,
+  );
+  const weeks = await ScheduleWeek.find({
+    tenantId,
+    status: "published",
+    weekStart: { $gte: dateKeyToCoverageDate(lastWeek) },
+  })
+    .select("weekStart")
+    .lean();
+  const dates = [];
+  for (const week of weeks) {
+    for (let day = 0; day < 7; day += 1) {
+      dates.push(new Date(week.weekStart.getTime() + day * 86400000));
+    }
+  }
+  return dates;
+};
+
 const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
   const now = new Date();
+  // Staff only see open shifts in weeks the scheduler has published.
+  const publishedDates = await getPublishedDates(tenantId);
+  if (!publishedDates.length) return [];
   const coverages = await Coverage.find({
     tenantId,
     startTime: { $gt: now },
+    date: { $in: publishedDates },
   })
     .sort({ date: 1, startTime: 1 })
     .lean();
@@ -1177,12 +1035,35 @@ const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
 
   // Coverage tied to an in-progress AI draft is still open for pickup until a
   // live Schedule exists for it (see remaining/assignedCount below).
-  const eligibleCoverages = coverages.filter((coverage) =>
-    isStaffCompatibleWithCoverage({
-      staff,
-      coverage,
-      facilityConfig,
-    }),
+  // Hide slots I'm already on, called out of, or that overlap my shifts.
+  const myShifts = await Schedule.find({
+    tenantId,
+    staffId: staff._id,
+    endTime: { $gt: now },
+    status: { $in: [...PICKUP_ACTIVE_STATUSES, "call_out"] },
+  })
+    .select("coverageId startTime endTime status")
+    .lean();
+  const myCoverageIds = new Set(
+    myShifts.filter((s) => s.coverageId).map((s) => String(s.coverageId)),
+  );
+  const overlapsMyShift = (coverage) =>
+    myShifts.some(
+      (s) =>
+        s.status !== "call_out" &&
+        new Date(s.startTime) < new Date(coverage.endTime) &&
+        new Date(s.endTime) > new Date(coverage.startTime),
+    );
+
+  const eligibleCoverages = coverages.filter(
+    (coverage) =>
+      !myCoverageIds.has(String(coverage._id)) &&
+      !overlapsMyShift(coverage) &&
+      isStaffCompatibleWithCoverage({
+        staff,
+        coverage,
+        facilityConfig,
+      }),
   );
   if (!eligibleCoverages.length) return [];
 
@@ -1223,87 +1104,168 @@ exports.getOpenCoverageForMe = async (req, res, next) => {
   }
 };
 
+/**
+ * Puts `staff` on an open slot of `coverageId`, safely.
+ * Used by link pickup and by YES replies to call-out texts.
+ * Returns { ok: true, schedule } or { ok: false, status, code, message }.
+ */
+const CLAIM_LOCK_MS = 10 * 1000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Takes the per-slot claim lock (atomic single-document update), so claims
+ * on the same slot run one at a time across every server process.
+ */
+const acquireClaimLock = async (tenantId, coverageId) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const now = new Date();
+    const locked = await Coverage.findOneAndUpdate(
+      {
+        _id: coverageId,
+        tenantId,
+        $or: [{ claimLockUntil: null }, { claimLockUntil: { $lt: now } }],
+      },
+      { $set: { claimLockUntil: new Date(now.getTime() + CLAIM_LOCK_MS) } },
+      { new: true, timestamps: false },
+    );
+    if (locked) return locked.claimLockUntil;
+    await sleep(50 + Math.floor(Math.random() * 50));
+  }
+  return null;
+};
+
+const releaseClaimLock = (tenantId, coverageId, lockUntil) =>
+  Coverage.updateOne(
+    { _id: coverageId, tenantId, claimLockUntil: lockUntil },
+    { $set: { claimLockUntil: null } },
+    { timestamps: false },
+  ).catch(() => {});
+
+/**
+ * Puts `staff` on an open slot of `coverageId`, safely.
+ * Used by link pickup and by YES replies to call-out texts.
+ * Returns { ok: true, schedule } or { ok: false, status, code, message }.
+ */
+const claimCoverage = async ({ tenantId, coverageId, staff, source }) => {
+  if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
+    return { ok: false, status: 400, code: "INVALID_COVERAGE", message: "Valid coverageId is required" };
+  }
+  const lockUntil = await acquireClaimLock(tenantId, coverageId);
+  if (!lockUntil) {
+    const exists = await Coverage.exists({ _id: coverageId, tenantId });
+    return exists
+      ? { ok: false, status: 409, code: "BUSY", message: "Someone else is taking this shift right now; try again" }
+      : { ok: false, status: 404, code: "COVERAGE_NOT_FOUND", message: "Coverage not found" };
+  }
+  try {
+    return await claimCoverageLocked({ tenantId, coverageId, staff, source });
+  } finally {
+    await releaseClaimLock(tenantId, coverageId, lockUntil);
+  }
+};
+
+const claimCoverageLocked = async ({ tenantId, coverageId, staff, source }) => {
+  if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
+    return { ok: false, status: 400, code: "INVALID_COVERAGE", message: "Valid coverageId is required" };
+  }
+
+  const [coverage, facilityPreferences] = await Promise.all([
+    Coverage.findOne({ _id: coverageId, tenantId }),
+    FacilityPreferences.findOne({ tenantId }).lean(),
+  ]);
+  if (!coverage) {
+    return { ok: false, status: 404, code: "COVERAGE_NOT_FOUND", message: "Coverage not found" };
+  }
+  if (coverage.startTime <= new Date()) {
+    return { ok: false, status: 400, code: "SHIFT_STARTED", message: "Only future shifts can be picked up" };
+  }
+
+  const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
+  const openCoverages = await getOpenCoverageForStaff({
+    tenantId,
+    staff,
+    facilityConfig,
+  });
+  if (!openCoverages.some((item) => String(item._id) === String(coverage._id))) {
+    return { ok: false, status: 409, code: "SHIFT_ALREADY_FILLED", message: "This shift is no longer available" };
+  }
+
+  const timeOff = await TimeOff.findOne({
+    tenantId,
+    staffId: staff._id,
+    status: "approved",
+    startTime: { $lte: coverage.endTime },
+    endTime: { $gte: coverage.startTime },
+  });
+  if (timeOff) {
+    return { ok: false, status: 409, code: "TIME_OFF", message: "You have approved time off overlapping this shift" };
+  }
+
+  const conflict = await hasConflict({
+    tenantId,
+    staffId: staff._id,
+    startTime: coverage.startTime,
+    endTime: coverage.endTime,
+  });
+  if (conflict) {
+    return { ok: false, status: 409, code: "CONFLICT", message: "You're already working then", conflict };
+  }
+
+  const schedule = await Schedule.create({
+    tenantId,
+    staffId: staff._id,
+    coverageId: coverage._id,
+    role: coverage.role,
+    unitArea: coverage.unitArea,
+    shiftType: coverage.shiftType,
+    shiftTag: coverage.shiftTag,
+    certificationTags: coverage.requiredCertificationTags || [],
+    startTime: coverage.startTime,
+    endTime: coverage.endTime,
+    timezone: facilityPreferences?.facilityTimezone || "UTC",
+    notes:
+      source === "callout" ? "Took a call-out shift" : "Picked up by staff member",
+    status: "scheduled",
+    state: "published",
+    meta: { createdBy: staff._id, source, publishedAt: new Date() },
+  });
+
+  // Belt and braces (the claim lock already serializes claims): if the slot
+  // is somehow over capacity now, undo this one.
+  const occupying = await Schedule.countDocuments({
+    tenantId,
+    coverageId: coverage._id,
+    status: { $in: COVERAGE_OCCUPYING_STATUSES },
+  });
+  if (occupying > coverage.requiredCount) {
+    await Schedule.deleteOne({ _id: schedule._id });
+    return { ok: false, status: 409, code: "SHIFT_ALREADY_FILLED", message: "Sorry, someone just took this shift" };
+  }
+
+  await autoRemoveDraftAssignmentForSchedule({ tenantId, schedule });
+  await markOfferFilledIfAny({ tenantId, coverageId: coverage._id, staffId: staff._id });
+  return { ok: true, schedule };
+};
+exports.claimCoverage = claimCoverage;
+
 exports.pickUpSchedule = async (req, res, next) => {
   try {
-    const { coverageId } = req.body || {};
-    if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
-      return res.status(400).json({ message: "Valid coverageId is required" });
-    }
-
-    const [coverage, facilityPreferences] = await Promise.all([
-      Coverage.findOne({ _id: coverageId, tenantId: req.tenantId }),
-      FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
-    ]);
-    if (!coverage) {
-      return res.status(404).json({ message: "Coverage not found" });
-    }
-    if (coverage.startTime <= new Date()) {
-      return res
-        .status(400)
-        .json({ message: "Only future shifts can be picked up" });
-    }
-
-    const facilityConfig = getCompatibleFacilityConfig(facilityPreferences);
-    const openCoverages = await getOpenCoverageForStaff({
+    const result = await claimCoverage({
       tenantId: req.tenantId,
+      coverageId: req.body?.coverageId,
       staff: req.user,
-      facilityConfig,
+      source: "staff_pickup",
     });
-    const openCoverage = openCoverages.find(
-      (item) => item._id.toString() === coverage._id.toString(),
-    );
-    if (!openCoverage) {
-      return res.status(409).json({
-        message: "This shift is no longer available for pickup",
+    if (!result.ok) {
+      return res.status(result.status).json({
+        message: result.message,
+        errorCode: result.code,
+        ...(result.conflict ? { conflict: result.conflict } : {}),
       });
     }
-
-    const timeOff = await TimeOff.findOne({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      status: "approved",
-      startTime: { $lte: coverage.endTime },
-      endTime: { $gte: coverage.startTime },
-    });
-    if (timeOff) {
-      return res.status(409).json({
-        message: "You have approved time off overlapping this shift",
-      });
-    }
-
-    const conflict = await hasConflict({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      startTime: coverage.startTime,
-      endTime: coverage.endTime,
-    });
-    if (conflict) {
-      return res.status(409).json({ message: "Schedule conflict", conflict });
-    }
-
-    const schedule = await Schedule.create({
-      tenantId: req.tenantId,
-      staffId: req.user._id,
-      coverageId: coverage._id,
-      role: coverage.role,
-      unitArea: coverage.unitArea,
-      shiftType: coverage.shiftType,
-      shiftTag: coverage.shiftTag,
-      certificationTags: coverage.requiredCertificationTags || [],
-      startTime: coverage.startTime,
-      endTime: coverage.endTime,
-      timezone: "UTC",
-      notes: "Picked up by staff member",
-      status: "scheduled",
-      meta: { createdBy: req.user._id, source: "staff_pickup" },
-    });
-
-    await autoRemoveDraftAssignmentForSchedule({
-      tenantId: req.tenantId,
-      schedule,
-    });
-
-    res.status(201).json({ message: "Shift picked up successfully", schedule });
+    res
+      .status(201)
+      .json({ message: "Shift picked up successfully", schedule: result.schedule });
   } catch (err) {
     next(err);
   }
@@ -1457,7 +1419,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       email: { sent: 0, failed: 0 },
       sms: { sent: 0, failed: 0 },
     };
-    const tenantUsers = await User.find({ tenantId }).select(
+    const tenantUsers = await User.find({ tenantId, loginEnabled: false, status: "active" }).select(
       "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
     );
 
@@ -2282,7 +2244,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
           startTime: { $lte: targetEnd },
           endTime: { $gte: fairnessWindowStart },
         }).select("staffId startTime endTime"),
-        User.find({ tenantId }).select(
+        User.find({ tenantId, loginEnabled: false, status: "active" }).select(
           "name email role roles allowedAreas allowedShiftTypes certificationTags userPhone userPhoneCountryCode",
         ),
       ]);
@@ -2615,7 +2577,20 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
       });
     }
 
-    const schedulePayload = assignments.map((assignment) => ({
+    // "Publishing" an auto-fill draft puts the shifts on the schedule. They
+    // stay drafts (silent) unless their week has already been published.
+    const states = [];
+    for (const assignment of assignments) {
+      states.push(
+        await stateForNewSchedule({
+          tenantId: req.tenantId,
+          startTime: assignment.startTime,
+        }),
+      );
+    }
+
+    const schedulePayload = assignments.map((assignment, index) => ({
+      state: states[index],
       tenantId: req.tenantId,
       staffId: assignment.staffId,
       coverageId: assignment.coverageId || null,
@@ -2631,7 +2606,8 @@ exports.publishAutoScheduleDraft = async (req, res, next) => {
       status: "scheduled",
       meta: {
         createdBy: req.user._id,
-        publishedAt: new Date(),
+        source: "auto",
+        ...(states[index] === "published" ? { publishedAt: new Date() } : {}),
       },
     }));
 
@@ -2749,7 +2725,12 @@ exports.requestShiftSwap = async (req, res, next) => {
 
     const [requester, receiver, facilityPreferences] = await Promise.all([
       User.findOne({ _id: schedule.staffId, tenantId: req.tenantId }),
-      User.findOne({ _id: receiverStaffId, tenantId: req.tenantId }),
+      User.findOne({
+        _id: receiverStaffId,
+        tenantId: req.tenantId,
+        loginEnabled: false,
+        status: "active",
+      }),
       FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
     ]);
 
@@ -2832,7 +2813,7 @@ exports.requestShiftSwap = async (req, res, next) => {
           <li><strong>Shift:</strong> ${shiftWindow}</li>
           <li><strong>Status:</strong> pending admin approval</li>
         </ul>
-        ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
+        ${note ? `<p><strong>Note:</strong> ${escapeHtml(note)}</p>` : ""}
       `,
       smsBody: () =>
         `Shift swap requested: ${schedule.role}, ${shiftWindow}. Awaiting admin approval before receiver response.`,
@@ -2986,7 +2967,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Status:</strong> ${swapRequest.status}</li>
           </ul>
-          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+          ${responseNote ? `<p><strong>Response note:</strong> ${escapeHtml(responseNote)}</p>` : ""}
         `,
         smsBody: () =>
           `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
@@ -3015,7 +2996,22 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
           });
         }
 
-        if (!isRoleCompatible(receiver.role, schedule.role)) {
+        if (schedule.status !== "scheduled") {
+          return res.status(409).json({
+            message: "This shift is no longer scheduled; swap cannot be completed",
+          });
+        }
+
+        const swapFacilityPrefs = await FacilityPreferences.findOne({
+          tenantId: req.tenantId,
+        }).lean();
+        if (
+          !isStaffRoleCompatible(
+            receiver,
+            schedule.role,
+            getCompatibleFacilityConfig(swapFacilityPrefs),
+          )
+        ) {
           return res.status(400).json({
             message:
               "Swap cannot be accepted because receiver no longer has a compatible role for this shift",
@@ -3071,7 +3067,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Decision:</strong> ${decisionWord}</li>
           </ul>
-          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+          ${responseNote ? `<p><strong>Response note:</strong> ${escapeHtml(responseNote)}</p>` : ""}
         `,
         smsBody: () =>
           `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
@@ -3134,7 +3130,12 @@ exports.createSchedule = async (req, res, next) => {
       return res.status(404).json({ message: "Coverage not found" });
     }
 
-    const staff = await User.findById(staffId).select(
+    const staff = await User.findOne({
+      _id: staffId,
+      tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
+    }).select(
       "role roles allowedAreas allowedShiftTypes certificationTags name email userPhone userPhoneCountryCode",
     );
 
@@ -3217,6 +3218,11 @@ exports.createSchedule = async (req, res, next) => {
     if (conflict)
       return res.status(409).json({ message: "Schedule conflict", conflict });
 
+    const state = await stateForNewSchedule({
+      tenantId: req.tenantId,
+      startTime,
+    });
+
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
       staffId,
@@ -3229,79 +3235,22 @@ exports.createSchedule = async (req, res, next) => {
       startTime,
       endTime,
       notes,
-      timezone: timezone || "UTC",
+      timezone: timezone || facilityPreferences?.facilityTimezone || "UTC",
       status: "scheduled",
-      meta: { createdBy: req.user._id },
+      state,
+      meta: { createdBy: req.user._id, source: "scheduler" },
     });
 
-    // Notify assigned staff (best-effort)
-    try {
-      const facilityTimezone = facilityPreferences?.facilityTimezone || "UTC";
-      const shiftWindow = formatRangeInFacilityZone(
-        startTime,
-        endTime,
-        facilityTimezone,
-      );
-      const staffPref = staff
-        ? await Preferences.findOne({
-            tenantId: req.tenantId,
-            staffId: staff._id,
-          })
-            .select("emailNotificationsEnabled smsNotificationsEnabled")
-            .lean()
-        : null;
-
-      if (staff && staff.email && isEmailNotificationEnabled(staffPref)) {
-        const subject = `New shift assigned: ${role} - ${formatInFacilityZone(startTime, facilityTimezone)}`;
-        const html = `
-          <p>Hi ${staff.name || "team member"},</p>
-          <p>You have been assigned a new shift:</p>
-          <ul>
-            <li><strong>Role:</strong> ${role}</li>
-            <li><strong>Shift:</strong> ${shiftWindow}</li>
-            <li><strong>Notes:</strong> ${notes || ""}</li>
-          </ul>
-          <p>Please contact your admin if you have any questions.</p>
-        `;
-
-        const result = await sendEmail(staff.email, subject, html, null, {
-          tenantId: req.tenantId,
-        });
-        if (result && result.success) {
-          console.log(
-            `Notification email sent to ${staff.email} for schedule ${schedule._id}`,
-          );
-        } else {
-          console.error(
-            `Notification email failed for ${staff.email} (schedule ${schedule._id}):`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-      }
-
-      const to =
-        staff && isSmsNotificationEnabled(staffPref)
-          ? buildE164Number(staff.userPhoneCountryCode, staff.userPhone)
-          : null;
-      if (to) {
-        const smsBody = `New shift assigned: ${role}. ${shiftWindow}.`;
-        const smsResult = await sendSMS(to, smsBody);
-        if (smsResult && smsResult.success) {
-          console.log(
-            `Notification SMS sent to ${to} for schedule ${schedule._id}`,
-          );
-        } else {
-          console.error(
-            `Notification SMS failed for ${to} (schedule ${schedule._id}):`,
-            smsResult && smsResult.error ? smsResult.error : "unknown error",
-          );
-        }
-      }
-    } catch (err) {
-      console.error(
-        `Failed to send assignment notifications for schedule ${schedule._id}:`,
-        err && err.message ? err.message : err,
-      );
+    // Drafts are silent; the person hears about them when the week is
+    // published. Changes to a published week go out right away unless the
+    // scheduler asked for a quiet edit (notify: false).
+    if (state === "published" && req.body?.notify !== false) {
+      await notifyShiftChange({
+        req,
+        staffId: schedule.staffId,
+        kind: "shift_added",
+        schedule,
+      });
     }
 
     await autoRemoveDraftAssignmentForSchedule({
@@ -3403,9 +3352,51 @@ exports.getScheduleById = async (req, res, next) => {
 };
 
 // UPDATE SCHEDULE
+const SCHEDULE_EDITABLE_FIELDS = [
+  "staffId",
+  "role",
+  "unitArea",
+  "shiftType",
+  "shiftTag",
+  "certificationTags",
+  "startTime",
+  "endTime",
+  "notes",
+  "status",
+  "coverageId",
+];
+const SCHEDULER_SETTABLE_STATUSES = new Set([
+  "scheduled",
+  "in_progress",
+  "completed",
+  "left_early",
+  "no_show",
+  "call_out",
+]);
+
 exports.updateSchedule = async (req, res, next) => {
   try {
-    const updates = req.body;
+    // Only known fields can change (tenantId, state, meta never).
+    const updates = {};
+    for (const key of SCHEDULE_EDITABLE_FIELDS) {
+      if (req.body?.[key] !== undefined) updates[key] = req.body[key];
+    }
+    if (
+      updates.status !== undefined &&
+      !SCHEDULER_SETTABLE_STATUSES.has(String(updates.status))
+    ) {
+      return res.status(400).json({ message: "Invalid status" });
+    }
+    if (
+      updates.coverageId !== undefined &&
+      updates.coverageId !== null &&
+      !(await Coverage.exists({
+        _id: updates.coverageId,
+        tenantId: req.tenantId,
+      }))
+    ) {
+      return res.status(404).json({ message: "Coverage not found" });
+    }
 
     const currentSchedule = await Schedule.findOne({
       _id: req.params.id,
@@ -3442,9 +3433,12 @@ exports.updateSchedule = async (req, res, next) => {
       ? updates.certificationTags
       : currentSchedule.certificationTags || [];
 
-    const staff = await User.findById(nextStaffId).select(
-      "role roles allowedAreas allowedShiftTypes certificationTags",
-    );
+    const staff = await User.findOne({
+      _id: nextStaffId,
+      tenantId: req.tenantId,
+      loginEnabled: false,
+      status: "active",
+    }).select("role roles allowedAreas allowedShiftTypes certificationTags");
 
     if (!staff) {
       return res.status(404).json({ message: "Staff not found" });
@@ -3529,6 +3523,15 @@ exports.updateSchedule = async (req, res, next) => {
         return res.status(409).json({ message: "Schedule conflict", conflict });
     }
 
+    // Moving a shift into another week takes on that week's state
+    // (published week -> published; unpublished week -> silent draft).
+    if (updates.startTime !== undefined) {
+      updates.state = await stateForNewSchedule({
+        tenantId: req.tenantId,
+        startTime: updates.startTime,
+      });
+    }
+
     const updated = await Schedule.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
       {
@@ -3544,6 +3547,59 @@ exports.updateSchedule = async (req, res, next) => {
 
     if (!updated)
       return res.status(404).json({ message: "Schedule not found" });
+
+    // Published shift moved, re-timed or reassigned: tell whoever's affected.
+    const staffChanged =
+      String(currentSchedule.staffId) !== String(updated.staffId?._id || updated.staffId);
+    const timeChanged =
+      new Date(currentSchedule.startTime).getTime() !==
+        new Date(updated.startTime).getTime() ||
+      new Date(currentSchedule.endTime).getTime() !==
+        new Date(updated.endTime).getTime();
+    const wasVisible = currentSchedule.state === "published";
+    const isVisible = updated.state === "published";
+    if (
+      (wasVisible || isVisible) &&
+      req.body?.notify !== false &&
+      new Date(updated.endTime) > new Date()
+    ) {
+      if (wasVisible && !isVisible) {
+        // Moved into a week staff can't see yet: it's gone from their view.
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_removed",
+          schedule: currentSchedule,
+        });
+      } else if (!wasVisible && isVisible) {
+        await notifyShiftChange({
+          req,
+          staffId: updated.staffId?._id || updated.staffId,
+          kind: "shift_added",
+          schedule: updated,
+        });
+      } else if (staffChanged) {
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_removed",
+          schedule: currentSchedule,
+        });
+        await notifyShiftChange({
+          req,
+          staffId: updated.staffId?._id || updated.staffId,
+          kind: "shift_added",
+          schedule: updated,
+        });
+      } else if (timeChanged || updates.role !== undefined) {
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_changed",
+          schedule: updated,
+        });
+      }
+    }
 
     res.json(updated);
   } catch (err) {
@@ -3579,10 +3635,40 @@ exports.updateOwnScheduleStatus = async (req, res, next) => {
       });
     }
 
+    if (new Date(schedule.endTime) <= new Date()) {
+      return res
+        .status(400)
+        .json({ message: "This shift has already ended" });
+    }
+
+    const callingOut = status === "call_out" && schedule.status !== "call_out";
     schedule.status = status;
+    if (callingOut) {
+      schedule.meta = schedule.meta || {};
+      schedule.meta.calledOutAt = new Date();
+      schedule.meta.callOutReason = String(req.body?.reason || "")
+        .trim()
+        .slice(0, 300);
+    }
     await schedule.save();
 
-    await schedule.populate("staffId", "-passwordHash");
+    // Tell the schedulers right away so they can fill it.
+    if (callingOut) {
+      const timezone = await getFacilityTimezone(req.tenantId);
+      const when = shortShift(schedule.startTime, schedule.endTime, timezone);
+      const appUrl = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+      await notifySchedulers({
+        tenantId: req.tenantId,
+        subject: `${req.user.name} called out: ${when}`,
+        html: (person) => `
+          <p>Hi ${escapeHtml(firstName(person.name))},</p>
+          <p><strong>${escapeHtml(req.user.name)}</strong> can't make their ${escapeHtml(schedule.role)} shift on ${escapeHtml(when)}.</p>
+          ${schedule.meta.callOutReason ? `<p>Reason: ${escapeHtml(schedule.meta.callOutReason)}</p>` : ""}
+          ${appUrl ? `<p><a href="${appUrl}/callout/${schedule._id}">Find coverage</a></p>` : ""}`,
+      });
+    }
+
+    await schedule.populate("staffId", "name roles");
     res.json(schedule);
   } catch (err) {
     next(err);
@@ -3604,6 +3690,21 @@ exports.deleteSchedule = async (req, res, next) => {
       tenantId: req.tenantId,
       schedule: deleted,
     });
+
+    if (
+      deleted.state === "published" &&
+      deleted.status === "scheduled" &&
+      new Date(deleted.startTime) > new Date() &&
+      req.body?.notify !== false &&
+      req.query?.notify !== "false"
+    ) {
+      await notifyShiftChange({
+        req,
+        staffId: deleted.staffId,
+        kind: "shift_removed",
+        schedule: deleted,
+      });
+    }
 
     res.json({ message: "Schedule deleted" });
   } catch (err) {
@@ -3645,6 +3746,17 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
     const existingIdSet = new Set(existing.map((item) => String(item._id)));
     const notFoundIds = uniqueIds.filter((id) => !existingIdSet.has(id));
 
+    const toNotify =
+      req.body?.notify === false
+        ? []
+        : await Schedule.find({
+            tenantId: req.tenantId,
+            _id: { $in: existing.map((item) => item._id) },
+            state: "published",
+            status: "scheduled",
+            startTime: { $gt: new Date() },
+          }).lean();
+
     let deletedCount = 0;
     if (existing.length) {
       const deleteResult = await Schedule.deleteMany({
@@ -3652,6 +3764,15 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
         _id: { $in: existing.map((item) => item._id) },
       });
       deletedCount = deleteResult.deletedCount || 0;
+    }
+
+    for (const removed of toNotify) {
+      await notifyShiftChange({
+        req,
+        staffId: removed.staffId,
+        kind: "shift_removed",
+        schedule: removed,
+      });
     }
 
     return res.status(200).json({

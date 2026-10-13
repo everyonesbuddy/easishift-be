@@ -1,86 +1,35 @@
 const jwt = require("jsonwebtoken");
 const bcrypt = require("bcryptjs");
-const crypto = require("crypto");
-const { parse } = require("csv-parse/sync");
 const { DateTime } = require("luxon");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
-const Schedule = require("../models/scheduleModel");
-const TimeOff = require("../models/timeOffModel");
-const Message = require("../models/messageModel");
-const Preferences = require("../models/preferencesModel");
-const ShiftSwap = require("../models/shiftSwapModel");
-const { sendEmail, sendEmailQueued } = require("../utils/sendEmail");
-const {
-  normalizeSubdomain,
-  validateSubdomain,
-  isSubdomainAvailable,
-  generateUniqueSubdomain,
-  getTenantAppUrl,
-  getRequestTenantSubdomain,
-} = require("../utils/tenantDomainUtils");
-const {
-  buildTenantHostname,
-  updateNetlifyTenantAliases,
-} = require("../utils/netlifyDomainUtils");
+const { sendEmail } = require("../utils/sendEmail");
 const {
   BRANDING_SELECT,
   getPublicBranding,
-  parseBrandingUpdate,
 } = require("../utils/tenantBranding");
 const {
-  SYSTEM_ROLES,
   getEffectivePermissions,
-  getFacilityRoles,
   getUserRoles,
-  hasPermission,
   normalizeRole,
 } = require("../config/authorization");
-
-const DEFAULT_PASSWORD_SETUP_TTL_MINUTES = 60 * 24 * 60;
-const DEFAULT_PASSWORD_RESET_TTL_MINUTES = 14 * 24 * 60;
-
-const getPasswordTtlMs = (envName, fallbackMinutes) => {
-  const raw = process.env[envName];
-  const parsed = Number(raw);
-  const minutes =
-    Number.isFinite(parsed) && parsed > 0
-      ? Math.floor(parsed)
-      : fallbackMinutes;
-
-  return minutes * 60 * 1000;
-};
-
-const getPasswordSetupTtlMs = () =>
-  getPasswordTtlMs(
-    "PASSWORD_SETUP_TTL_MINUTES",
-    DEFAULT_PASSWORD_SETUP_TTL_MINUTES,
-  );
-
-const getPasswordResetTtlMs = () =>
-  getPasswordTtlMs(
-    "PASSWORD_RESET_TTL_MINUTES",
-    DEFAULT_PASSWORD_RESET_TTL_MINUTES,
-  );
-
-const getTtlLabel = (ttlMs) => {
-  const ttlMinutes = Math.floor(ttlMs / (60 * 1000));
-  if (ttlMinutes % (24 * 60) === 0) {
-    const days = ttlMinutes / (24 * 60);
-    return `${days} day${days === 1 ? "" : "s"}`;
-  }
-
-  if (ttlMinutes % 60 === 0) {
-    const hours = ttlMinutes / 60;
-    return `${hours} hour${hours === 1 ? "" : "s"}`;
-  }
-
-  return `${ttlMinutes} minute${ttlMinutes === 1 ? "" : "s"}`;
-};
-
-const getPasswordSetupTtlLabel = () => getTtlLabel(getPasswordSetupTtlMs());
-const getPasswordResetTtlLabel = () => getTtlLabel(getPasswordResetTtlMs());
+const {
+  getEffectivePlanKey,
+  describePlan,
+  trialAvailable,
+  TRIAL_PLAN,
+  GRACE_DAYS,
+  DAY_MS,
+  inPostTrialGrace,
+} = require("../config/plans");
+const { getUsage } = require("../utils/planLimits");
+const {
+  hashToken,
+  issuePasswordLink,
+  getPasswordSetupValidityText,
+  getPasswordResetValidityText,
+} = require("../utils/passwordLinks");
 
 // Helper: Create JWT
 const signToken = (id, roles, tenantId) => {
@@ -96,30 +45,17 @@ const signToken = (id, roles, tenantId) => {
   );
 };
 
+const JWT_COOKIE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;
+
 // Helper: Send cookie + response
-const sendTokenResponse = (res, token, data) => {
-  res.cookie("jwt", token, { httpOnly: true, secure: false });
-  res.status(200).json({ token, ...data });
-};
-
-const buildResetUrl = async (req, token, tenantId) => {
-  const tenant = tenantId
-    ? await Tenant.findById(tenantId).select("subdomain").lean()
-    : null;
-  const baseUrl = getTenantAppUrl(tenant) || req.headers.origin || "";
-  const resetPath = process.env.FRONTEND_RESET_PATH || "/reset-password";
-
-  if (!baseUrl) return token;
-  const normalizedBase = baseUrl.replace(/\/$/, "");
-  return `${normalizedBase}${resetPath}?token=${token}`;
-};
-
-// True when the request comes from a tenant subdomain that the user doesn't belong to.
-const isOutsideRequestTenant = async (req, user) => {
-  const subdomain = getRequestTenantSubdomain(req);
-  if (!subdomain) return false;
-  const tenant = await Tenant.findOne({ subdomain }).select("_id").lean();
-  return !tenant || String(tenant._id) !== String(user.tenantId);
+const sendTokenResponse = (res, token, data, status = 200) => {
+  res.cookie("jwt", token, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: JWT_COOKIE_MAX_AGE_MS,
+  });
+  res.status(status).json({ token, ...data });
 };
 
 const normalizeEmail = (email) =>
@@ -127,51 +63,12 @@ const normalizeEmail = (email) =>
     .trim()
     .toLowerCase();
 
-const resolveRole = (role) =>
-  String(role || "staff")
-    .trim()
-    .toLowerCase();
-
-const getAllowedRolesForTenant = async (tenantId) => {
-  const prefs = await FacilityPreferences.findOne({ tenantId })
-    .select("roleFamilies")
-    .lean();
-
-  const facilityRoles = (prefs?.roleFamilies || [])
-    .map(resolveRole)
-    .filter(Boolean);
-  return new Set([...SYSTEM_ROLES, ...facilityRoles]);
-};
-
-const normalizeAssignedRoles = (roles, legacyRole) => {
-  const values = Array.isArray(roles) ? roles : legacyRole ? [legacyRole] : [];
-  return Array.from(new Set(values.map(normalizeRole).filter(Boolean)));
-};
-
-const getPrimaryFacilityRole = (roles, facilityRoleFamilies) => {
-  return getFacilityRoles({ roles }, facilityRoleFamilies)[0] || null;
-};
-
 const getUserResponse = (user) => {
   const response = user.toObject ? user.toObject() : { ...user };
   response.roles = getUserRoles(user);
   response.permissions = getEffectivePermissions(user);
   return response;
 };
-
-const normalizeStringArray = (values) =>
-  Array.from(
-    new Set(
-      (Array.isArray(values)
-        ? values
-        : typeof values === "string"
-          ? values.split(",")
-          : []
-      )
-        .map((value) => String(value || "").trim())
-        .filter(Boolean),
-    ),
-  );
 
 const parseBoolean = (value) => {
   if (typeof value === "boolean") return value;
@@ -183,608 +80,150 @@ const parseBoolean = (value) => {
   return false;
 };
 
-const getBulkRows = (req) => {
-  let csvText = null;
-
-  // 1. Uploaded CSV file (multipart/form-data, field name "file")
-  if (req.file && req.file.buffer) {
-    csvText = req.file.buffer.toString("utf8");
-    // 2. Pasted CSV string in JSON body
-  } else if (typeof req.body.csv === "string" && req.body.csv.trim()) {
-    csvText = req.body.csv;
-  }
-
-  if (!csvText) return [];
-
-  const records = parse(csvText, {
-    columns: true,
-    skip_empty_lines: true,
-    trim: true,
-  });
-
-  return records.map((row, index) => ({
-    rowNumber: index + 2,
-    ...row,
-  }));
-};
-
-const createPasswordSetupLink = async (req, user) => {
-  const setupToken = crypto.randomBytes(32).toString("hex");
-  const setupTokenHash = crypto
-    .createHash("sha256")
-    .update(setupToken)
-    .digest("hex");
-
-  user.passwordResetToken = setupTokenHash;
-  user.passwordResetExpires = new Date(Date.now() + getPasswordSetupTtlMs());
-  await user.save({ validateBeforeSave: false });
-
-  return buildResetUrl(req, setupToken, user.tenantId);
-};
-
-const getPasswordSetupValidityText = () =>
-  `valid for ${getPasswordSetupTtlLabel()}`;
-
-const getPasswordResetValidityText = () =>
-  `valid for ${getPasswordResetTtlLabel()}`;
-
-const deleteUserScopedData = async (userId, tenantId) => {
-  const userObjectId = userId;
-  const tenantObjectId = tenantId;
-
-  await Promise.all([
-    Schedule.deleteMany({ staffId: userObjectId, tenantId: tenantObjectId }),
-    TimeOff.deleteMany({ staffId: userObjectId, tenantId: tenantObjectId }),
-    Preferences.deleteMany({
-      staffId: userObjectId,
-      tenantId: tenantObjectId,
-    }),
-    Message.deleteMany({
-      tenantId: tenantObjectId,
-      $or: [{ senderId: userObjectId }, { receiverId: userObjectId }],
-    }),
-    ShiftSwap.deleteMany({
-      tenantId: tenantObjectId,
-      $or: [
-        { requesterStaffId: userObjectId },
-        { receiverStaffId: userObjectId },
-        { resolvedBy: userObjectId },
-      ],
-    }),
-  ]);
-};
-
 /**
- * TENANT SIGNUP
- * -------------
- * Creates a tenant (hospital/clinic) and its admin user.
+ * SIGNUP
+ * ------
+ * Route: POST /api/v1/auth/signup   (old path: /signup/tenant)
+ * Body: { name, email, password, facilityName, timezone, termsAccepted,
+ *         termsVersion }
+ *
+ * Creates the workspace on the Free plan and its owner account. Facility
+ * type, roles, shifts and the staffing template come next in onboarding
+ * (/api/v1/setup). The old body shape (name = facility, adminName = person,
+ * facilityTimezone) is still accepted.
  */
 exports.registerTenant = async (req, res, next) => {
   try {
-    const {
-      name,
-      email,
-      password,
-      tenantPhone,
-      tenantPhoneCountryCode,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas,
-      allowedShiftTypes,
-      certificationTags,
-      address,
-      industry,
-      adminName,
-      termsAccepted,
-      termsVersion,
-      termsAcceptedAt,
-      facilityTimezone,
-      subdomain: requestedSubdomain,
-      branding,
-    } = req.body;
-    const hasAcceptedTerms = parseBoolean(termsAccepted);
-    const parsedTermsAcceptedAt = termsAcceptedAt
-      ? new Date(termsAcceptedAt)
-      : new Date();
+    const body = req.body || {};
+    const isLegacyShape = !body.facilityName && body.adminName;
+    const personName = String(
+      (isLegacyShape ? body.adminName : body.name) || "",
+    ).trim();
+    const facilityName = String(
+      (isLegacyShape ? body.name : body.facilityName) || "",
+    ).trim();
+    const email = normalizeEmail(body.email);
+    const password = String(body.password || "");
+    const timezone = String(
+      body.timezone || body.facilityTimezone || "",
+    ).trim();
+    const hasAcceptedTerms = parseBoolean(body.termsAccepted);
 
-    const { set: brandingSet, errors: brandingErrors } = parseBrandingUpdate(
-      branding && typeof branding === "object" ? branding : {},
-    );
-    if (brandingErrors.length) {
+    if (!personName || !facilityName || !email || !password) {
       return res.status(400).json({
-        message: brandingErrors.join("; "),
-        errorCode: "INVALID_BRANDING",
+        message: "Name, facility name, email and password are required",
       });
     }
-
-    let subdomain;
-    if (requestedSubdomain) {
-      subdomain = normalizeSubdomain(requestedSubdomain);
-      const subdomainError = validateSubdomain(subdomain);
-      if (subdomainError) {
-        return res
-          .status(400)
-          .json({ message: subdomainError, errorCode: "INVALID_SUBDOMAIN" });
-      }
-      if (!(await isSubdomainAvailable(subdomain))) {
-        return res.status(409).json({
-          message: "That subdomain is already taken",
-          errorCode: "SUBDOMAIN_TAKEN",
-        });
-      }
-    } else {
-      subdomain = await generateUniqueSubdomain(name);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ message: "Enter a valid email address" });
     }
-
-    const brandingFields = {};
-    for (const [path, value] of Object.entries(brandingSet)) {
-      const [, field, subField] = path.split(".");
-      if (subField) {
-        brandingFields[field] = brandingFields[field] || {};
-        brandingFields[field][subField] = value;
-      } else {
-        brandingFields[field] = value;
-      }
-    }
-
-    // Create tenant
-    const tenant = await Tenant.create({
-      name,
-      email,
-      tenantPhone,
-      tenantPhoneCountryCode,
-      address,
-      industry,
-      subdomain,
-      branding: brandingFields,
-      termsAccepted: hasAcceptedTerms,
-      termsVersion: hasAcceptedTerms
-        ? termsVersion
-          ? String(termsVersion).trim()
-          : "1.0"
-        : null,
-      termsAcceptedAt: hasAcceptedTerms
-        ? Number.isNaN(parsedTermsAcceptedAt.getTime())
-          ? new Date()
-          : parsedTermsAcceptedAt
-        : null,
-    });
-
-    // Create the tenant owner. Additional facility roles can be added later.
-    const passwordHash = await bcrypt.hash(password, 12);
-    const adminUser = await User.create({
-      tenantId: tenant._id,
-      name: adminName,
-      email,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas: normalizeStringArray(allowedAreas),
-      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
-      certificationTags: normalizeStringArray(certificationTags),
-      passwordHash,
-      role: "owner",
-      roles: ["owner"],
-    });
-
-    let tenantDomainProvisioning = { status: "not_configured" };
-    try {
-      tenantDomainProvisioning = await updateNetlifyTenantAliases({
-        addSubdomains: [subdomain],
-      });
-    } catch (err) {
-      tenantDomainProvisioning = { status: "failed" };
-      console.error(
-        `Netlify domain alias registration failed for tenant ${tenant._id}:`,
-        err && err.message ? err.message : err,
-      );
-    }
-
-    // Best-effort starting guess only; stays unconfirmed until an admin saves it.
-    const signupTimezone = String(facilityTimezone || "").trim();
-    if (signupTimezone && DateTime.local().setZone(signupTimezone).isValid) {
-      try {
-        await FacilityPreferences.create({
-          tenantId: tenant._id,
-          facilityTimezone: signupTimezone,
-          facilityTimezoneConfirmed: false,
-        });
-      } catch (err) {
-        console.error(
-          `Failed to seed facility timezone for tenant ${tenant._id}:`,
-          err && err.message ? err.message : err,
-        );
-      }
-    }
-
-    // Notify the admin about account creation (best-effort)
-    try {
-      if (adminUser.email) {
-        const subject = "Your admin account is ready";
-        const html = `
-          <p>Hi ${adminUser.name || "there"},</p>
-          <p>Your admin account for <strong>${tenant.name}</strong> has been created.</p>
-          <ul>
-            <li><strong>Login email:</strong> ${adminUser.email}</li>
-            <li><strong>Tenant:</strong> ${tenant.name}</li>
-          </ul>
-          <p>You can now sign in and start setting up your team.</p>
-        `;
-
-        const result = await sendEmail(adminUser.email, subject, html, null, {
-          tenantId: tenant._id,
-        });
-        if (result && result.success) {
-          console.log(
-            `Admin welcome email sent for tenant ${tenant._id} to ${adminUser.email}`,
-          );
-        } else {
-          console.error(
-            `Admin welcome email failed for tenant ${tenant._id}:`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-      }
-    } catch (err) {
-      console.error(
-        "Error sending admin welcome email:",
-        err && err.message ? err.message : err,
-      );
-    }
-
-    // Generate token
-    const token = signToken(
-      adminUser._id,
-      getUserRoles(adminUser),
-      adminUser.tenantId,
-    );
-
-    sendTokenResponse(res, token, {
-      message: "Tenant and owner created successfully",
-      tenant,
-      tenantBranding: getPublicBranding(tenant),
-      tenantDomainProvisioning: {
-        status: tenantDomainProvisioning.status,
-        hostname: buildTenantHostname(
-          subdomain,
-          process.env.TENANT_ROOT_DOMAIN,
-        ),
-      },
-      user: getUserResponse(adminUser),
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * STAFF SIGNUP (ADMIN ONLY)
- * -------------------------
- * Creates new staff under a tenant.
- */
-exports.registerStaff = async (req, res, next) => {
-  try {
-    const {
-      name,
-      email,
-      role,
-      roles,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas,
-      allowedShiftTypes,
-      certificationTags,
-    } = req.body;
-    const assignedRoles = normalizeAssignedRoles(roles, role);
-
-    if (!name || !email) {
-      return res.status(400).json({ message: "Name and email are required" });
-    }
-
-    const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
-    if (
-      !assignedRoles.length ||
-      assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
-    ) {
-      return res.status(400).json({
-        message: `invalid role assignment '${roles || role || ""}'`,
-      });
-    }
-    if (
-      assignedRoles.includes("owner") &&
-      !hasPermission(req.user, "roles.manage")
-    ) {
-      return res.status(403).json({
-        message: "Only an owner can assign the owner role",
-      });
-    }
-
-    const facilityPreferences = await FacilityPreferences.findOne({
-      tenantId: req.tenantId,
-    })
-      .select("roleFamilies")
-      .lean();
-    const facilityRole = getPrimaryFacilityRole(
-      assignedRoles,
-      facilityPreferences?.roleFamilies || [],
-    );
-
-    const generatedPassword = crypto.randomBytes(24).toString("hex");
-    const passwordHash = await bcrypt.hash(generatedPassword, 12);
-
-    const user = await User.create({
-      tenantId: req.tenantId,
-      name,
-      email,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas: normalizeStringArray(allowedAreas),
-      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
-      certificationTags: normalizeStringArray(certificationTags),
-      passwordHash,
-      role: facilityRole || assignedRoles[0],
-      roles: assignedRoles,
-    });
-
-    const setupUrl = await createPasswordSetupLink(req, user);
-    console.log(`Staff password setup link for ${user.email}: ${setupUrl}`);
-
-    // Notify the staff member about account creation (best-effort)
-    try {
-      const tenant = await Tenant.findById(req.tenantId).select("name");
-      const tenantName = tenant && tenant.name ? tenant.name : "your tenant";
-      if (user.email) {
-        const subject = "Your staff account is ready";
-        const html = `
-          <p>Hi ${user.name || "there"},</p>
-          <p>An account has been added for you in ${tenantName}.</p>
-          <ul>
-            <li><strong>Login email:</strong> ${user.email}</li>
-            <li><strong>Roles:</strong> ${assignedRoles.join(", ")}</li>
-          </ul>
-          <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
-          <p><a href="${setupUrl}">${setupUrl}</a></p>
-        `;
-
-        const result = await sendEmail(user.email, subject, html, null, {
-          tenantId: req.tenantId,
-        });
-        if (result && result.success) {
-          console.log(`Staff welcome email sent to ${user.email}`);
-        } else {
-          console.error(
-            `Staff welcome email failed for ${user._id}:`,
-            result && result.error ? result.error : "unknown error",
-          );
-        }
-      }
-    } catch (err) {
-      console.error(
-        "Error sending staff welcome email:",
-        err && err.message ? err.message : err,
-      );
-    }
-
-    res.status(201).json({
-      message: "Staff created successfully",
-      user: getUserResponse(user),
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * BULK STAFF SIGNUP (ADMIN ONLY)
- * ------------------------------
- * Supports:
- *  - req.body.csv: CSV string with headers
- */
-exports.bulkRegisterStaff = async (req, res, next) => {
-  try {
-    const rows = getBulkRows(req);
-    const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
-    const maxRows = 500;
-
-    if (!rows.length) {
-      return res.status(400).json({
-        message: "Provide csv payload for bulk registration.",
-      });
-    }
-
-    if (rows.length > maxRows) {
+    if (password.length < 8) {
       return res
         .status(400)
-        .json({ message: `Maximum ${maxRows} rows allowed per bulk request.` });
+        .json({ message: "Password must be at least 8 characters" });
+    }
+    if (!hasAcceptedTerms) {
+      return res.status(400).json({
+        message: "Please accept the terms to continue",
+        errorCode: "TERMS_REQUIRED",
+      });
+    }
+    if (timezone && !DateTime.local().setZone(timezone).isValid) {
+      return res.status(400).json({
+        message: `Invalid timezone '${timezone}'`,
+        errorCode: "INVALID_TIMEZONE",
+      });
     }
 
-    const duplicateInFile = new Set();
-    const normalizedEmails = rows
-      .map((row) => normalizeEmail(row.email))
-      .filter(Boolean);
-
-    const existingUsers = normalizedEmails.length
-      ? await User.find({ email: { $in: normalizedEmails } }).select("email")
-      : [];
-    const existingEmailSet = new Set(
-      existingUsers.map((item) => normalizeEmail(item.email)),
-    );
-
-    const result = {
-      total: rows.length,
-      created: 0,
-      skipped: 0,
-      failed: 0,
-      rows: [],
-    };
-
-    for (const row of rows) {
-      const name = String(row.name || "").trim();
-      const email = normalizeEmail(row.email);
-      const assignedRoles = normalizeAssignedRoles(
-        typeof row.roles === "string" ? row.roles.split(/[|,]/) : row.roles,
-        row.role,
-      );
-      const userPhone = row.userPhone ? String(row.userPhone).trim() : null;
-      const userPhoneCountryCode = row.userPhoneCountryCode
-        ? String(row.userPhoneCountryCode).trim()
-        : null;
-      const profilePicture = row.profilePicture
-        ? String(row.profilePicture).trim()
-        : null;
-      const allowedAreas = normalizeStringArray(row.allowedAreas);
-      const allowedShiftTypes = normalizeStringArray(row.allowedShiftTypes);
-      const certificationTags = normalizeStringArray(row.certificationTags);
-
-      if (!name || !email) {
-        result.failed += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email: row.email || null,
-          status: "failed_validation",
-          reason: "name and email are required",
-        });
-        continue;
-      }
-
-      if (
-        !assignedRoles.length ||
-        assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
-      ) {
-        result.failed += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "failed_validation",
-          reason: `invalid role assignment '${row.roles || row.role || ""}'`,
-        });
-        continue;
-      }
-      if (
-        assignedRoles.includes("owner") &&
-        !hasPermission(req.user, "roles.manage")
-      ) {
-        result.failed += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "failed_authorization",
-          reason: "only an owner can assign the owner role",
-        });
-        continue;
-      }
-
-      if (duplicateInFile.has(email)) {
-        result.skipped += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "skipped_duplicate",
-          reason: "duplicate email in import file",
-        });
-        continue;
-      }
-
-      if (existingEmailSet.has(email)) {
-        result.skipped += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "skipped_duplicate",
-          reason: "email already exists",
-        });
-        duplicateInFile.add(email);
-        continue;
-      }
-
-      try {
-        const generatedPassword = crypto.randomBytes(24).toString("hex");
-        const passwordHash = await bcrypt.hash(generatedPassword, 12);
-        const user = await User.create({
-          tenantId: req.tenantId,
-          name,
-          email,
-          userPhone,
-          userPhoneCountryCode,
-          profilePicture,
-          allowedAreas,
-          allowedShiftTypes,
-          certificationTags,
-          passwordHash,
-          role: assignedRoles[0],
-          roles: assignedRoles,
-        });
-
-        const setupUrl = await createPasswordSetupLink(req, user);
-        console.log(`Staff password setup link for ${user.email}: ${setupUrl}`);
-
-        let inviteWarning = null;
-        if (user.email) {
-          const subject = "Your staff account is ready";
-          const html = `
-            <p>Hi ${user.name || "there"},</p>
-            <p>Your account has been added.</p>
-            <ul>
-              <li><strong>Login email:</strong> ${user.email}</li>
-              <li><strong>Roles:</strong> ${assignedRoles.join(", ")}</li>
-            </ul>
-            <p>Set your password using the secure link below (${getPasswordSetupValidityText()}):</p>
-            <p><a href="${setupUrl}">${setupUrl}</a></p>
-          `;
-
-          const emailResult = await sendEmailQueued(
-            user.email,
-            subject,
-            html,
-            null,
-            { tenantId: req.tenantId },
-          );
-          if (!emailResult || !emailResult.success) {
-            inviteWarning = "account created but setup email failed";
-          }
-        }
-
-        result.created += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "created",
-          userId: user._id,
-          warning: inviteWarning,
-        });
-        duplicateInFile.add(email);
-        existingEmailSet.add(email);
-      } catch (err) {
-        if (err && err.code === 11000) {
-          result.skipped += 1;
-          result.rows.push({
-            rowNumber: row.rowNumber,
-            email,
-            status: "skipped_duplicate",
-            reason: "email already exists",
-          });
-          duplicateInFile.add(email);
-          existingEmailSet.add(email);
-          continue;
-        }
-
-        result.failed += 1;
-        result.rows.push({
-          rowNumber: row.rowNumber,
-          email,
-          status: "failed",
-          reason: err && err.message ? err.message : "unknown error",
-        });
-      }
+    const existing = await User.findOne({ email, loginEnabled: true })
+      .select("_id")
+      .lean();
+    if (existing) {
+      return res.status(409).json({
+        message: "An account with this email already exists. Log in instead.",
+        errorCode: "EMAIL_IN_USE",
+      });
     }
 
-    return res.status(200).json({
-      message: "Bulk staff import completed",
-      ...result,
+    const tenant = await Tenant.create({
+      name: facilityName,
+      email,
+      plan: "free",
+      termsAccepted: true,
+      termsVersion: body.termsVersion ? String(body.termsVersion).trim() : "1.0",
+      termsAcceptedAt: new Date(),
     });
+
+    let owner;
+    try {
+      owner = await User.create({
+        tenantId: tenant._id,
+        name: personName,
+        email,
+        passwordHash: await bcrypt.hash(password, 12),
+        loginEnabled: true,
+        status: "active",
+        role: "owner",
+        roles: ["owner"],
+      });
+      await FacilityPreferences.create({
+        tenantId: tenant._id,
+        facilityTimezone: timezone || "UTC",
+        // The browser's timezone is a real answer, not a guess.
+        facilityTimezoneConfirmed: Boolean(timezone),
+        unitAreas: [],
+      });
+    } catch (err) {
+      // No transactions without a replica set: undo by hand.
+      await Promise.all([
+        Tenant.deleteOne({ _id: tenant._id }),
+        User.deleteMany({ tenantId: tenant._id }),
+        FacilityPreferences.deleteMany({ tenantId: tenant._id }),
+      ]);
+      if (err && err.code === 11000) {
+        return res.status(409).json({
+          message: "An account with this email already exists. Log in instead.",
+          errorCode: "EMAIL_IN_USE",
+        });
+      }
+      throw err;
+    }
+
+    // Welcome email (best-effort)
+    try {
+      const appUrl = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
+      await sendEmail(
+        owner.email,
+        "Welcome to WiserShifts",
+        `
+          <p>Hi ${owner.name},</p>
+          <p>Your workspace for <strong>${tenant.name}</strong> is ready. Next: tell us what a normal week needs, add your staff, and publish your first schedule.</p>
+          ${appUrl ? `<p><a href="${appUrl}">Open WiserShifts</a></p>` : ""}
+        `,
+        null,
+        { tenantId: tenant._id },
+      );
+    } catch (err) {
+      console.error(
+        "Error sending welcome email:",
+        err && err.message ? err.message : err,
+      );
+    }
+
+    const token = signToken(owner._id, getUserRoles(owner), owner.tenantId);
+    const planKey = getEffectivePlanKey(tenant);
+    sendTokenResponse(res, token, {
+      message: "Workspace created",
+      user: getUserResponse(owner),
+      tenant: {
+        _id: tenant._id,
+        name: tenant.name,
+        facilityType: tenant.facilityType,
+        setupCompletedAt: tenant.setupCompletedAt,
+      },
+      plan: describePlan(planKey),
+      trialAvailable: trialAvailable(tenant),
+    }, 201);
   } catch (err) {
     next(err);
   }
@@ -797,17 +236,22 @@ exports.bulkRegisterStaff = async (req, res, next) => {
  */
 exports.loginStaff = async (req, res, next) => {
   try {
-    const { email, password } = req.body;
+    const email = normalizeEmail(req.body?.email);
+    const password = String(req.body?.password || "");
+    if (!email || !password)
+      return res.status(401).json({ message: "Invalid credentials" });
 
-    const user = await User.findOne({ email }).select("+passwordHash");
-    if (!user) return res.status(401).json({ message: "Invalid credentials" });
+    // Only workspace accounts sign in; staff use their personal link.
+    const user = await User.findOne({
+      email,
+      loginEnabled: true,
+      status: { $ne: "archived" },
+    }).select("+passwordHash");
+    if (!user || !user.passwordHash)
+      return res.status(401).json({ message: "Invalid credentials" });
 
     const valid = await bcrypt.compare(password, user.passwordHash);
     if (!valid) return res.status(401).json({ message: "Invalid credentials" });
-
-    if (await isOutsideRequestTenant(req, user)) {
-      return res.status(401).json({ message: "Invalid credentials" });
-    }
 
     const tenant = await Tenant.findById(user.tenantId)
       .select(BRANDING_SELECT)
@@ -815,6 +259,7 @@ exports.loginStaff = async (req, res, next) => {
 
     const roles = getUserRoles(user);
     const token = signToken(user._id, roles, user.tenantId);
+    user.passwordHash = undefined;
     sendTokenResponse(res, token, {
       user: getUserResponse(user),
       tenantBranding: tenant ? getPublicBranding(tenant) : null,
@@ -832,6 +277,10 @@ exports.loginStaff = async (req, res, next) => {
 exports.changePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
+    if (String(newPassword || "").length < 8)
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 8 characters" });
 
     const user = await User.findById(req.user.id).select("+passwordHash");
     if (!user) return res.status(404).json({ message: "User not found" });
@@ -888,24 +337,18 @@ exports.forgotPassword = async (req, res, next) => {
     const { email } = req.body;
     if (!email) return res.status(400).json({ message: "Email is required" });
 
-    const user = await User.findOne({ email });
-    if (!user || (await isOutsideRequestTenant(req, user))) {
+    const user = await User.findOne({
+      email: normalizeEmail(email),
+      loginEnabled: true,
+      status: { $ne: "archived" },
+    });
+    if (!user) {
       return res
         .status(200)
         .json({ message: "If the email exists, a reset link was sent." });
     }
 
-    const resetToken = crypto.randomBytes(32).toString("hex");
-    const resetTokenHash = crypto
-      .createHash("sha256")
-      .update(resetToken)
-      .digest("hex");
-
-    user.passwordResetToken = resetTokenHash;
-    user.passwordResetExpires = new Date(Date.now() + getPasswordResetTtlMs());
-    await user.save({ validateBeforeSave: false });
-
-    const resetUrl = await buildResetUrl(req, resetToken, user.tenantId);
+    const resetUrl = await issuePasswordLink(req, user, "reset");
     const subject = "Password reset request";
     const html = `
       <p>Hi ${user.name || "there"},</p>
@@ -943,16 +386,17 @@ exports.sendPasswordReset = async (req, res, next) => {
     const user = await User.findOne({
       _id: req.params.id,
       tenantId: req.tenantId,
+      loginEnabled: true,
     });
 
-    if (!user) return res.status(404).json({ message: "User not found" });
+    if (!user) return res.status(404).json({ message: "Account not found" });
     if (!user.email) {
       return res.status(400).json({
         message: "User does not have an email address",
       });
     }
 
-    const setupUrl = await createPasswordSetupLink(req, user);
+    const setupUrl = await issuePasswordLink(req, user, "setup");
     const subject = "Password reset link";
     const html = `
       <p>Hi ${user.name || "there"},</p>
@@ -991,13 +435,14 @@ exports.resetPassword = async (req, res, next) => {
         .status(400)
         .json({ message: "Token and newPassword are required" });
 
-    const resetTokenHash = crypto
-      .createHash("sha256")
-      .update(token)
-      .digest("hex");
+    if (String(newPassword).length < 8)
+      return res
+        .status(400)
+        .json({ message: "Password must be at least 8 characters" });
 
     const user = await User.findOne({
-      passwordResetToken: resetTokenHash,
+      passwordResetToken: hashToken(String(token)),
+      loginEnabled: true,
       passwordResetExpires: { $gt: new Date() },
     }).select("+passwordResetToken +passwordResetExpires");
 
@@ -1045,176 +490,86 @@ exports.resetPassword = async (req, res, next) => {
 };
 
 /**
- * GET ALL USERS
- * -------------
- * Admin/staff listing their tenant users
+ * CURRENT SESSION
+ * ---------------
+ * Route: GET /api/v1/auth/me
+ * Everything the app needs on boot: who you are, your workspace, the plan you
+ * actually have right now, its limits, and how much of them you're using.
  */
-exports.getAllUsers = async (req, res, next) => {
+exports.getMe = async (req, res, next) => {
   try {
-    const query = { tenantId: req.tenantId };
-    if (req.query.role) query.role = req.query.role;
-
-    const users = await User.find(query).select("-passwordHash");
-    res.status(200).json(users.map(getUserResponse));
+    const tenant = req.tenant;
+    const usage = await getUsage(req);
+    res.status(200).json({
+      user: getUserResponse(req.user),
+      tenant: {
+        _id: tenant._id,
+        name: tenant.name,
+        facilityType: tenant.facilityType,
+        setupCompletedAt: tenant.setupCompletedAt,
+      },
+      plan: describePlan(getEffectivePlanKey(tenant)),
+      paidPlan: tenant.plan,
+      subscriptionStatus: tenant.subscriptionStatus,
+      trialAvailable: trialAvailable(tenant),
+      trialPlan: TRIAL_PLAN,
+      trialEndsAt: tenant.trialEndsAt,
+      usage,
+      // Non-owner schedulers can only look while over the scheduler limit.
+      readOnlyReason: req.readOnlyReason || null,
+      // One week can still be published right after a trial ends over limits.
+      grace: inPostTrialGrace(tenant)
+        ? {
+            endsAt: new Date(new Date(tenant.trialEndsAt).getTime() + GRACE_DAYS * DAY_MS),
+            weekStart: tenant.graceWeekStart || null,
+            available: usage.overLimit,
+          }
+        : null,
+    });
   } catch (err) {
     next(err);
   }
 };
 
 /**
- * GET SWAP DIRECTORY
- * ------------------
- * Returns only the fields required to find compatible shift-swap recipients.
+ * UPDATE MY PROFILE
+ * -----------------
+ * Route: PATCH /api/v1/auth/me
+ * Body: { name?, userPhone?, userPhoneCountryCode?, profilePicture? }
+ * (Email and role changes go through the owner under /members.)
  */
-exports.getSwapDirectory = async (req, res, next) => {
+const PROFILE_PICTURE_MAX_CHARS = 3 * 1024 * 1024; // ~2 MB image as base64
+
+exports.updateMe = async (req, res, next) => {
   try {
-    const users = await User.find({ tenantId: req.tenantId })
-      .select(
-        "name role roles allowedAreas allowedShiftTypes certificationTags",
-      )
-      .lean();
-
-    res.status(200).json(users);
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * GET USER BY ID
- */
-exports.getUserById = async (req, res, next) => {
-  try {
-    const user = await User.findOne({
-      _id: req.params.id,
-      tenantId: req.tenantId,
-    }).select("-passwordHash");
-
+    const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    res.status(200).json(getUserResponse(user));
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * UPDATE USER
- */
-exports.updateUser = async (req, res, next) => {
-  try {
-    const {
-      name,
-      email,
-      role,
-      roles,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas,
-      allowedShiftTypes,
-      certificationTags,
-    } = req.body;
-    const hasRolesUpdate = roles !== undefined || role !== undefined;
-    const assignedRoles = hasRolesUpdate
-      ? normalizeAssignedRoles(roles, role)
-      : null;
-
-    if (hasRolesUpdate) {
-      const allowedRoles = await getAllowedRolesForTenant(req.tenantId);
+    const { name, userPhone, userPhoneCountryCode, profilePicture } =
+      req.body || {};
+    if (name !== undefined) {
+      const trimmed = String(name || "").trim();
+      if (!trimmed) return res.status(400).json({ message: "Name is required" });
+      user.name = trimmed.slice(0, 120);
+    }
+    if (userPhone !== undefined) user.userPhone = userPhone || null;
+    if (userPhoneCountryCode !== undefined)
+      user.userPhoneCountryCode = userPhoneCountryCode || null;
+    if (profilePicture !== undefined) {
       if (
-        !assignedRoles.length ||
-        assignedRoles.some((assignedRole) => !allowedRoles.has(assignedRole))
+        profilePicture &&
+        (!/^data:image\/(png|jpe?g|webp|gif);base64,/.test(profilePicture) ||
+          profilePicture.length > PROFILE_PICTURE_MAX_CHARS)
       ) {
-        return res.status(400).json({
-          message: `invalid role assignment '${roles || role || ""}'`,
-        });
+        return res
+          .status(400)
+          .json({ message: "Profile picture must be an image under 2 MB" });
       }
-      if (
-        assignedRoles.includes("owner") &&
-        !hasPermission(req.user, "roles.manage")
-      ) {
-        return res.status(403).json({
-          message: "Only an owner can assign the owner role",
-        });
-      }
+      user.profilePicture = profilePicture || null;
     }
 
-    const updatePayload = {
-      name,
-      email,
-      userPhone,
-      userPhoneCountryCode,
-      profilePicture,
-      allowedAreas: normalizeStringArray(allowedAreas),
-      allowedShiftTypes: normalizeStringArray(allowedShiftTypes),
-      certificationTags: normalizeStringArray(certificationTags),
-    };
-
-    if (hasRolesUpdate) {
-      const facilityPreferences = await FacilityPreferences.findOne({
-        tenantId: req.tenantId,
-      })
-        .select("roleFamilies")
-        .lean();
-      updatePayload.roles = assignedRoles;
-      updatePayload.role =
-        getPrimaryFacilityRole(
-          assignedRoles,
-          facilityPreferences?.roleFamilies || [],
-        ) || assignedRoles[0];
-    }
-
-    const updated = await User.findOneAndUpdate(
-      { _id: req.params.id, tenantId: req.tenantId },
-      updatePayload,
-      { new: true },
-    ).select("-passwordHash");
-
-    if (!updated) return res.status(404).json({ message: "User not found" });
-
-    res.status(200).json({
-      message: "User updated",
-      user: getUserResponse(updated),
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
-/**
- * DELETE USER
- */
-exports.deleteUser = async (req, res, next) => {
-  try {
-    const isSelfDelete =
-      req.params.id === "me" || req.params.id === req.user.id;
-    const canManageStaff = req.user && hasPermission(req.user, "staff.manage");
-
-    if (!isSelfDelete && !canManageStaff) {
-      return res.status(403).json({
-        message: "Access denied. You can only delete your own account.",
-      });
-    }
-
-    const targetUserId = req.params.id === "me" ? req.user.id : req.params.id;
-
-    const user = await User.findOne({
-      _id: targetUserId,
-      tenantId: req.tenantId,
-    });
-
-    if (!user) return res.status(404).json({ message: "User not found" });
-
-    await deleteUserScopedData(user._id, req.tenantId);
-
-    await User.deleteOne({ _id: user._id, tenantId: req.tenantId });
-
-    res.status(200).json({
-      message: isSelfDelete
-        ? "Your account has been deleted"
-        : "User deleted successfully",
-    });
+    await user.save();
+    res.status(200).json({ user: getUserResponse(user) });
   } catch (err) {
     next(err);
   }

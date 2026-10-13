@@ -4,7 +4,6 @@ const cookieParser = require("cookie-parser");
 const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const cron = require("node-cron");
-const { sendPendingReminders } = require("./utils/scheduleJobs");
 const FacilityPreferences = require("./models/facilityPreferencesModel");
 const Schedule = require("./models/scheduleModel");
 const TimeEntry = require("./models/timeEntryModel");
@@ -12,6 +11,8 @@ const {
   getAttendanceOutcomeForClockOut,
 } = require("./utils/timeTrackingAttendanceUtils");
 const errorHandler = require("./middleware/errorMiddleware");
+const { sendTrialEmails } = require("./utils/trialJobs");
+const { sendShiftReminders } = require("./utils/reminderJobs");
 
 // Routers
 const tenantRouter = require("./routes/tenantRoutes");
@@ -25,11 +26,18 @@ const preferencesRoutes = require("./routes/preferencesRoutes");
 const facilityPreferencesRoutes = require("./routes/facilityPreferencesRoutes");
 const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
 const stripeRoutes = require("./routes/stripeRoutes");
+const billingRoutes = require("./routes/billingRoutes");
+const staffRoutes = require("./routes/staffRoutes");
+const memberRoutes = require("./routes/memberRoutes");
+const setupRoutes = require("./routes/setupRoutes");
+const staffingTemplateRoutes = require("./routes/staffingTemplateRoutes");
+const weekRoutes = require("./routes/weekRoutes");
+const staffLinkRoutes = require("./routes/staffLinkRoutes");
+const smsRoutes = require("./routes/smsRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
 const publicRoutes = require("./routes/publicRoutes");
-const { isTenantSubdomainOrigin } = require("./utils/tenantDomainUtils");
 const swaggerUi = require("swagger-ui-express");
 const buildOpenApiSpec = require("./docs/openapiSpec");
 
@@ -62,12 +70,17 @@ app.use(cookieParser());
 // CORS: allow production site and local dev. Use a whitelist plus pattern
 // matching for dynamic Expo Go and LAN dev origins. Stripe webhooks and other
 // server-to-server calls will have no Origin and are allowed.
-const allowedOrigins = new Set([
-  "https://easishift.com",
-  "https://wisershifts.com",
-  "http://localhost:5173",
-  "http://localhost:8081",
-]);
+// Comma-separated list in ALLOWED_ORIGINS, e.g.
+// "https://wisershifts.com,https://www.wisershifts.com"
+const allowedOrigins = new Set(
+  (
+    process.env.ALLOWED_ORIGINS ||
+    "https://wisershifts.com,https://easishift.com,http://localhost:5173,http://localhost:8081"
+  )
+    .split(",")
+    .map((origin) => origin.trim().replace(/\/+$/, ""))
+    .filter(Boolean),
+);
 
 const localDevOriginPattern =
   /^(https?:\/\/((?:[a-z0-9-]+\.)?localhost|127\.0\.0\.1|\d{1,3}(?:\.\d{1,3}){3})(?::\d{2,5})?)\/?$/;
@@ -75,8 +88,7 @@ const localDevOriginPattern =
 const expoOriginPattern = /^(exp|exps):\/\/[^\s/]+(?::\d{2,5})?\/?$/;
 
 function isAllowedOrigin(origin) {
-  if (allowedOrigins.has(origin)) return true;
-  if (isTenantSubdomainOrigin(origin)) return true;
+  if (allowedOrigins.has(String(origin).replace(/\/+$/, ""))) return true;
   if (localDevOriginPattern.test(origin)) return true;
   if (expoOriginPattern.test(origin)) return true;
   return false;
@@ -100,10 +112,23 @@ app.use(
 // Note: no explicit app.options('*') call because some path parsers reject '*'.
 // The CORS middleware applied above will handle preflight requests.
 
-// ✅ Cron job example: send appointment reminders daily at 8 AM
-cron.schedule("0 8 * * *", async () => {
-  console.log("⏰ Running daily reminder job...");
-  await sendPendingReminders();
+// ✅ Cron job: Pro trial reminder / ended emails (daily, 14:00 UTC)
+cron.schedule("0 14 * * *", async () => {
+  try {
+    await sendTrialEmails();
+  } catch (err) {
+    console.error("🚫 Error sending trial emails:", err);
+  }
+});
+
+// ✅ Cron job: shift reminders (hourly, at :05)
+cron.schedule("5 * * * *", async () => {
+  try {
+    const { sent } = await sendShiftReminders();
+    if (sent) console.log(`⏰ Sent ${sent} shift reminder(s)`);
+  } catch (err) {
+    console.error("🚫 Error sending shift reminders:", err);
+  }
 });
 
 // ✅ Cron job: every 2 hours close out past schedules
@@ -285,6 +310,14 @@ app.use("/api/v1/preferences", preferencesRoutes);
 app.use("/api/v1/facility-preferences", facilityPreferencesRoutes);
 app.use("/api/v1/time-tracking", timeTrackingRoutes);
 app.use("/api/v1/stripe", stripeRoutes);
+app.use("/api/v1/billing", billingRoutes);
+app.use("/api/v1/staff", staffRoutes);
+app.use("/api/v1/members", memberRoutes);
+app.use("/api/v1/setup", setupRoutes);
+app.use("/api/v1/staffing-template", staffingTemplateRoutes);
+app.use("/api/v1/weeks", weekRoutes);
+app.use("/api/v1/s/:token", staffLinkRoutes);
+app.use("/api/v1/sms", smsRoutes);
 app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
 app.use("/api/v1/exports", exportRoutes);

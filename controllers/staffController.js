@@ -24,6 +24,7 @@ const {
   revokeStaffLinks,
 } = require("../utils/staffLinks");
 const { sendToStaff } = require("../utils/notify");
+const { revokeDevices } = require("../utils/staffDevices");
 const { getEffectivePlanKey } = require("../config/plans");
 
 const MAX_BULK_ROWS = 500;
@@ -79,6 +80,7 @@ const toStaffResponse = (user) => {
     hasPhone: Boolean(doc.phoneE164),
     hasEmail: Boolean(doc.email),
     smsStatus: doc.smsConsent?.status || "none",
+    linkPinSet: Boolean(doc.linkPinSetAt),
     status: doc.status || "active",
     allowedShiftTypes: doc.allowedShiftTypes || [],
     allowedAreas: doc.allowedAreas || [],
@@ -722,3 +724,25 @@ exports.rotateStaffLink = async (req, res, next) => {
 exports._normalizeStaffInput = normalizeStaffInput;
 exports._mapCsvRecord = mapCsvRecord;
 exports._normalizeRoleKey = normalizeRoleKey;
+
+
+/**
+ * POST /api/v1/staff/:id/reset-pin
+ * Forgets their link PIN and signs out every device; they choose a new
+ * PIN the next time they open their link.
+ */
+exports.resetLinkPin = async (req, res, next) => {
+  try {
+    const staff = await findStaff(req);
+    if (!staff) return res.status(404).json({ message: "Staff not found" });
+    await User.updateOne(
+      { _id: staff._id, tenantId: req.tenantId },
+      { $set: { linkPinHash: null, linkPinSetAt: null, linkPinFailures: 0, linkPinLockedUntil: null } },
+    );
+    await revokeDevices(staff);
+    staff.linkPinSetAt = null;
+    res.json(toStaffResponse(staff));
+  } catch (err) {
+    next(err);
+  }
+};

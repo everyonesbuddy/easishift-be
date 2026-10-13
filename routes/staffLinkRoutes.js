@@ -26,6 +26,18 @@ router.use(
 router.use(staffLink);
 
 router.get("/me", portal.getMe);
+
+// PIN (when the facility requires one). Tighter limit on guesses.
+const pinLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many tries. Wait a few minutes and try again." },
+});
+router.post("/pin/setup", pinLimiter, portal.setupPin);
+router.post("/pin/verify", pinLimiter, portal.verifyPin);
+router.post("/pin/sign-out", portal.signOutDevice);
 router.get("/schedule", portal.getMySchedule);
 
 // Open shifts (paid plans)

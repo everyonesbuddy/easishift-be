@@ -65,6 +65,11 @@ const userSchema = new mongoose.Schema(
       select: false, // never return password hash in queries by default
       default: null,
     },
+    // Staff link PIN (only used when the facility requires one).
+    linkPinHash: { type: String, default: null, select: false },
+    linkPinSetAt: { type: Date, default: null },
+    linkPinFailures: { type: Number, default: 0 },
+    linkPinLockedUntil: { type: Date, default: null },
     // true = can sign in (owner/scheduler/viewer). false = staff contact.
     loginEnabled: {
       type: Boolean,

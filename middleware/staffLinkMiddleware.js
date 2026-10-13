@@ -14,6 +14,11 @@ const {
   getUserRoles,
 } = require("../config/authorization");
 const { getEffectivePlanKey, getPlan } = require("../config/plans");
+const FacilityPreferences = require("../models/facilityPreferencesModel");
+const { findDevice } = require("../utils/staffDevices");
+
+// What a locked link (PIN required, device not yet verified) may call.
+const OPEN_WHEN_LOCKED = new Set(["/me", "/pin/setup", "/pin/verify"]);
 
 const LAST_USED_WRITE_INTERVAL_MS = 60 * 60 * 1000;
 
@@ -54,6 +59,34 @@ module.exports = async (req, res, next) => {
     req.plan = getPlan(getEffectivePlanKey(tenant));
     req.authKind = "staff_link";
     req.staffLinkId = link._id;
+
+    // PIN: when the facility requires one, only devices that entered it
+    // get in. Others can only see who the link is for and enter the PIN.
+    const prefs = await FacilityPreferences.findOne({ tenantId: link.tenantId })
+      .select("staffLinkPinRequired")
+      .lean();
+    req.pinRequired = Boolean(prefs?.staffLinkPinRequired);
+    req.pinLocked = false;
+    if (req.pinRequired) {
+      const device = await findDevice({
+        token: req.get("x-staff-device"),
+        staffId: user._id,
+        tenantId: link.tenantId,
+      });
+      if (device) {
+        req.staffDevice = device;
+        if (!device.lastUsedAt || Date.now() - device.lastUsedAt.getTime() > LAST_USED_WRITE_INTERVAL_MS) {
+          device.updateOne({ $set: { lastUsedAt: new Date() } }).catch(() => {});
+        }
+      } else if (OPEN_WHEN_LOCKED.has(req.path)) {
+        req.pinLocked = true;
+      } else {
+        return res.status(401).json({
+          message: "Enter your PIN to continue.",
+          errorCode: "PIN_REQUIRED",
+        });
+      }
+    }
 
     if (
       !link.lastUsedAt ||

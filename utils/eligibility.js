@@ -63,10 +63,8 @@ const getSchedulingCandidateTier = (staff, facilityConfig) => {
 const isRoleCompatible = (staffRole, coverageRole) =>
   normalizeRoleFamily(staffRole) === normalizeRoleFamily(coverageRole);
 
-const normalizeAreaTag = (value) =>
-  String(value || "")
-    .trim()
-    .toLowerCase();
+// "Memory Care", "memory care" and "memory_care" all match.
+const normalizeAreaTag = (value) => tagKey(value);
 
 const normalizeShiftType = (value) =>
   String(value || "")
@@ -99,6 +97,8 @@ const inferShiftTypeFromWindow = (startTime, endTime) => {
 
   return "day";
 };
+
+const { tagKey } = require("./tagKey");
 
 const dedupeStrings = (values) =>
   Array.from(
@@ -145,10 +145,8 @@ const getStaffCertificationTags = (staff) =>
 
 const isCertificationCompatible = (requiredTags, staffTags) => {
   if (!requiredTags.length) return true;
-  const staffTagSet = new Set(
-    (staffTags || []).map((tag) => tag.toLowerCase()),
-  );
-  return requiredTags.every((tag) => staffTagSet.has(tag.toLowerCase()));
+  const staffTagSet = new Set((staffTags || []).map(tagKey));
+  return requiredTags.every((tag) => staffTagSet.has(tagKey(tag)));
 };
 
 const isAreaCompatible = (staffAreas, coverageArea, hasAreaRestrictions) => {

@@ -13,6 +13,7 @@ const Schedule = require("../models/scheduleModel");
 const TimeOff = require("../models/timeOffModel");
 const User = require("../models/userModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
+const { tagKey } = require("../utils/tagKey");
 const Preferences = require("../models/preferencesModel");
 const { getEffectivePlanKey } = require("../config/plans");
 const {
@@ -462,17 +463,24 @@ exports.addSlot = async (req, res, next) => {
     if (!(prefs?.roleFamilies || []).map(norm).includes(role)) {
       return res.status(400).json({ message: `Unknown role '${body.role}'` });
     }
-    const unitArea = body.unitArea ? norm(body.unitArea) : null;
-    if (unitArea && !(prefs?.unitAreas || []).map(norm).includes(unitArea)) {
-      return res.status(400).json({ message: `Unknown unit area '${body.unitArea}'` });
-    }
+    // Areas and certifications are stored as lowercase_with_underscores;
+    // new ones are added to facility preferences so staff can be tagged.
+    const unitArea = body.unitArea ? tagKey(body.unitArea) : null;
     const certs = Array.isArray(body.requiredCertificationTags)
-      ? Array.from(new Set(body.requiredCertificationTags.map(norm).filter(Boolean)))
+      ? Array.from(new Set(body.requiredCertificationTags.map(tagKey).filter(Boolean)))
       : [];
-    const knownCerts = (prefs?.certificationTags || []).map(norm);
-    const unknownCert = certs.find((c) => !knownCerts.includes(c));
-    if (unknownCert) {
-      return res.status(400).json({ message: `Unknown certification '${unknownCert}'` });
+    if ([unitArea, ...certs].some((v) => v && v.length > 60)) {
+      return res.status(400).json({ message: "Unit area or certification is too long" });
+    }
+    const knownAreas = (prefs?.unitAreas || []).map(tagKey);
+    const knownCerts = (prefs?.certificationTags || []).map(tagKey);
+    const newAreas = unitArea && !knownAreas.includes(unitArea) ? [unitArea] : [];
+    const newCerts = certs.filter((c) => !knownCerts.includes(c));
+    if (newAreas.length || newCerts.length) {
+      await FacilityPreferences.updateOne(
+        { tenantId: req.tenantId },
+        { $addToSet: { unitAreas: { $each: newAreas }, certificationTags: { $each: newCerts } } },
+      );
     }
 
     await ensureWeek({ tenantId: req.tenantId, weekStart, settings });

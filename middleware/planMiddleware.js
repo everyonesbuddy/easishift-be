@@ -3,6 +3,7 @@ const {
   hasFeature,
   requiredPlanFor,
   trialAvailable,
+  TRIAL_PLAN,
 } = require("../config/plans");
 
 /**
@@ -18,7 +19,8 @@ exports.requireFeature = (feature) => (req, res, next) => {
     feature,
     currentPlan: req.plan ? req.plan.key : null,
     requiredPlan,
-    // The app shows "Try Pro free for 14 days" when this is true.
-    trialAvailable: requiredPlan === "pro" && trialAvailable(req.tenant),
+    // The app offers the free Starter trial when this is true.
+    trialAvailable:
+      hasFeature(TRIAL_PLAN, feature) && trialAvailable(req.tenant),
   });
 };

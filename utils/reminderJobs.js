@@ -1,5 +1,5 @@
 /**
- * Shift reminders (Pro+): "Reminder: you work Fri 3p–11p at Sunrise."
+ * Shift reminders (paid plans): "Reminder: you work Fri 3p–11p at Sunrise."
  * Runs hourly; each published, scheduled shift gets one reminder roughly
  * `shiftReminderLeadHours` before it starts.
  */

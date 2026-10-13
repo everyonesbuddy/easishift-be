@@ -86,7 +86,8 @@ const tenantSchema = new mongoose.Schema(
      */
     plan: {
       type: String,
-      enum: ["free", "pro", "facility", "organization"],
+      // pro/facility/organization are older keys (read as starter/growth/enterprise).
+      enum: ["free", "starter", "growth", "premium", "enterprise", "pro", "facility", "organization"],
       default: "free",
     },
 
@@ -136,8 +137,21 @@ const tenantSchema = new mongoose.Schema(
       default: null,
     },
 
+    // First Stripe checkout gets the card trial (7 days monthly, 30 yearly) once.
+    cardTrialUsedAt: {
+      type: Date,
+      default: null,
+    },
+
+    // After a trial ends over the limits, one week (YYYY-MM-DD) may still be
+    // published (and re-published) within GRACE_DAYS.
+    graceWeekStart: {
+      type: String,
+      default: null,
+    },
+
     /**
-     * PRO TRIAL (opt-in, no card, once per workspace)
+     * STARTER TRIAL (opt-in, no card, once per workspace)
      * trialUsedAt: when the owner started it. trialEndsAt: when it ends.
      */
     trialUsedAt: {

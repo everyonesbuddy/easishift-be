@@ -2,7 +2,7 @@
  * Call-outs (scheduler side)
  * --------------------------
  * POST /api/v1/schedules/:id/call-out        mark someone out; returns who could cover
- * POST /api/v1/coverage/:id/fill-by-text     text eligible staff, first YES wins (Pro)
+ * POST /api/v1/coverage/:id/fill-by-text     text eligible staff, first YES wins (paid plans)
  * GET  /api/v1/coverage/:id/callout          latest offer and who answered
  */
 const mongoose = require("mongoose");

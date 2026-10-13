@@ -28,11 +28,11 @@ router.use(staffLink);
 router.get("/me", portal.getMe);
 router.get("/schedule", portal.getMySchedule);
 
-// Open shifts (Pro)
+// Open shifts (paid plans)
 router.get("/open-shifts", requireFeature("pickup"), schedule.getOpenCoverageForMe);
 router.post("/open-shifts/pick-up", requireFeature("pickup"), schedule.pickUpSchedule);
 
-// Swaps (Pro)
+// Swaps (paid plans)
 router.get("/swap-candidates/:scheduleId", requireFeature("swaps"), portal.getSwapCandidates);
 router.post("/schedules/:id/swap", requireFeature("swaps"), schedule.requestShiftSwap);
 router.get("/swaps", requireFeature("swaps"), schedule.getShiftSwapRequests);
@@ -50,10 +50,10 @@ router.post("/time-off", timeOff.requestTimeOff);
 router.get("/preferences", preferences.getMyPreferences);
 router.post("/preferences", preferences.upsertMyPreferences);
 
-// Messages from the facility (Facility plan)
+// Messages from the facility (paid plans)
 router.get("/messages", requireFeature("messaging"), portal.getMyMessages);
 
-// Clock in/out (Facility plan)
+// Clock in/out (paid plans)
 router.get("/time-entries", requireFeature("timeClock"), timeTracking.getMyTimeEntries);
 router.post("/clock-in", requireFeature("timeClock"), timeTracking.clockIn);
 router.post("/breaks/start", requireFeature("timeClock"), timeTracking.startBreak);

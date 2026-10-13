@@ -154,7 +154,7 @@ exports.getSwapCandidates = async (req, res, next) => {
 };
 
 /**
- * GET /s/:token/messages  — messages sent to me (Facility plan).
+ * GET /s/:token/messages  — messages sent to me (paid plans).
  */
 exports.getMyMessages = async (req, res, next) => {
   try {

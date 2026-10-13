@@ -1,14 +1,15 @@
 /**
  * Billing
  * -------
- * Plans: Free (default) → optional 14-day Pro trial (no card, in our DB) →
- * paid Pro or Facility through Stripe Checkout, monthly or yearly.
+ * Plans: Free (default) → optional 14-day Starter trial (no card, in our DB)
+ * → Starter, Growth or Premium through Stripe Checkout, monthly or yearly.
+ * The first checkout gets a card trial: 7 days monthly, 30 days yearly
+ * (skipped if the in-app trial was already used). Enterprise is sales-led.
  *
  * Prices live in Stripe; we only keep their Price IDs in env:
- *   STRIPE_PRICE_PRO_MONTHLY, STRIPE_PRICE_PRO_YEARLY,
- *   STRIPE_PRICE_FACILITY_MONTHLY, STRIPE_PRICE_FACILITY_YEARLY
- * Founding price: STRIPE_FOUNDING_COUPON_ID ($20 off forever, Pro monthly,
- * first FOUNDING_SPOTS workspaces).
+ *   STRIPE_PRICE_STARTER_MONTHLY, STRIPE_PRICE_STARTER_YEARLY,
+ *   STRIPE_PRICE_GROWTH_MONTHLY,  STRIPE_PRICE_GROWTH_YEARLY,
+ *   STRIPE_PRICE_PREMIUM_MONTHLY, STRIPE_PRICE_PREMIUM_YEARLY
  */
 const Stripe = require("stripe");
 const Tenant = require("../models/tenantModel");
@@ -16,6 +17,10 @@ const {
   PLANS,
   PAID_PLAN_KEYS,
   PAID_STATUSES,
+  PLAN_PRICES,
+  TRIAL_PLAN,
+  CHECKOUT_TRIAL_DAYS,
+  normalizePlanKey,
   TRIAL_DAYS,
   DAY_MS,
   getEffectivePlanKey,
@@ -31,16 +36,7 @@ const {
 // Use env key but allow a fallback dummy to avoid crashes in dev without env set
 const stripe = Stripe(process.env.STRIPE_SECRET_KEY || "sk_test_dummy_key");
 
-const FOUNDING_SPOTS = 20;
 const INTERVALS = ["month", "year"];
-// Display prices (cents). Stripe is the source of truth for what's charged.
-const LIST_PRICES_CENTS = {
-  "pro:month": 4900,
-  "pro:year": 49000,
-  "facility:month": 17900,
-  "facility:year": 179000,
-};
-const FOUNDING_PRO_MONTHLY_CENTS = 2900;
 
 const frontendUrl = (
   process.env.FRONTEND_URL || "http://localhost:5173"
@@ -64,17 +60,11 @@ const planFromPriceId = (priceId) => {
   return null;
 };
 
-const getFoundingSpotsLeft = async () =>
-  Math.max(
-    0,
-    FOUNDING_SPOTS - (await Tenant.countDocuments({ foundingMember: true })),
-  );
-
-const qualifiesForFounding = (plan, interval, spotsLeft) =>
-  plan === "pro" &&
-  interval === "month" &&
-  spotsLeft > 0 &&
-  Boolean(process.env.STRIPE_FOUNDING_COUPON_ID);
+/** The card trial at checkout is for workspaces that never trialed. */
+const checkoutTrialDays = (tenant, interval) =>
+  tenant.trialUsedAt || tenant.cardTrialUsedAt || tenant.stripeSubscriptionId
+    ? 0
+    : CHECKOUT_TRIAL_DAYS[interval] || 0;
 
 const validatePlanChoice = (plan, interval) => {
   if (!PAID_PLAN_KEYS.includes(plan)) {
@@ -119,23 +109,26 @@ const getInvoiceSubscriptionId = (invoice) =>
 exports.getPlans = async (req, res, next) => {
   try {
     const tenant = req.tenant;
-    const [staff, schedulers, foundingSpotsLeft] = await Promise.all([
+    const [staff, schedulers] = await Promise.all([
       countActiveStaff(req.tenantId),
       countSchedulers(req.tenantId),
-      getFoundingSpotsLeft(),
     ]);
     const effectivePlan = getEffectivePlanKey(tenant);
     const effective = PLANS[effectivePlan];
 
     res.status(200).json({
-      currentPlan: tenant.plan,
+      currentPlan: normalizePlanKey(tenant.plan),
       effectivePlan,
       billingInterval: tenant.billingInterval,
       subscriptionStatus: tenant.subscriptionStatus,
-      foundingMember: tenant.foundingMember,
       trialAvailable: trialAvailable(tenant),
+      trialPlan: TRIAL_PLAN,
+      trialDays: TRIAL_DAYS,
       trialEndsAt: tenant.trialEndsAt,
-      foundingSpotsLeft,
+      checkoutTrialDays: {
+        month: checkoutTrialDays(tenant, "month"),
+        year: checkoutTrialDays(tenant, "year"),
+      },
       usage: {
         staff,
         schedulers,
@@ -144,18 +137,9 @@ exports.getPlans = async (req, res, next) => {
       },
       plans: Object.keys(PLANS).map((key) => ({
         ...describePlan(key),
-        prices:
-          key === "pro" || key === "facility"
-            ? {
-                month: LIST_PRICES_CENTS[`${key}:month`],
-                year: LIST_PRICES_CENTS[`${key}:year`],
-              }
-            : null,
-        foundingPrice:
-          key === "pro" && foundingSpotsLeft > 0
-            ? { month: FOUNDING_PRO_MONTHLY_CENTS }
-            : null,
+        prices: PLAN_PRICES[key] || null,
         purchasable: PAID_PLAN_KEYS.includes(key),
+        contactSales: key === "enterprise",
       })),
     });
   } catch (err) {
@@ -165,7 +149,7 @@ exports.getPlans = async (req, res, next) => {
 
 /**
  * POST /api/v1/billing/start-trial
- * Starts the one-time, no-card Pro trial.
+ * Starts the one-time, no-card Starter trial.
  */
 exports.startTrial = async (req, res, next) => {
   try {
@@ -189,7 +173,7 @@ exports.startTrial = async (req, res, next) => {
     await tenant.save();
 
     res.status(200).json({
-      message: `Your ${TRIAL_DAYS}-day Pro trial has started`,
+      message: `Your ${TRIAL_DAYS}-day ${PLANS[TRIAL_PLAN].label} trial has started`,
       effectivePlan: getEffectivePlanKey(tenant),
       trialEndsAt: tenant.trialEndsAt,
     });
@@ -200,7 +184,7 @@ exports.startTrial = async (req, res, next) => {
 
 /**
  * POST /api/v1/stripe/create-checkout-session
- * Body: { plan: "pro" | "facility", interval: "month" | "year" }
+ * Body: { plan: "starter" | "growth" | "premium", interval: "month" | "year" }
  */
 exports.createCheckoutSession = async (req, res, next) => {
   try {
@@ -236,16 +220,12 @@ exports.createCheckoutSession = async (req, res, next) => {
       });
     }
 
-    const founding = qualifiesForFounding(
-      plan,
-      interval,
-      await getFoundingSpotsLeft(),
-    );
+    const trialDays = checkoutTrialDays(tenant, interval);
     const metadata = {
       tenantId,
       plan,
       interval,
-      ...(founding ? { founding: "1" } : {}),
+      ...(trialDays ? { cardTrial: String(trialDays) } : {}),
     };
 
     const session = await stripe.checkout.sessions.create({
@@ -259,16 +239,16 @@ exports.createCheckoutSession = async (req, res, next) => {
         : tenant.billingEmail || tenant.email
           ? { customer_email: tenant.billingEmail || tenant.email }
           : {}),
-      ...(founding
-        ? { discounts: [{ coupon: process.env.STRIPE_FOUNDING_COUPON_ID }] }
-        : { allow_promotion_codes: true }),
-      // No trial_period_days: the Pro trial lives in our DB, not Stripe.
-      subscription_data: { metadata },
+      allow_promotion_codes: true,
+      subscription_data: {
+        metadata,
+        ...(trialDays ? { trial_period_days: trialDays } : {}),
+      },
       success_url: `${frontendUrl}/billing/success?session_id={CHECKOUT_SESSION_ID}`,
       cancel_url: `${frontendUrl}/billing/cancel`,
     });
 
-    res.status(200).json({ url: session.url, id: session.id, founding });
+    res.status(200).json({ url: session.url, id: session.id, trialDays });
   } catch (err) {
     next(err);
   }
@@ -478,7 +458,7 @@ exports.handleWebhook = async (req, res) => {
           update.plan = session.metadata.plan;
           update.billingInterval = session.metadata.interval || null;
         }
-        if (session.metadata.founding === "1") update.foundingMember = true;
+        if (session.metadata.cardTrial) update.cardTrialUsedAt = new Date();
 
         await Tenant.findByIdAndUpdate(tenantId, update);
         console.log(`✅ Tenant ${tenantId} subscribed (${update.plan})`);
@@ -523,4 +503,4 @@ exports.handleWebhook = async (req, res) => {
 // Exposed for unit tests.
 exports._planFromPriceId = planFromPriceId;
 exports._buildSubscriptionUpdate = buildSubscriptionUpdate;
-exports._qualifiesForFounding = qualifiesForFounding;
+exports._checkoutTrialDays = checkoutTrialDays;

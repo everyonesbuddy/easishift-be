@@ -3,9 +3,9 @@
  * -------------
  * sendToStaff picks the channel, sends, and logs. It never throws.
  *
- *   Pro+ (sms feature) and the person opted in to texts  -> SMS
+ *   Paid plan (sms feature) and the person opted in to texts  -> SMS
  *   otherwise, if they have an email                     -> email
- *   Pro+ with a phone but no answer yet                  -> one opt-in text
+ *   Paid plan with a phone but no answer yet                  -> one opt-in text
  *   otherwise                                            -> not reached (reason)
  *
  * notifySchedulers emails the owner and schedulers.
@@ -58,7 +58,7 @@ const logMessage = (entry) =>
 
 /**
  * @returns {Promise<{delivered:boolean, channel?:"sms"|"email", reason?:string}>}
- * reasons: "no_contact" | "opted_out" | "awaiting_opt_in" | "sms_needs_pro"
+ * reasons: "no_contact" | "opted_out" | "awaiting_opt_in" | "sms_needs_upgrade"
  *          | "notifications_off" | "send_failed"
  */
 async function sendToStaff({
@@ -125,7 +125,7 @@ async function sendToStaff({
 
     if (!phone && !staff.email) return { delivered: false, reason: "no_contact" };
     if (phone && consent === "opted_out") return { delivered: false, reason: "opted_out" };
-    if (phone && !planHasSms) return { delivered: false, reason: "sms_needs_pro" };
+    if (phone && !planHasSms) return { delivered: false, reason: "sms_needs_upgrade" };
     if (phone && consent === "pending") return { delivered: false, reason: "awaiting_opt_in" };
     return { delivered: false, reason: "notifications_off" };
   } catch (err) {

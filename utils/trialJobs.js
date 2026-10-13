@@ -1,5 +1,5 @@
 /**
- * Trial emails: one reminder 3 days before the Pro trial ends, one on the
+ * Trial emails: one reminder 3 days before the Starter trial ends, one on the
  * day it ends. Each is sent once (tracked on the tenant).
  */
 const Tenant = require("../models/tenantModel");
@@ -8,6 +8,7 @@ const { sendEmail } = require("./sendEmail");
 const {
   DAY_MS,
   PLANS,
+  GRACE_DAYS,
   isPaid,
   getEffectivePlanKey,
 } = require("../config/plans");
@@ -34,9 +35,9 @@ const describeFreeImpact = async (tenantId) => {
   if (schedulers > free.schedulers)
     over.push(`${schedulers} schedulers (Free allows ${free.schedulers})`);
   const textingLine =
-    "Texting, shift swaps, open-shift pickup and call-out texts turn off; schedules go out by email only.";
+    "Texting, swaps, open-shift pickup, call-out texts, automated scheduling, messaging and the time clock turn off; schedules go out by email only. Nothing is deleted, and published weeks and staff links keep working.";
   if (!over.length) return textingLine;
-  return `${textingLine} You have ${over.join(" and ")}, so publishing new weeks will pause until you upgrade or archive staff to get under the limit. Nothing is deleted.`;
+  return `${textingLine} You have ${over.join(" and ")}. You can publish one more week in the next ${GRACE_DAYS} days; after that, publishing pauses until you upgrade or choose who to keep on Free. Extra schedulers can still look but not make changes.`;
 };
 
 const emailOwners = async (tenant, subject, html) => {
@@ -50,7 +51,7 @@ const emailOwners = async (tenant, subject, html) => {
 };
 
 async function sendTrialEmails(now = new Date()) {
-  const billingUrl = `${appUrl()}/settings/billing`;
+  const billingUrl = `${appUrl()}/billing`;
 
   // 1) Reminder: trial ends within the next 3 days.
   const endingSoon = await Tenant.find({
@@ -63,12 +64,12 @@ async function sendTrialEmails(now = new Date()) {
     const endDate = new Date(tenant.trialEndsAt).toDateString();
     await emailOwners(
       tenant,
-      `Your WiserShifts Pro trial ends ${endDate}`,
+      `Your WiserShifts Starter trial ends ${endDate}`,
       (owner) => `
         <p>Hi ${owner.name || "there"},</p>
-        <p>Your Pro trial for <strong>${tenant.name}</strong> ends on ${endDate}. After that you'll be on Free.</p>
+        <p>Your Starter trial for <strong>${tenant.name}</strong> ends on ${endDate}. After that you'll be on Free.</p>
         <p>${impact}</p>
-        <p><a href="${billingUrl}">Keep Pro</a></p>`,
+        <p><a href="${billingUrl}">Keep Starter</a></p>`,
     );
     tenant.trialReminderSentAt = now;
     await tenant.save();
@@ -88,12 +89,12 @@ async function sendTrialEmails(now = new Date()) {
     const impact = await describeFreeImpact(tenant._id);
     await emailOwners(
       tenant,
-      "Your WiserShifts Pro trial has ended",
+      "Your WiserShifts Starter trial has ended",
       (owner) => `
         <p>Hi ${owner.name || "there"},</p>
         <p><strong>${tenant.name}</strong> is now on Free. Your schedules, staff and staffing template are all still here.</p>
         <p>${impact}</p>
-        <p><a href="${billingUrl}">Choose a plan</a></p>`,
+        <p><a href="${billingUrl}">Choose a plan</a> or pick who to keep on Free.</p>`,
     );
     tenant.trialEndedEmailSentAt = now;
     await tenant.save();

@@ -63,6 +63,7 @@ const ROUTES = [
   ["get", "/weeks/{weekStart}", "Schedule", "Everything for one week: needs, shifts, staff, time off, counts"],
   ["get", "/weeks/{weekStart}/candidates", "Schedule", "Who can take a slot, eligible first, with reasons", { query: ["coverageId"] }],
   ["post", "/weeks/{weekStart}/publish", "Schedule", "Publish: one text/email per person; returns who wasn't reached", { body: { resendAll: false, includeEveryone: false } }],
+  ["post", "/weeks/{weekStart}/auto-fill", "Schedule", "Auto-fill open slots with available people (drafts in a draft week; sent right away in a published week)", { body: { coverageIds: [] } }],
   ["post", "/weeks/{weekStart}/slots", "Schedule", "Add a one-off need on one day (hand-edited, kept through template changes)", { body: { date: "2026-10-23", shiftType: "day", shiftTag: "day_1", role: "caregiver", unitArea: "memory care", requiredCertificationTags: [], count: 1 } }],
 
   // ── Coverage (needs per day) ──────────────────────────────────────────────

@@ -532,3 +532,136 @@ exports.addSlot = async (req, res, next) => {
     next(err);
   }
 };
+
+/**
+ * Auto-fill a week: put the best available people on its open slots,
+ * straight onto the schedule. In a draft week they're "Not sent yet" like
+ * any other edit and go out when the week is published; in a published
+ * week each person added gets a message.
+ *
+ * POST /api/v1/weeks/:weekStart/auto-fill   { coverageIds? }
+ */
+exports.autoFillWeek = async (req, res, next) => {
+  try {
+    const { weekStart } = req.params;
+    if (!isDateKey(weekStart)) {
+      return res.status(400).json({ message: "weekStart must be YYYY-MM-DD" });
+    }
+    const settings = await getWeekSettings(req.tenantId);
+    const week = await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
+    const days = weekDays(weekStart);
+
+    const filter = {
+      tenantId: req.tenantId,
+      date: { $in: days.map(dateKeyToCoverageDate) },
+      endTime: { $gt: new Date() },
+      requiredCount: { $gt: 0 },
+    };
+    if (Array.isArray(req.body?.coverageIds) && req.body.coverageIds.length) {
+      filter._id = {
+        $in: req.body.coverageIds.filter((id) => mongoose.isValidObjectId(id)),
+      };
+    }
+    const coverage = await Coverage.find(filter).select("requiredCount").lean();
+    const assigned = await countAssignmentsByCoverage({
+      tenantId: req.tenantId,
+      coverageIds: coverage.map((row) => row._id),
+    });
+    const open = coverage.filter(
+      (row) => (assigned.get(String(row._id)) || 0) < row.requiredCount,
+    );
+    if (!open.length) {
+      return res.json({ filled: 0, stillOpen: 0, notified: 0, message: "Nothing open to fill." });
+    }
+
+    // Reuse the auto-schedule ranking, then put its picks straight on the
+    // schedule. The intermediate draft is removed afterwards.
+    const scheduleController = require("./scheduleController");
+    const AutoScheduleDraft = require("../models/autoScheduleDraftModel");
+    const run = (handler, extra) =>
+      new Promise((resolve, reject) => {
+        const fakeRes = {
+          statusCode: 200,
+          status(code) {
+            this.statusCode = code;
+            return this;
+          },
+          json(body) {
+            resolve({ status: this.statusCode, body });
+            return this;
+          },
+        };
+        Promise.resolve(handler({ ...req, ...extra }, fakeRes, reject)).catch(reject);
+      });
+
+    const generated = await run(scheduleController.autoGenerateSchedule, {
+      body: { coverageIds: open.map((row) => String(row._id)) },
+    });
+    if (generated.status >= 400) {
+      return res.status(generated.status).json(generated.body);
+    }
+    const draftId = generated.body?.draftSchedule?.draftId;
+    let scheduleIds = [];
+    if (draftId && generated.body.generatedCount > 0) {
+      const published = await run(scheduleController.publishAutoScheduleDraft, {
+        params: { draftId: String(draftId) },
+        body: {},
+      });
+      if (published.status >= 400 && published.status !== 409) {
+        return res.status(published.status).json(published.body);
+      }
+      scheduleIds = published.body?.scheduleIds || [];
+    }
+    if (draftId) await AutoScheduleDraft.deleteOne({ _id: draftId, tenantId: req.tenantId });
+
+    // Published week: tell each person they were added (one message each).
+    let notified = 0;
+    if (week.status === "published" && scheduleIds.length) {
+      const created = await Schedule.find({ _id: { $in: scheduleIds }, tenantId: req.tenantId })
+        .populate("staffId")
+        .lean();
+      const tz = settings.timezone;
+      const byStaff = new Map();
+      for (const s of created) {
+        if (!s.staffId) continue;
+        const key = String(s.staffId._id);
+        if (!byStaff.has(key)) byStaff.set(key, { staff: s.staffId, shifts: [] });
+        byStaff.get(key).shifts.push(s);
+      }
+      const facility = req.tenant?.name || "Your facility";
+      const planKey = getEffectivePlanKey(req.tenant);
+      for (const { staff, shifts } of byStaff.values()) {
+        const list = shifts.map((s) => shortShift(s.startTime, s.endTime, tz)).join(", ");
+        const link = await linkForStaff(staff);
+        const result = await sendToStaff({
+          tenant: req.tenant,
+          planKey,
+          staff,
+          kind: "shift_added",
+          sms: `${facility}: you've been added to ${list}.${link ? ` See your schedule: ${link}` : ""}`,
+          emailSubject: `${facility}: you've been added to ${shifts.length === 1 ? "a shift" : `${shifts.length} shifts`}`,
+          emailHtml: `<p>Hi ${escapeHtml(firstName(staff.name))},</p><p>You've been added to: ${escapeHtml(list)}.</p>${link ? `<p><a href="${link}">See your schedule</a></p>` : ""}`,
+        });
+        if (result?.delivered) notified += 1;
+      }
+    }
+
+    const after = await countAssignmentsByCoverage({
+      tenantId: req.tenantId,
+      coverageIds: open.map((row) => row._id),
+    });
+    const stillOpen = open.reduce(
+      (sum, row) => sum + Math.max(0, row.requiredCount - (after.get(String(row._id)) || 0)),
+      0,
+    );
+
+    res.json({
+      filled: scheduleIds.length,
+      stillOpen,
+      notified,
+      weekStatus: week.status,
+    });
+  } catch (err) {
+    next(err);
+  }
+};

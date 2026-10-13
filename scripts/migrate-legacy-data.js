@@ -9,7 +9,7 @@
  *   - Staff contacts (loginEnabled: false) have job roles only, and can
  *     have several (e.g. caregiver + med_tech).
  *
- * What it does (only to records that haven't been migrated yet):
+ * What it does (only to people/records not already in the new shape):
  *   1. Each workspace gets exactly one owner: an existing owner, else the
  *      admin whose email is the workspace's email (who signed up), else the
  *      earliest admin/scheduler.
@@ -17,7 +17,9 @@
  *      ("admin" -> scheduler, "viewer" stays viewer). Any job roles they also
  *      had are dropped (accounts can't be scheduled; add them under Staff
  *      later if they really work shifts).
- *   3. Users with only job roles become staff contacts (keeping all roles).
+ *   3. Users with only job roles become staff contacts (keeping all roles,
+ *      no login). The same person added more than once (same email or
+ *      phone) is merged into the first copy.
  *   4. Job roles in use are added to the facility's roles; old tenants are
  *      marked as set up (so they skip onboarding); old paid planKeys map to
  *      the new plan names.
@@ -40,6 +42,11 @@ const Tenant = require("../models/tenantModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const Schedule = require("../models/scheduleModel");
 const ScheduleWeek = require("../models/scheduleWeekModel");
+const TimeOff = require("../models/timeOffModel");
+const TimeEntry = require("../models/timeEntryModel");
+const Preferences = require("../models/preferencesModel");
+const ShiftSwap = require("../models/shiftSwapModel");
+const StaffLink = require("../models/staffLinkModel");
 const { buildE164Number } = require("../utils/phone");
 const { weekStartFor, dateKeyToCoverageDate, normalizeFacilityTimezone } = require("../utils/dateUtils");
 
@@ -66,52 +73,100 @@ const LEGACY_PLAN_KEYS = {
 };
 
 const log = (...args) => console.log(...args);
-const summary = { accounts: 0, staff: 0, jobRolesDropped: 0, ownersFixed: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
+const summary = { accounts: 0, staff: 0, jobRolesDropped: 0, duplicatesMerged: 0, tenants: 0, shiftsPublished: 0, weeksPublished: 0, warnings: [] };
+
+const ACCOUNT_FINAL = new Set(["owner", "scheduler", "viewer"]);
+
+/** Already in the new shape? (So the script only touches what needs it.) */
+const isFinalAccount = (u) =>
+  u.loginEnabled === true &&
+  Array.isArray(u.roles) &&
+  u.roles.length === 1 &&
+  ACCOUNT_FINAL.has(u.roles[0]) &&
+  u.role === u.roles[0];
+const isFinalStaff = (u) =>
+  u.loginEnabled === false &&
+  rolesOf(u).length > 0 &&
+  rolesOf(u).every((r) => !NOT_JOB_ROLES.has(r));
+
+async function moveRecords(fromId, toId, tenantId) {
+  const pairs = [
+    [Schedule, "staffId"],
+    [TimeOff, "staffId"],
+    [TimeEntry, "staffId"],
+    [Preferences, "staffId"],
+    [ShiftSwap, "requesterStaffId"],
+    [ShiftSwap, "receiverStaffId"],
+    [StaffLink, "staffId"],
+  ];
+  let moved = 0;
+  for (const [Model, field] of pairs) {
+    const filter = { tenantId, [field]: fromId };
+    const count = await Model.collection.countDocuments(filter);
+    if (count && APPLY) await Model.collection.updateMany(filter, { $set: { [field]: toId } });
+    moved += count;
+  }
+  return moved;
+}
 
 async function migrateTenant(tenant) {
   const tenantId = tenant._id;
   log(`\n== ${tenant.name} (${tenantId})`);
-  const users = await User.collection.find({ tenantId, loginEnabled: { $exists: false } }).toArray();
+  const users = await User.collection.find({ tenantId }).toArray();
   const prefs = await FacilityPreferences.findOne({ tenantId });
   const jobRolesInUse = new Set();
+  const byAge = (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
 
   // Who owns the workspace: an existing owner, else the admin who signed up
   // (their email is the workspace's email), else the earliest admin.
-  const existingAccounts = await User.collection.find({ tenantId, loginEnabled: true }).toArray();
-  const candidates = [...existingAccounts, ...users].filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r]));
-  const byAge = (a, b) => new Date(a.createdAt || 0) - new Date(b.createdAt || 0);
+  const candidates = users.filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r]));
   const tenantEmail = String(tenant.email || tenant.billingEmail || "").toLowerCase();
+  const signedUp = (u) => tenantEmail && String(u.email || "").toLowerCase() === tenantEmail;
   const owner =
-    candidates.filter((u) => rolesOf(u).includes("owner")).sort(byAge)[0] ||
-    candidates.find((u) => tenantEmail && String(u.email || "").toLowerCase() === tenantEmail && rolesOf(u).some((r) => ACCOUNT_RANK[r] >= 2)) ||
+    candidates.filter((u) => rolesOf(u).includes("owner")).sort((a, b) => signedUp(b) - signedUp(a) || byAge(a, b))[0] ||
+    candidates.find((u) => signedUp(u) && rolesOf(u).some((r) => ACCOUNT_RANK[r] >= 2)) ||
     candidates.filter((u) => rolesOf(u).some((r) => ACCOUNT_RANK[r] >= 2)).sort(byAge)[0] ||
     null;
   const ownerId = owner?._id || null;
   if (!owner && candidates.length) summary.warnings.push(`${tenant.name}: no owner, admin or scheduler found`);
 
-  for (const u of users) {
+  const finalStaff = []; // { _id, name, email, phoneE164, createdAt } for duplicate checks
+
+  for (const u of users.sort(byAge)) {
     const roles = rolesOf(u);
     const accountRoles = roles.filter((r) => ACCOUNT_RANK[r]);
     const jobRoles = roles.filter((r) => !NOT_JOB_ROLES.has(r));
-    jobRoles.forEach((r) => jobRolesInUse.add(r));
-    const phoneE164 = buildE164Number(u.userPhoneCountryCode, u.userPhone) || null;
+    const phoneE164 = u.phoneE164 || buildE164Number(u.userPhoneCountryCode, u.userPhone) || null;
 
     if (accountRoles.length) {
-      const role = String(u._id) === String(ownerId) ? "owner" : accountRoles.includes("viewer") && !accountRoles.some((r) => ACCOUNT_RANK[r] >= 2) ? "viewer" : "scheduler";
-      log(`  account  ${u.name} <${u.email}>: [${roles.join(", ")}] -> ${role}${jobRoles.length ? `  (job roles dropped: ${jobRoles.join(", ")})` : ""}`);
-      summary.accounts += 1;
-      if (jobRoles.length) {
-        summary.jobRolesDropped += 1;
-        const shifts = await Schedule.collection.countDocuments({ tenantId, staffId: u._id });
-        if (shifts) summary.warnings.push(`${tenant.name}: ${u.name} had ${shifts} shift(s) as staff; they stay in history but ${u.name} won't be offered new shifts unless added under Staff`);
+      const role =
+        String(u._id) === String(ownerId)
+          ? "owner"
+          : accountRoles.some((r) => ACCOUNT_RANK[r] >= 2)
+            ? "scheduler"
+            : "viewer";
+      const done = isFinalAccount(u) && u.role === role;
+      if (!done) {
+        log(`  account  ${u.name} <${u.email}>: [${roles.join(", ")}] -> ${role}${jobRoles.length ? `  (job roles dropped: ${jobRoles.join(", ")})` : ""}`);
+        summary.accounts += 1;
+        if (jobRoles.length) {
+          summary.jobRolesDropped += 1;
+          const shifts = await Schedule.collection.countDocuments({ tenantId, staffId: u._id });
+          if (shifts) summary.warnings.push(`${tenant.name}: ${u.name} had ${shifts} shift(s) as staff; they stay in history but ${u.name} won't be offered new shifts unless added under Staff`);
+        }
+        if (APPLY) {
+          await User.collection.updateOne(
+            { _id: u._id },
+            { $set: { loginEnabled: true, role, roles: [role], status: u.status || "active", phoneE164 } },
+          );
+        }
       }
-      if (APPLY) {
-        await User.collection.updateOne(
-          { _id: u._id },
-          { $set: { loginEnabled: true, role, roles: [role], status: u.status || "active", phoneE164 } },
-        );
-      }
-    } else {
+      continue;
+    }
+
+    // Staff contact (job roles only; several allowed).
+    jobRoles.forEach((r) => jobRolesInUse.add(r));
+    if (!isFinalStaff(u)) {
       if (!jobRoles.length) {
         const fallback = prefs?.roleFamilies?.[0] || "staff";
         summary.warnings.push(`${tenant.name}: ${u.name} had no job role; set to '${fallback}'`);
@@ -130,14 +185,31 @@ async function migrateTenant(tenant) {
         );
       }
     }
+    finalStaff.push({ _id: u._id, name: u.name, email: u.email ? String(u.email).toLowerCase() : null, phoneE164, roles: jobRoles });
   }
 
-  // Anyone already migrated as a second owner becomes a scheduler.
-  const extraOwners = existingAccounts.filter((a) => rolesOf(a).includes("owner") && String(a._id) !== String(ownerId));
-  if (extraOwners.length) {
-    log(`  owner    keep ${owner.name}; ${extraOwners.map((o) => o.name).join(", ")} -> scheduler`);
-    summary.ownersFixed += extraOwners.length;
-    if (APPLY) await User.collection.updateMany({ _id: { $in: extraOwners.map((o) => o._id) } }, { $set: { role: "scheduler", roles: ["scheduler"] } });
+  // The same person added more than once (same email or phone): keep the
+  // first, move everything that points at the copies to it, remove copies.
+  const keepByKey = new Map();
+  for (const person of finalStaff) {
+    const keys = [person.email && `e:${person.email}`, person.phoneE164 && `p:${person.phoneE164}`].filter(Boolean);
+    const keeper = keys.map((k) => keepByKey.get(k)).find(Boolean);
+    if (!keeper) {
+      keys.forEach((k) => keepByKey.set(k, person));
+      continue;
+    }
+    const moved = await moveRecords(person._id, keeper._id, tenantId);
+    const mergedRoles = Array.from(new Set([...keeper.roles, ...person.roles]));
+    log(`  merge    ${person.name} is a copy of ${keeper.name} (${person.email || person.phoneE164}); ${APPLY ? "moved" : "would move"} ${moved} records to the original and remove the copy`);
+    summary.duplicatesMerged += 1;
+    if (APPLY) {
+      if (mergedRoles.length !== keeper.roles.length) {
+        await User.collection.updateOne({ _id: keeper._id }, { $set: { roles: mergedRoles, role: mergedRoles[0] } });
+      }
+      await User.collection.deleteOne({ _id: person._id });
+    }
+    keeper.roles = mergedRoles;
+    keys.forEach((k) => keepByKey.set(k, keeper));
   }
 
   // Facility roles, setup, plan.

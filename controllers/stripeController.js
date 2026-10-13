@@ -97,8 +97,13 @@ const planFromPriceId = (priceId) => {
 };
 
 /** The card trial at checkout is for workspaces that never trialed. */
+// Card trial only for first-timers: not after a trial, a past
+// subscription, or while already on a paid plan (e.g. set up by hand).
 const checkoutTrialDays = (tenant, interval) =>
-  tenant.trialUsedAt || tenant.cardTrialUsedAt || tenant.stripeSubscriptionId
+  tenant.trialUsedAt ||
+  tenant.cardTrialUsedAt ||
+  tenant.stripeSubscriptionId ||
+  (normalizePlanKey(tenant.plan) !== "free" && PAID_STATUSES.includes(tenant.subscriptionStatus))
     ? 0
     : CHECKOUT_TRIAL_DAYS[interval] || 0;
 
@@ -198,6 +203,9 @@ exports.getPlans = async (req, res, next) => {
       effectivePlan,
       billingInterval: tenant.billingInterval,
       subscriptionStatus: tenant.subscriptionStatus,
+      // A paid plan without a Stripe subscription was set up by hand
+      // (comped or invoiced); switching goes through checkout.
+      hasSubscription: Boolean(tenant.stripeSubscriptionId),
       trialAvailable: trialAvailable(tenant),
       trialPlan: TRIAL_PLAN,
       trialDays: TRIAL_DAYS,
@@ -279,14 +287,9 @@ exports.createCheckoutSession = async (req, res, next) => {
     const choiceError = validatePlanChoice(plan, interval);
     if (choiceError) return res.status(400).json({ message: choiceError });
 
+    // A plan smaller than the team is allowed: after paying they choose
+    // who to keep (same screen as after a trial). Nothing is deleted.
     const breach = await findLimitBreach(tenantId, plan);
-    if (breach) {
-      return res.status(409).json({
-        message: breachMessage(plan, breach, await usageFor(tenantId)),
-        errorCode: "PLAN_BELOW_USAGE",
-        ...breach,
-      });
-    }
 
     // Already subscribed? Check with Stripe (our copy can be stale, e.g.
     // after a cancellation we didn't hear about, or older data).
@@ -308,6 +311,7 @@ exports.createCheckoutSession = async (req, res, next) => {
           plan,
           interval,
           subscriptionStatus: updated.status,
+          needsFit: Boolean(breach),
         });
       }
       // It ended in Stripe: forget it and start a fresh checkout.
@@ -344,7 +348,7 @@ exports.createCheckoutSession = async (req, res, next) => {
       cancel_url: `${frontendUrl}/billing/cancel`,
     });
 
-    res.status(200).json({ url: session.url, id: session.id, trialDays });
+    res.status(200).json({ url: session.url, id: session.id, trialDays, needsFit: Boolean(breach) });
   } catch (err) {
     next(err);
   }
@@ -379,14 +383,8 @@ exports.changePlan = async (req, res, next) => {
         .json({ message: "You're already on this plan" });
     }
 
+    // Smaller than the team is fine: they choose who to keep afterwards.
     const breach = await findLimitBreach(tenant._id, plan);
-    if (breach) {
-      return res.status(409).json({
-        message: breachMessage(plan, breach, await usageFor(tenant._id)),
-        errorCode: "PLAN_BELOW_USAGE",
-        ...breach,
-      });
-    }
 
     const subscription = await stripe.subscriptions.retrieve(
       tenant.stripeSubscriptionId,
@@ -398,6 +396,7 @@ exports.changePlan = async (req, res, next) => {
       plan,
       interval,
       subscriptionStatus: updated.status,
+      needsFit: Boolean(breach),
     });
   } catch (err) {
     next(err);

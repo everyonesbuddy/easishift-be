@@ -130,9 +130,14 @@ async function migrateTenant(tenant) {
   const ownerId = owner?._id || null;
   if (!owner && candidates.length) summary.warnings.push(`${tenant.name}: no owner, admin or scheduler found`);
 
-  const finalStaff = []; // { _id, name, email, phoneE164, createdAt } for duplicate checks
+  // email/phone -> the staff contact kept for that person (duplicate check)
+  const keepByKey = new Map();
 
-  for (const u of users.sort(byAge)) {
+  // Staff who are already in the new shape go first, so copies fold into
+  // them (the database won't allow two staff with the same email/phone).
+  users.sort((a, b) => Number(isFinalStaff(b)) - Number(isFinalStaff(a)) || byAge(a, b));
+
+  for (const u of users) {
     const roles = rolesOf(u);
     const accountRoles = roles.filter((r) => ACCOUNT_RANK[r]);
     const jobRoles = roles.filter((r) => !NOT_JOB_ROLES.has(r));
@@ -155,61 +160,70 @@ async function migrateTenant(tenant) {
           if (shifts) summary.warnings.push(`${tenant.name}: ${u.name} had ${shifts} shift(s) as staff; they stay in history but ${u.name} won't be offered new shifts unless added under Staff`);
         }
         if (APPLY) {
-          await User.collection.updateOne(
-            { _id: u._id },
-            { $set: { loginEnabled: true, role, roles: [role], status: u.status || "active", phoneE164 } },
-          );
+          try {
+            await User.collection.updateOne(
+              { _id: u._id },
+              { $set: { loginEnabled: true, role, roles: [role], status: u.status || "active", phoneE164 } },
+            );
+          } catch (err) {
+            if (err?.code !== 11000) throw err;
+            summary.warnings.push(`${tenant.name}: ${u.name}'s email already has a login in another workspace; left unchanged.`);
+          }
         }
       }
       continue;
     }
 
     // Staff contact (job roles only; several allowed).
+    if (!jobRoles.length) {
+      const fallback = prefs?.roleFamilies?.[0] || "staff";
+      summary.warnings.push(`${tenant.name}: ${u.name} had no job role; set to '${fallback}'`);
+      jobRoles.push(fallback);
+    }
     jobRoles.forEach((r) => jobRolesInUse.add(r));
-    if (!isFinalStaff(u)) {
-      if (!jobRoles.length) {
-        const fallback = prefs?.roleFamilies?.[0] || "staff";
-        summary.warnings.push(`${tenant.name}: ${u.name} had no job role; set to '${fallback}'`);
-        jobRoles.push(fallback);
+    const email = u.email ? String(u.email).toLowerCase() : null;
+    const keys = [email && `e:${email}`, phoneE164 && `p:${phoneE164}`].filter(Boolean);
+
+    // The same person added more than once (same email or phone): fold this
+    // copy into the first one, moving everything that points at it.
+    const keeper = keys.map((k) => keepByKey.get(k)).find(Boolean);
+    if (keeper) {
+      const moved = await moveRecords(u._id, keeper._id, tenantId);
+      const mergedRoles = Array.from(new Set([...keeper.roles, ...jobRoles]));
+      log(`  merge    ${u.name} is a copy of ${keeper.name} (${email || phoneE164}); ${APPLY ? "moved" : "would move"} ${moved} records to the original and removed the copy`);
+      summary.duplicatesMerged += 1;
+      if (APPLY) {
+        if (mergedRoles.length !== keeper.roles.length) {
+          await User.collection.updateOne({ _id: keeper._id }, { $set: { roles: mergedRoles, role: mergedRoles[0] } });
+        }
+        await User.collection.deleteOne({ _id: u._id });
       }
+      keeper.roles = mergedRoles;
+      keys.forEach((k) => keepByKey.set(k, keeper));
+      continue;
+    }
+
+    if (!isFinalStaff(u)) {
       if (!u.email && !phoneE164) summary.warnings.push(`${tenant.name}: ${u.name} has no email or phone (can't be reached)`);
       log(`  staff    ${u.name} <${u.email || phoneE164 || "no contact"}>: [${jobRoles.join(", ")}]`);
       summary.staff += 1;
       if (APPLY) {
-        await User.collection.updateOne(
-          { _id: u._id },
-          {
-            $set: { loginEnabled: false, roles: jobRoles, role: jobRoles[0], status: u.status || "active", phoneE164 },
-            $unset: { passwordHash: "", passwordResetToken: "", passwordResetExpires: "" },
-          },
-        );
+        try {
+          await User.collection.updateOne(
+            { _id: u._id },
+            {
+              $set: { loginEnabled: false, roles: jobRoles, role: jobRoles[0], status: u.status || "active", phoneE164 },
+              $unset: { passwordHash: "", passwordResetToken: "", passwordResetExpires: "" },
+            },
+          );
+        } catch (err) {
+          if (err?.code !== 11000) throw err;
+          summary.warnings.push(`${tenant.name}: ${u.name} shares an email/phone with another staff member; left unchanged. Fix by hand and run again.`);
+        }
       }
     }
-    finalStaff.push({ _id: u._id, name: u.name, email: u.email ? String(u.email).toLowerCase() : null, phoneE164, roles: jobRoles });
-  }
-
-  // The same person added more than once (same email or phone): keep the
-  // first, move everything that points at the copies to it, remove copies.
-  const keepByKey = new Map();
-  for (const person of finalStaff) {
-    const keys = [person.email && `e:${person.email}`, person.phoneE164 && `p:${person.phoneE164}`].filter(Boolean);
-    const keeper = keys.map((k) => keepByKey.get(k)).find(Boolean);
-    if (!keeper) {
-      keys.forEach((k) => keepByKey.set(k, person));
-      continue;
-    }
-    const moved = await moveRecords(person._id, keeper._id, tenantId);
-    const mergedRoles = Array.from(new Set([...keeper.roles, ...person.roles]));
-    log(`  merge    ${person.name} is a copy of ${keeper.name} (${person.email || person.phoneE164}); ${APPLY ? "moved" : "would move"} ${moved} records to the original and remove the copy`);
-    summary.duplicatesMerged += 1;
-    if (APPLY) {
-      if (mergedRoles.length !== keeper.roles.length) {
-        await User.collection.updateOne({ _id: keeper._id }, { $set: { roles: mergedRoles, role: mergedRoles[0] } });
-      }
-      await User.collection.deleteOne({ _id: person._id });
-    }
-    keeper.roles = mergedRoles;
-    keys.forEach((k) => keepByKey.set(k, keeper));
+    const person = { _id: u._id, name: u.name, roles: jobRoles };
+    keys.forEach((k) => keepByKey.set(k, person));
   }
 
   // Facility roles, setup, plan.

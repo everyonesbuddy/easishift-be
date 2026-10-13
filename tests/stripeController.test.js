@@ -107,3 +107,20 @@ test("a dashboard Price ID wins when configured", () => {
     assert.deepEqual(controller._priceSpecFor("growth", "month"), { price: "price_gr_m" });
   });
 });
+
+test("plan-limit answers say how to fit and which plan would", () => {
+  const msg = controller._breachMessage(
+    "growth",
+    { kind: "schedulers", used: 9, limit: 5 },
+    { staff: 87, schedulers: 9 },
+  );
+  assert.match(msg, /Growth allows 5 schedulers; you have 9/);
+  assert.match(msg, /make 4 of them viewers/);
+  assert.match(msg, /or choose Premium/);
+  const staffMsg = controller._breachMessage(
+    "starter",
+    { kind: "staff", used: 60, limit: 50 },
+    { staff: 60, schedulers: 2 },
+  );
+  assert.match(staffMsg, /archive 10 under Staff, or choose Growth/);
+});

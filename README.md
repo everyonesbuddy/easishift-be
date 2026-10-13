@@ -173,7 +173,11 @@ npm test                           # node --test tests/*.test.js
 No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDING_COUPON_ID`, `TWILIO_SID`, `TENANT_ROOT_DOMAIN`, `TENANT_APP_URL_SCHEME`, `TENANT_APP_URL_PORT`, `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, `FRONTEND_BASE_URL`.
 
 ## Going live checklist
-1. **Database:** start from an empty database (the data model changed; there are no migrations).
+1. **Database:** existing workspaces need a one-time migration (people become accounts or staff contacts, old shifts and weeks are marked published, one owner per workspace):
+   - Back up the database first.
+   - `node scripts/migrate-legacy-data.js` shows what will change (dry run).
+   - `node scripts/migrate-legacy-data.js --apply` makes the changes. It's safe to run again.
+   - Accounts end up with one workspace role (owner, scheduler or viewer; "admin" becomes scheduler). Anyone who also had job roles gets a separate staff contact with those roles, and their shifts and time off move to it. Staff contacts can keep several job roles.
 2. **Env:** set `STAFF_LINK_KEY`, `FRONTEND_URL`, `API_PUBLIC_URL`, and rename `TWILIO_SID` → `TWILIO_ACCOUNT_SID`.
 3. **Stripe:**
    - Nothing to create: checkout sends the plan's amount from `config/plans.js`. To change a price, edit `PLAN_PRICES` there (existing subscribers keep what they signed up at).

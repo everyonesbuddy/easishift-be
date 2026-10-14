@@ -20,7 +20,12 @@
  *      (e.g. 9a–5p) is kept and listed, for the scheduler to decide.
  * Areas on kept rows are rewritten to the Weekly Needs form.
  *
- * Past spots are left alone unless you pass --include-past. Then nameless
+ * "Upcoming" means from now on. --from=YYYY-MM-DD moves the start back to the
+ * start of that day (facility time), e.g. --from=2026-10-11 to also tidy the
+ * days of this week that have already happened. Those get the same merge
+ * treatment: people are moved, no shifts are deleted.
+ *
+ * Spots before that are left alone unless you pass --include-past. Then nameless
  * past rows are deleted together with their shifts (and those shifts' swap
  * requests). Rows whose shifts have clock-in records are skipped so hours
  * history stays intact.
@@ -29,12 +34,14 @@
  *   node scripts/cleanup-duplicate-coverage.js                       # dry run, all facilities
  *   node scripts/cleanup-duplicate-coverage.js --tenant=<tenantId>   # dry run, one facility
  *   node scripts/cleanup-duplicate-coverage.js --tenant=<id> --apply # make the changes
- *   add --include-past to also remove past nameless rows and their shifts
+ *   add --from=2026-10-11 to also tidy this week's earlier days (merge only)
+ *   add --include-past to also remove older nameless rows and their shifts
  * Reads DB_URL from config.env / the environment. Safe to run again.
  */
 const path = require("path");
 require("dotenv").config({ path: path.join(__dirname, "..", "config.env") });
 const mongoose = require("mongoose");
+const { DateTime } = require("luxon");
 const Coverage = require("../models/coverageModel");
 const Schedule = require("../models/scheduleModel");
 const ShiftSwap = require("../models/shiftSwapModel");
@@ -54,6 +61,11 @@ const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
 const INCLUDE_PAST = args.includes("--include-past");
 const TENANT = (args.find((a) => a.startsWith("--tenant=")) || "").split("=")[1] || null;
+const FROM = (args.find((a) => a.startsWith("--from=")) || "").split("=")[1] || null;
+if (FROM && !/^\d{4}-\d{2}-\d{2}$/.test(FROM)) {
+  console.error("--from must be YYYY-MM-DD");
+  process.exit(1);
+}
 
 const hhmm = (d, tz) =>
   new Date(d).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit", timeZone: tz });
@@ -68,7 +80,8 @@ async function cleanTenant(tenantId) {
   const prefs = await FacilityPreferences.findOne({ tenantId }).lean();
   const tz = normalizeFacilityTimezone(prefs?.facilityTimezone);
   const slotLookup = buildShiftSlotLookup(prefs);
-  const now = new Date();
+  // Where "upcoming" starts: now, or the start of --from day in facility time.
+  const now = FROM ? DateTime.fromISO(FROM, { zone: tz }).startOf("day").toJSDate() : new Date();
   const stats = { merged: 0, moved: 0, named: 0, deletedEmpty: 0, keptCustom: 0, renamedArea: 0, pastDeleted: 0, pastShifts: 0, pastSkipped: 0 };
   const log = [];
 
@@ -203,7 +216,10 @@ async function main() {
     ? [{ _id: new mongoose.Types.ObjectId(TENANT), name: "(selected)" }]
     : await Tenant.find({}).select("_id name").lean();
 
-  console.log(`${APPLY ? "APPLYING" : "DRY RUN (nothing is changed; add --apply)"}${INCLUDE_PAST ? ", including past" : ""}\n`);
+  console.log(
+    `${APPLY ? "APPLYING" : "DRY RUN (nothing is changed; add --apply)"}` +
+      `${FROM ? `, from ${FROM}` : ", from now"}${INCLUDE_PAST ? ", including older rows" : ""}\n`,
+  );
   const total = {};
   for (const t of tenants) {
     const { stats, log } = await cleanTenant(t._id);

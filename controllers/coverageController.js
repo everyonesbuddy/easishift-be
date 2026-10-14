@@ -3,6 +3,7 @@ const FacilityPreferences = require("../models/facilityPreferencesModel");
 const mongoose = require("mongoose");
 const { DateTime } = require("luxon");
 const { hasPermission } = require("../config/authorization");
+const { tagKey } = require("../utils/tagKey");
 const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
 const {
   normalizeToUTC,
@@ -14,6 +15,7 @@ const {
   getConfiguredShiftTypes,
   buildShiftSlotLookup,
   buildWindowFromShiftSlot,
+  findShiftSlotForWindow,
 } = require("../utils/dateUtils");
 
 function normalizeShiftWindow(startTime, endTime) {
@@ -39,10 +41,15 @@ function normalizeShiftWindow(startTime, endTime) {
   };
 }
 
+// Areas are stored in the same form Weekly Needs uses ("assisted_living").
 function normalizeAreaTag(value) {
-  return String(value || "")
-    .trim()
-    .toLowerCase();
+  return tagKey(value);
+}
+
+// Older rows may still say "assisted living"; match either form.
+function areaQuery(value) {
+  const lower = String(value || "").trim().toLowerCase();
+  return { $in: Array.from(new Set([lower, tagKey(value)])) };
 }
 
 
@@ -290,7 +297,7 @@ exports.createCoverage = async (req, res, next) => {
     const requestKeys = new Set();
     const duplicateRequestMap = new Map();
     for (const date of normalizedDates) {
-      for (const shift of normalizedShifts) {
+      for (let shift of normalizedShifts) {
         const normalizedWindow =
           shift.startTime && shift.endTime
             ? normalizeShiftWindow(shift.startTime, shift.endTime)
@@ -311,6 +318,13 @@ exports.createCoverage = async (req, res, next) => {
         }
 
         const { startTime, endTime } = normalizedWindow;
+        // Custom times that are one of the facility's shift times become
+        // that named shift, so they line up with Weekly Needs instead of
+        // showing as a second "Shift" row for the same spot.
+        if (!shift.shiftType) {
+          const match = findShiftSlotForWindow({ date, startTime, endTime, slotLookup, facilityTimezone });
+          if (match) shift = { ...shift, ...match };
+        }
         const uniqueKey = `${date.toISOString()}-${shift.role}-${shift.unitArea || ""}-${shift.shiftType || ""}-${shift.shiftTag || ""}-${startTime.toISOString()}-${endTime.toISOString()}`;
         const duplicateItem = formatDuplicateSchedule({
           date,
@@ -414,7 +428,7 @@ exports.getCoverage = async (req, res, next) => {
 
     if (req.query.role) filter.role = req.query.role;
     if (req.query.unitArea)
-      filter.unitArea = normalizeAreaTag(req.query.unitArea);
+      filter.unitArea = areaQuery(req.query.unitArea);
     if (req.query.shiftType)
       filter.shiftType = normalizeShiftType(req.query.shiftType);
     if (req.query.shiftTag)
@@ -691,7 +705,7 @@ exports.getUnfilledCoverage = async (req, res, next) => {
       tenantId,
       role,
     };
-    if (unitArea) coveragesFilter.unitArea = normalizeAreaTag(unitArea);
+    if (unitArea) coveragesFilter.unitArea = areaQuery(unitArea);
     if (shiftType) coveragesFilter.shiftType = normalizeShiftType(shiftType);
     if (shiftTag) coveragesFilter.shiftTag = normalizeShiftTag(shiftTag);
 
@@ -732,7 +746,7 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     // 1. Get all coverages, optionally filtered by role
     const filter = { tenantId };
     if (role) filter.role = role;
-    if (unitArea) filter.unitArea = normalizeAreaTag(unitArea);
+    if (unitArea) filter.unitArea = areaQuery(unitArea);
     if (shiftType) filter.shiftType = normalizeShiftType(shiftType);
     if (shiftTag) filter.shiftTag = normalizeShiftTag(shiftTag);
 

@@ -38,3 +38,23 @@ test("shift slots become real instants, overnight ends next day", () => {
   assert.equal(w.startTime.toISOString(), "2026-10-12T03:00:00.000Z");
   assert.equal(w.endTime.toISOString(), "2026-10-12T11:00:00.000Z");
 });
+
+test("findShiftSlotForWindow matches custom hours to a shift time", () => {
+  const { buildShiftSlotLookup, buildWindowFromShiftSlot, findShiftSlotForWindow } = require("../utils/dateUtils");
+  const prefs = {
+    shiftTypeDefinitions: [
+      { key: "day", timeSlots: [{ tag: "day_1", startLocalTime: "07:00", endLocalTime: "15:00" }] },
+      { key: "night", timeSlots: [{ tag: "night_1", startLocalTime: "23:00", endLocalTime: "07:00", spansOvernight: true }] },
+    ],
+  };
+  const slotLookup = buildShiftSlotLookup(prefs);
+  const tz = "America/New_York";
+  const date = new Date("2026-10-18T00:00:00Z");
+  const night = buildWindowFromShiftSlot({ date, shiftType: "night", shiftTag: "night_1", slotLookup, facilityTimezone: tz });
+  assert.deepEqual(
+    findShiftSlotForWindow({ date, startTime: night.startTime, endTime: night.endTime, slotLookup, facilityTimezone: tz }),
+    { shiftType: "night", shiftTag: "night_1" },
+  );
+  const nineToFive = { startTime: new Date("2026-10-18T13:00:00Z"), endTime: new Date("2026-10-18T21:00:00Z") };
+  assert.equal(findShiftSlotForWindow({ date, ...nineToFive, slotLookup, facilityTimezone: tz }), null);
+});

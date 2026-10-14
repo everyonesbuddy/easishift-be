@@ -218,6 +218,31 @@ function weekBounds(startKey, timezone) {
   };
 }
 
+/**
+ * The facility shift time (shiftType + shiftTag) whose hours on `date` are
+ * exactly startTime–endTime, or null. Lets custom-time needs (old Coverage
+ * Planning) line up with the named rows Weekly Needs makes.
+ */
+function findShiftSlotForWindow({ date, startTime, endTime, slotLookup, facilityTimezone }) {
+  const start = new Date(startTime).getTime();
+  const end = new Date(endTime).getTime();
+  if (!Number.isFinite(start) || !Number.isFinite(end)) return null;
+  for (const slot of slotLookup.values()) {
+    const window = buildWindowFromShiftSlot({
+      date,
+      shiftType: slot.shiftType,
+      shiftTag: slot.shiftTag,
+      slotLookup,
+      facilityTimezone,
+    });
+    if (window.error) continue;
+    if (window.startTime.getTime() === start && window.endTime.getTime() === end) {
+      return { shiftType: slot.shiftType, shiftTag: slot.shiftTag };
+    }
+  }
+  return null;
+}
+
 module.exports = {
   normalizeToUTC,
   normalizeShiftType,
@@ -228,6 +253,7 @@ module.exports = {
   getConfiguredShiftTypes,
   buildShiftSlotLookup,
   buildWindowFromShiftSlot,
+  findShiftSlotForWindow,
   isDateKey,
   dateKeyToCoverageDate,
   coverageDateToKey,

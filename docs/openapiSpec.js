@@ -134,6 +134,7 @@ const ROUTES = [
   ["post", "/stripe/webhook", "Billing", "Stripe webhook", { auth: "none" }],
 
   // ── Staff link (no login) ─────────────────────────────────────────────────
+  ["post", "/staff-link/request", "Staff link", "Send me my link: texts/emails the link to the phone or email on file (same answer whether found or not; 5 per 15 min)", { auth: "none", body: { contact: "+15551234567" } }],
   ["get", "/s/{token}/me", "Staff link", "Who I am, my facility, what's turned on", { auth: "link" }],
   ["post", "/s/{token}/pin/setup", "Staff link", "First time (PIN required): choose a 4-digit PIN; returns a device token", { auth: "link", body: { pin: "1234" } }],
   ["post", "/s/{token}/pin/verify", "Staff link", "New device: enter the PIN; returns a device token (5 tries, then 15-minute lock)", { auth: "link", body: { pin: "1234" } }],

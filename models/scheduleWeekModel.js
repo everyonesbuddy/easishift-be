@@ -31,6 +31,15 @@ const scheduleWeekSchema = new mongoose.Schema(
       ref: "User",
       default: null,
     },
+    // People whose published shifts were changed or removed since the last
+    // send; they get one message when the scheduler presses Send.
+    pendingStaffIds: {
+      type: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
+      default: [],
+    },
+    // What each person was last sent (a fingerprint of their shifts), so
+    // changes that cancel out don't send anything.
+    sentSignatures: { type: Map, of: String, default: {} },
     lastPublish: {
       sms: { type: Number, default: 0 },
       email: { type: Number, default: 0 },

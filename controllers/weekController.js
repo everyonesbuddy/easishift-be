@@ -68,6 +68,14 @@ const toWeekStaff = (person) => ({
   smsStatus: person.smsConsent?.status || "none",
 });
 
+// Fingerprint of one person's shifts in a week (what their last message
+// said). Used to skip messages when changes cancel out.
+const shiftSignature = (shifts) =>
+  [...shifts]
+    .sort((a, b) => new Date(a.startTime) - new Date(b.startTime))
+    .map((x) => `${new Date(x.startTime).getTime()}-${new Date(x.endTime).getTime()}-${x.role}-${x.unitArea || ""}`)
+    .join("|");
+
 const toWeekResponse = (week) => ({
   _id: week._id,
   weekStart: coverageDateToKey(week.weekStart),
@@ -164,6 +172,27 @@ exports.getWeek = async (req, res, next) => {
         shifts: schedules.filter((s) => s.status !== "call_out").length,
         callOuts: schedules.filter((s) => s.status === "call_out").length,
         unpublishedChanges: schedules.filter((s) => s.state === "draft").length,
+        // People who'd get a message if the scheduler pressed Send now.
+        pendingPeople: (() => {
+          const touched = new Set([
+            ...schedules
+              .filter(
+                (s) =>
+                  s.state === "draft" ||
+                  (week.publishedAt && s.updatedAt && new Date(s.updatedAt) > new Date(week.publishedAt)),
+              )
+              .map((s) => String(s.staffId?._id || s.staffId)),
+            ...(week.pendingStaffIds || []).map(String),
+          ]);
+          if (week.status !== "published") return touched.size;
+          const sigs = week.sentSignatures || new Map();
+          return [...touched].filter((id) => {
+            const mine = schedules.filter(
+              (s) => String(s.staffId?._id || s.staffId) === id && s.status !== "call_out",
+            );
+            return (sigs.get ? sigs.get(id) : sigs[id]) !== shiftSignature(mine);
+          }).length;
+        })(),
       },
     });
   } catch (err) {
@@ -229,16 +258,17 @@ exports.publishWeek = async (req, res, next) => {
     const includeEveryone = req.body?.includeEveryone === true;
     const resendAll = req.body?.resendAll === true;
 
+    const settings = await getWeekSettings(req.tenantId);
+    const week = await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
+
     // Over the plan's limits (e.g. trial ended with 40 staff): no new weeks,
-    // except one grace week right after a trial ends.
+    // except one grace week right after a trial ends. Sending changes to a
+    // week that's already out is always allowed.
     let usedGraceWeek = false;
-    if ((await getUsage(req)).overLimit) {
+    if (week.status !== "published" && (await getUsage(req)).overLimit) {
       if (canUseGraceWeek(req.tenant, weekStart)) usedGraceWeek = true;
       else await assertNotOverLimit(req);
     }
-
-    const settings = await getWeekSettings(req.tenantId);
-    const week = await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
     const { start, end } = weekBounds(weekStart, settings.timezone);
     const now = new Date();
     const firstPublish = week.status !== "published";
@@ -262,6 +292,8 @@ exports.publishWeek = async (req, res, next) => {
       .select("staffId")
       .lean();
     const changedStaffIds = new Set(changed.map((row) => String(row.staffId)));
+    // Changed or removed since the last send (removed shifts leave no row).
+    for (const id of week.pendingStaffIds || []) changedStaffIds.add(String(id));
 
     await Schedule.updateMany(
       { ...inWeek, state: "draft" },
@@ -285,11 +317,16 @@ exports.publishWeek = async (req, res, next) => {
       shiftsByStaff.get(key).push(shift);
     }
 
+    // Fingerprint of a person's shifts; unchanged since their last message
+    // (e.g. moved and moved back) means there's nothing to send them.
+    const signatureOf = (key) => shiftSignature(shiftsByStaff.get(key) || []);
+    const lastSent = week.sentSignatures || new Map();
     const recipients = staff.filter((person) => {
       const key = String(person._id);
       const hasShifts = shiftsByStaff.has(key);
       if (firstPublish || resendAll) return hasShifts || includeEveryone;
-      return changedStaffIds.has(key);
+      if (!changedStaffIds.has(key)) return false;
+      return lastSent.get(key) !== signatureOf(key);
     });
 
     const prefsByStaff = new Map(
@@ -342,6 +379,10 @@ exports.publishWeek = async (req, res, next) => {
       else notReached.push({ staffId: person._id, name: person.name, reason: result.reason });
     }
 
+    for (const person of recipients) {
+      week.sentSignatures.set(String(person._id), signatureOf(String(person._id)));
+    }
+    week.pendingStaffIds = [];
     week.status = "published";
     // Stamp after all writes above so nothing from this publish counts as
     // "changed since publish" next time.
@@ -614,37 +655,15 @@ exports.autoFillWeek = async (req, res, next) => {
     }
     if (draftId) await AutoScheduleDraft.deleteOne({ _id: draftId, tenantId: req.tenantId });
 
-    // Published week: tell each person they were added (one message each).
-    let notified = 0;
+    // In a published week too, filled slots wait as "Not sent yet" until
+    // the scheduler presses Send.
     if (week.status === "published" && scheduleIds.length) {
-      const created = await Schedule.find({ _id: { $in: scheduleIds }, tenantId: req.tenantId })
-        .populate("staffId")
-        .lean();
-      const tz = settings.timezone;
-      const byStaff = new Map();
-      for (const s of created) {
-        if (!s.staffId) continue;
-        const key = String(s.staffId._id);
-        if (!byStaff.has(key)) byStaff.set(key, { staff: s.staffId, shifts: [] });
-        byStaff.get(key).shifts.push(s);
-      }
-      const facility = req.tenant?.name || "Your facility";
-      const planKey = getEffectivePlanKey(req.tenant);
-      for (const { staff, shifts } of byStaff.values()) {
-        const list = shifts.map((s) => shortShift(s.startTime, s.endTime, tz)).join(", ");
-        const link = await linkForStaff(staff);
-        const result = await sendToStaff({
-          tenant: req.tenant,
-          planKey,
-          staff,
-          kind: "shift_added",
-          sms: `${facility}: you've been added to ${list}.${link ? ` See your schedule: ${link}` : ""}`,
-          emailSubject: `${facility}: you've been added to ${shifts.length === 1 ? "a shift" : `${shifts.length} shifts`}`,
-          emailHtml: `<p>Hi ${escapeHtml(firstName(staff.name))},</p><p>You've been added to: ${escapeHtml(list)}.</p>${link ? `<p><a href="${link}">See your schedule</a></p>` : ""}`,
-        });
-        if (result?.delivered) notified += 1;
-      }
+      await Schedule.updateMany(
+        { _id: { $in: scheduleIds }, tenantId: req.tenantId },
+        { $set: { state: "draft" } },
+      );
     }
+    const notified = 0;
 
     const after = await countAssignmentsByCoverage({
       tenantId: req.tenantId,

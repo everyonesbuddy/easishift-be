@@ -8,6 +8,7 @@
  * upcoming weeks — except days the scheduler changed by hand.
  */
 const { DateTime } = require("luxon");
+const mongoose = require("mongoose");
 const ScheduleWeek = require("../models/scheduleWeekModel");
 const Coverage = require("../models/coverageModel");
 const Schedule = require("../models/scheduleModel");
@@ -171,6 +172,21 @@ async function weekStartForInstant(tenantId, instant, settings = null) {
   return weekStartFor(instant, timezone, weekStartsOn);
 }
 
+/**
+ * Remember that these people have unsent changes in the (published) week
+ * containing `startTime`. Nothing is sent until the scheduler presses Send.
+ */
+async function markPendingChange({ tenantId, startTime, staffIds }) {
+  const ids = (staffIds || []).filter(Boolean).map((id) => String(id._id || id));
+  if (!ids.length || !startTime) return;
+  const settings = await getWeekSettings(tenantId);
+  const weekStart = weekStartFor(startTime, settings.timezone, settings.weekStartsOn);
+  await ScheduleWeek.updateOne(
+    { tenantId, weekStart: dateKeyToCoverageDate(weekStart), status: "published" },
+    { $addToSet: { pendingStaffIds: { $each: ids.map((id) => new mongoose.Types.ObjectId(id)) } } },
+  );
+}
+
 /** "draft" | "published" for a new Schedule starting at `startTime`. */
 async function stateForNewSchedule({ tenantId, startTime }) {
   const settings = await getWeekSettings(tenantId);
@@ -285,6 +301,7 @@ async function syncTemplateToWeeks({ tenantId, applyTo = "unpublished" }) {
 }
 
 module.exports = {
+  markPendingChange,
   buildTemplateOps,
   getWeekSettings,
   assertWeekStart,

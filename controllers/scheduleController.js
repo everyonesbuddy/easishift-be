@@ -11,6 +11,7 @@ const {
 } = require("../utils/notify");
 const { getStaffLinkUrl } = require("../utils/staffLinks");
 const {
+  markPendingChange,
   stateForNewSchedule,
   getWeekSettings,
 } = require("../utils/weekService");
@@ -717,6 +718,11 @@ const getTenantAdmins = (tenantId, excludeUserIds = []) =>
  * Tell one staff member their published schedule changed (best-effort).
  * kind: "shift_added" | "shift_changed" | "shift_removed"
  */
+// Scheduler edits to a published week wait for "Send changes" unless the
+// request asks to send now (call-out cover, a shift starting soon).
+const wantsSendNow = (req) =>
+  req.body?.sendNow === true || req.query?.sendNow === "true";
+
 const notifyShiftChange = async ({ req, staffId, kind, schedule }) => {
   try {
     const staff = await User.findOne({
@@ -3218,10 +3224,12 @@ exports.createSchedule = async (req, res, next) => {
     if (conflict)
       return res.status(409).json({ message: "Schedule conflict", conflict });
 
-    const state = await stateForNewSchedule({
+    let state = await stateForNewSchedule({
       tenantId: req.tenantId,
       startTime,
     });
+    // Added to a published week: "Not sent yet" until Send, unless sendNow.
+    if (state === "published" && !wantsSendNow(req)) state = "draft";
 
     const schedule = await Schedule.create({
       tenantId: req.tenantId,
@@ -3531,6 +3539,16 @@ exports.updateSchedule = async (req, res, next) => {
         startTime: updates.startTime,
       });
     }
+    // Given to someone else in a published week: the new person sees it
+    // when the change is sent (unless sendNow).
+    if (
+      updates.staffId &&
+      String(updates.staffId) !== String(currentSchedule.staffId) &&
+      (updates.state || currentSchedule.state) === "published" &&
+      !wantsSendNow(req)
+    ) {
+      updates.state = "draft";
+    }
 
     const updated = await Schedule.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
@@ -3558,8 +3576,31 @@ exports.updateSchedule = async (req, res, next) => {
         new Date(updated.endTime).getTime();
     const wasVisible = currentSchedule.state === "published";
     const isVisible = updated.state === "published";
+    const sendNow = wantsSendNow(req);
     if (
+      wasVisible &&
+      !sendNow &&
+      req.body?.notify !== false &&
+      new Date(updated.endTime) > new Date()
+    ) {
+      // Wait for "Send changes": remember who's affected.
+      await markPendingChange({
+        tenantId: req.tenantId,
+        startTime: currentSchedule.startTime,
+        staffIds: [currentSchedule.staffId, staffChanged ? updated.staffId : null],
+      });
+      if (
+        new Date(updated.startTime).getTime() !== new Date(currentSchedule.startTime).getTime()
+      ) {
+        await markPendingChange({
+          tenantId: req.tenantId,
+          startTime: updated.startTime,
+          staffIds: [updated.staffId],
+        });
+      }
+    } else if (
       (wasVisible || isVisible) &&
+      sendNow &&
       req.body?.notify !== false &&
       new Date(updated.endTime) > new Date()
     ) {
@@ -3691,13 +3732,19 @@ exports.deleteSchedule = async (req, res, next) => {
       schedule: deleted,
     });
 
-    if (
+    const removalCounts =
       deleted.state === "published" &&
       deleted.status === "scheduled" &&
       new Date(deleted.startTime) > new Date() &&
       req.body?.notify !== false &&
-      req.query?.notify !== "false"
-    ) {
+      req.query?.notify !== "false";
+    if (removalCounts && !wantsSendNow(req)) {
+      await markPendingChange({
+        tenantId: req.tenantId,
+        startTime: deleted.startTime,
+        staffIds: [deleted.staffId],
+      });
+    } else if (removalCounts) {
       await notifyShiftChange({
         req,
         staffId: deleted.staffId,
@@ -3767,12 +3814,20 @@ exports.deleteSchedulesByIds = async (req, res, next) => {
     }
 
     for (const removed of toNotify) {
-      await notifyShiftChange({
-        req,
-        staffId: removed.staffId,
-        kind: "shift_removed",
-        schedule: removed,
-      });
+      if (wantsSendNow(req)) {
+        await notifyShiftChange({
+          req,
+          staffId: removed.staffId,
+          kind: "shift_removed",
+          schedule: removed,
+        });
+      } else {
+        await markPendingChange({
+          tenantId: req.tenantId,
+          startTime: removed.startTime,
+          staffIds: [removed.staffId],
+        });
+      }
     }
 
     return res.status(200).json({

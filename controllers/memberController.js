@@ -16,7 +16,7 @@ const {
   getPasswordSetupValidityText,
 } = require("../utils/passwordLinks");
 
-const INVITABLE_ROLES = ["scheduler", "viewer"];
+const INVITABLE_ROLES = ["administrator", "scheduler", "viewer"];
 
 const normalizeEmail = (value) =>
   String(value || "")
@@ -27,6 +27,7 @@ const normalizeEmail = (value) =>
 const getMemberRole = (user) => {
   const roles = getUserRoles(user);
   if (roles.includes("owner")) return "owner";
+  if (roles.includes("administrator")) return "administrator";
   if (roles.includes("scheduler") || roles.includes("admin")) return "scheduler";
   if (roles.includes("viewer")) return "viewer";
   return null;
@@ -104,7 +105,7 @@ exports.listMembers = async (req, res, next) => {
 
 /**
  * POST /api/v1/members/invite
- * Body: { name, email, role: "scheduler" | "viewer" }
+ * Body: { name, email, role: "administrator" | "scheduler" | "viewer" }
  */
 exports.inviteMember = async (req, res, next) => {
   try {
@@ -117,7 +118,7 @@ exports.inviteMember = async (req, res, next) => {
     if (!INVITABLE_ROLES.includes(role))
       return res
         .status(400)
-        .json({ message: "role must be scheduler or viewer" });
+        .json({ message: "role must be administrator, scheduler or viewer" });
 
     const existing = await User.findOne({ email, loginEnabled: true })
       .select("tenantId")
@@ -132,8 +133,8 @@ exports.inviteMember = async (req, res, next) => {
       });
     }
 
-    // Viewers are free; schedulers count toward the plan.
-    if (role === "scheduler") await assertLimit(req, "schedulers");
+    // Viewers are free; admins and schedulers take a scheduler seat.
+    if (role !== "viewer") await assertLimit(req, "schedulers");
 
     const member = await User.create({
       tenantId: req.tenantId,
@@ -182,7 +183,7 @@ exports.resendInvite = async (req, res, next) => {
 
 /**
  * PATCH /api/v1/members/:id
- * Body: { role: "scheduler" | "viewer" }
+ * Body: { role: "administrator" | "scheduler" | "viewer" }
  */
 exports.updateMember = async (req, res, next) => {
   try {
@@ -202,7 +203,8 @@ exports.updateMember = async (req, res, next) => {
     }
     if (getMemberRole(member) === role) return res.json(toMemberResponse(member));
 
-    if (role === "scheduler") await assertLimit(req, "schedulers");
+    // Admins and schedulers take a scheduler seat; viewers are free.
+    if (role !== "viewer" && getMemberRole(member) === "viewer") await assertLimit(req, "schedulers");
 
     member.role = role;
     member.roles = [role];

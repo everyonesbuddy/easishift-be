@@ -8,6 +8,8 @@
  * POST /api/v1/weeks/:weekStart/slots            -> add a one-off need on one day
  */
 const mongoose = require("mongoose");
+const { DateTime } = require("luxon");
+const { parseSection, inSection, sectionResponse } = require("../utils/sections");
 const Coverage = require("../models/coverageModel");
 const Schedule = require("../models/scheduleModel");
 const TimeOff = require("../models/timeOffModel");
@@ -172,6 +174,21 @@ exports.getWeek = async (req, res, next) => {
         shifts: schedules.filter((s) => s.status !== "call_out").length,
         callOuts: schedules.filter((s) => s.status === "call_out").length,
         unpublishedChanges: schedules.filter((s) => s.state === "draft").length,
+        // "Not sent yet" by role + area, for "Publish a section".
+        notSentSections: (() => {
+          const groups = new Map();
+          for (const shift of schedules) {
+            if (shift.state !== "draft" || shift.status === "call_out") continue;
+            const key = `${shift.role || ""}|${shift.unitArea || ""}`;
+            if (!groups.has(key)) {
+              groups.set(key, { role: shift.role || null, unitArea: shift.unitArea || null, shifts: 0, people: new Set() });
+            }
+            const g = groups.get(key);
+            g.shifts += 1;
+            g.people.add(String(shift.staffId?._id || shift.staffId));
+          }
+          return [...groups.values()].map((g) => ({ ...g, people: g.people.size }));
+        })(),
         // People who'd get a message if the scheduler pressed Send now.
         pendingPeople: (() => {
           const touched = new Set([
@@ -257,6 +274,8 @@ exports.publishWeek = async (req, res, next) => {
     const { weekStart } = req.params;
     const includeEveryone = req.body?.includeEveryone === true;
     const resendAll = req.body?.resendAll === true;
+    // Only some roles/areas ("Publish a section"); null = the whole week.
+    const section = parseSection(req.body);
 
     const settings = await getWeekSettings(req.tenantId);
     const week = await ensureWeek({ tenantId: req.tenantId, weekStart, settings });
@@ -280,23 +299,41 @@ exports.publishWeek = async (req, res, next) => {
     };
 
     // Who has changes in this publish (drafts going live, or edits since).
-    const changed = await Schedule.find({
-      ...inWeek,
-      $or: [
-        { state: "draft" },
-        ...(previousPublishedAt
-          ? [{ updatedAt: { $gt: previousPublishedAt } }]
-          : []),
-      ],
-    })
-      .select("staffId")
-      .lean();
+    const changed = (
+      await Schedule.find({
+        ...inWeek,
+        $or: [
+          { state: "draft" },
+          ...(previousPublishedAt
+            ? [{ updatedAt: { $gt: previousPublishedAt } }]
+            : []),
+        ],
+      })
+        .select("staffId role unitArea state")
+        .lean()
+    ).filter((row) => inSection(row, section));
     const changedStaffIds = new Set(changed.map((row) => String(row.staffId)));
     // Changed or removed since the last send (removed shifts leave no row).
-    for (const id of week.pendingStaffIds || []) changedStaffIds.add(String(id));
+    // For a section, only people who still have a shift in it; the others
+    // stay pending for the next send.
+    const pendingIds = (week.pendingStaffIds || []).map(String);
+    if (!section) {
+      for (const id of pendingIds) changedStaffIds.add(id);
+    } else if (pendingIds.length) {
+      const inSectionNow = await Schedule.find({
+        ...inWeek,
+        staffId: { $in: pendingIds },
+      })
+        .select("staffId role unitArea")
+        .lean();
+      for (const row of inSectionNow) {
+        if (inSection(row, section)) changedStaffIds.add(String(row.staffId));
+      }
+    }
 
+    const goingLive = changed.filter((row) => row.state === "draft").map((row) => row._id);
     await Schedule.updateMany(
-      { ...inWeek, state: "draft" },
+      section ? { _id: { $in: goingLive } } : { ...inWeek, state: "draft" },
       { $set: { state: "published", "meta.publishedAt": now } },
       // Going live isn't an edit; keep updatedAt so the next publish only
       // messages people whose shifts really changed.
@@ -321,10 +358,13 @@ exports.publishWeek = async (req, res, next) => {
     // (e.g. moved and moved back) means there's nothing to send them.
     const signatureOf = (key) => shiftSignature(shiftsByStaff.get(key) || []);
     const lastSent = week.sentSignatures || new Map();
+    const hasSectionShift = (key) =>
+      (shiftsByStaff.get(key) || []).some((shift) => inSection(shift, section));
     const recipients = staff.filter((person) => {
       const key = String(person._id);
       const hasShifts = shiftsByStaff.has(key);
-      if (firstPublish || resendAll) return hasShifts || includeEveryone;
+      if (resendAll) return section ? hasSectionShift(key) : hasShifts || includeEveryone;
+      if (firstPublish && !section) return hasShifts || includeEveryone;
       if (!changedStaffIds.has(key)) return false;
       return lastSent.get(key) !== signatureOf(key);
     });
@@ -357,10 +397,12 @@ exports.publishWeek = async (req, res, next) => {
         : lines.length <= 4
           ? lines.join("; ")
           : `${lines.length} shifts`;
-      const sms = `Hi ${firstName(person.name)}, your ${facility} schedule for ${weekLabel}${firstPublish ? "" : " was updated"}: ${summary}.${link ? ` ${link}` : ""}`;
+      // First message this week for them: "is ready"; otherwise an update.
+      const isNew = !lastSent.has(String(person._id));
+      const sms = `Hi ${firstName(person.name)}, your ${facility} schedule for ${weekLabel}${isNew ? "" : " was updated"}: ${summary}.${link ? ` ${link}` : ""}`;
       const html = `
         <p>Hi ${escapeHtml(firstName(person.name))},</p>
-        <p>Your ${escapeHtml(facility)} schedule for <strong>${escapeHtml(weekLabel)}</strong>${firstPublish ? " is ready" : " was updated"}:</p>
+        <p>Your ${escapeHtml(facility)} schedule for <strong>${escapeHtml(weekLabel)}</strong>${isNew ? " is ready" : " was updated"}:</p>
         ${lines.length ? `<ul>${lines.map((line) => `<li>${escapeHtml(line)}</li>`).join("")}</ul>` : "<p>You're not on the schedule this week.</p>"}
         ${link ? `<p><a href="${link}">See your schedule, swap or pick up shifts</a></p>` : ""}`;
 
@@ -382,7 +424,15 @@ exports.publishWeek = async (req, res, next) => {
     for (const person of recipients) {
       week.sentSignatures.set(String(person._id), signatureOf(String(person._id)));
     }
-    week.pendingStaffIds = [];
+    // Everyone messaged is up to date; anyone left (other sections) waits.
+    if (section) {
+      const messaged = new Set(recipients.map((person) => String(person._id)));
+      week.pendingStaffIds = (week.pendingStaffIds || []).filter((id) => !messaged.has(String(id)));
+    } else {
+      week.pendingStaffIds = [];
+    }
+    // Once any part is out, the week counts as published; shifts in other
+    // sections stay "Not sent yet" until someone sends them.
     week.status = "published";
     // Stamp after all writes above so nothing from this publish counts as
     // "changed since publish" next time.
@@ -399,6 +449,7 @@ exports.publishWeek = async (req, res, next) => {
     res.json({
       usedGraceWeek,
       week: toWeekResponse(week),
+      section: sectionResponse(section),
       firstPublish,
       messaged: recipients.length,
       sent,
@@ -582,6 +633,89 @@ exports.addSlot = async (req, res, next) => {
  *
  * POST /api/v1/weeks/:weekStart/auto-fill   { coverageIds? }
  */
+/**
+ * Puts last week's people back on this week's Weekly Needs spots (same
+ * weekday, shift, role and area), when they're still eligible, free and it
+ * wouldn't mean overtime. New shifts are "Not sent yet". Returns their ids.
+ */
+async function keepLastWeeksPeople({ req, weekStart, settings, items }) {
+  const templateItems = items.filter(({ row }) => row.source === "template" && row.shiftType);
+  if (!templateItems.length) return [];
+
+  const prevWeekStart = addDaysToKey(weekStart, -7);
+  const prev = weekBounds(prevWeekStart, settings.timezone);
+  const prevShifts = await Schedule.find({
+    tenantId: req.tenantId,
+    startTime: { $gte: prev.start, $lt: prev.end },
+    state: { $ne: "draft" },
+    status: { $in: ["scheduled", "in_progress", "completed"] },
+  })
+    .select("staffId role unitArea shiftType shiftTag startTime")
+    .lean();
+  if (!prevShifts.length) return [];
+
+  const dayIndex = (instant, startKey) => {
+    const local = DateTime.fromJSDate(new Date(instant)).setZone(settings.timezone).toISODate();
+    return weekDays(startKey).indexOf(local);
+  };
+  const keyOf = (index, item) =>
+    [index, tagKey(item.role), tagKey(item.unitArea), item.shiftType || "", item.shiftTag || ""].join("|");
+  const lastWeek = new Map();
+  for (const shift of prevShifts) {
+    const key = keyOf(dayIndex(shift.startTime, prevWeekStart), shift);
+    if (!lastWeek.has(key)) lastWeek.set(key, []);
+    lastWeek.get(key).push(String(shift.staffId));
+  }
+
+  const prefs = await FacilityPreferences.findOne({ tenantId: req.tenantId }).lean();
+  const facilityConfig = getCompatibleFacilityConfig(prefs);
+  const { start, end } = weekBounds(weekStart, settings.timezone);
+  const overtimeThresholdMinutes = (prefs?.weeklyOvertimeThresholdHours || 40) * 60;
+  const created = [];
+
+  for (const { row, remaining } of templateItems) {
+    const people = [...new Set(lastWeek.get(keyOf(dayIndex(row.startTime, weekStart), row)) || [])];
+    if (!people.length) continue;
+    // Checked per spot so earlier picks count (conflicts, weekly hours).
+    const candidates = await eligibleStaffForCoverage({
+      tenantId: req.tenantId,
+      coverage: row,
+      facilityConfig,
+      weekStart: start,
+      weekEnd: end,
+      overtimeThresholdMinutes,
+    });
+    let left = remaining;
+    for (const staffId of people) {
+      if (left <= 0) break;
+      const candidate = candidates.find(
+        (c) => String(c.staff._id) === staffId && c.eligible && !c.overtimeIfAssigned,
+      );
+      if (!candidate) continue;
+      const schedule = await Schedule.create({
+        tenantId: req.tenantId,
+        staffId,
+        coverageId: row._id,
+        role: row.role,
+        unitArea: row.unitArea || null,
+        shiftType: row.shiftType,
+        shiftTag: row.shiftTag,
+        certificationTags: row.requiredCertificationTags || [],
+        startTime: row.startTime,
+        endTime: row.endTime,
+        timezone: settings.timezone,
+        notes: "Auto-filled (same as last week)",
+        status: "scheduled",
+        state: "draft",
+        meta: { createdBy: req.user._id, source: "auto" },
+      });
+      created.push(schedule._id);
+      left -= 1;
+    }
+  }
+  return created;
+}
+
 exports.autoFillWeek = async (req, res, next) => {
   try {
     const { weekStart } = req.params;
@@ -603,16 +737,42 @@ exports.autoFillWeek = async (req, res, next) => {
         $in: req.body.coverageIds.filter((id) => mongoose.isValidObjectId(id)),
       };
     }
-    const coverage = await Coverage.find(filter).select("requiredCount").lean();
-    const assigned = await countAssignmentsByCoverage({
-      tenantId: req.tenantId,
-      coverageIds: coverage.map((row) => row._id),
-    });
-    const open = coverage.filter(
-      (row) => (assigned.get(String(row._id)) || 0) < row.requiredCount,
+    // Only some roles/areas ("Fill a section"); null = every open spot.
+    const section = parseSection(req.body);
+    const keepLastWeek = req.body?.keepLastWeek !== false;
+    const coverage = (await Coverage.find(filter).sort({ startTime: 1 }).lean()).filter((row) =>
+      inSection(row, section),
     );
+    const openRows = async () => {
+      const assigned = await countAssignmentsByCoverage({
+        tenantId: req.tenantId,
+        coverageIds: coverage.map((row) => row._id),
+      });
+      return coverage
+        .map((row) => ({ row, remaining: row.requiredCount - (assigned.get(String(row._id)) || 0) }))
+        .filter((item) => item.remaining > 0);
+    };
+    let openItems = await openRows();
+    if (!openItems.length) {
+      return res.json({ filled: 0, keptFromLastWeek: 0, stillOpen: 0, notified: 0, message: "Nothing open to fill." });
+    }
+
+    // 1) Keep last week's people: for Weekly Needs spots, whoever worked the
+    // same shift, role and area on the same weekday last week gets it again
+    // if they still can (eligible, free, no overtime).
+    const keptIds = keepLastWeek
+      ? await keepLastWeeksPeople({ req, weekStart, settings, items: openItems })
+      : [];
+    if (keptIds.length) openItems = await openRows();
+    const open = openItems.map((item) => item.row);
     if (!open.length) {
-      return res.json({ filled: 0, stillOpen: 0, notified: 0, message: "Nothing open to fill." });
+      return res.json({
+        filled: keptIds.length,
+        keptFromLastWeek: keptIds.length,
+        stillOpen: 0,
+        notified: 0,
+        weekStatus: week.status,
+      });
     }
 
     // Reuse the auto-schedule ranking, then put its picks straight on the
@@ -635,6 +795,7 @@ exports.autoFillWeek = async (req, res, next) => {
         Promise.resolve(handler({ ...req, ...extra }, fakeRes, reject)).catch(reject);
       });
 
+    // 2) Everything still open: the usual ranking (fairness, pattern, ...).
     const generated = await run(scheduleController.autoGenerateSchedule, {
       body: { coverageIds: open.map((row) => String(row._id)) },
     });
@@ -675,7 +836,8 @@ exports.autoFillWeek = async (req, res, next) => {
     );
 
     res.json({
-      filled: scheduleIds.length,
+      filled: scheduleIds.length + keptIds.length,
+      keptFromLastWeek: keptIds.length,
       stillOpen,
       notified,
       weekStatus: week.status,

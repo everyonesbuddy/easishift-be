@@ -1,7 +1,7 @@
 const User = require("../models/userModel");
 
 // Roles that run the schedule ("admin" is the legacy name for scheduler).
-const SCHEDULER_ROLE_NAMES = ["owner", "scheduler", "admin"];
+const SCHEDULER_ROLE_NAMES = ["owner", "administrator", "scheduler", "admin"];
 
 /**
  * Active owner/scheduler accounts in a workspace — the people who should

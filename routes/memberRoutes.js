@@ -23,7 +23,7 @@ router.get("/", requirePermission("staff.view"), listMembers);
 router.post("/invite", ownerOnly, inviteMember);
 router.post("/:id/resend-invite", ownerOnly, resendInvite);
 router.patch("/:id", ownerOnly, updateMember);
-router.post("/:id/make-owner", ownerOnly, transferOwnership);
+router.post("/:id/make-owner", requirePermission("ownership.transfer"), transferOwnership);
 router.delete("/:id", ownerOnly, removeMember);
 // "Also put me on the schedule"
 router.post("/:id/staff-profile", requirePermission("staff.manage"), addStaffProfile);

@@ -148,16 +148,30 @@ exports.getWeek = async (req, res, next) => {
       coverageIds: coverage.map((row) => row._id),
     });
 
+    // No-shows per spot (they don't fill it, but they were on it).
+    const noShowsByCoverage = new Map();
+    for (const shift of schedules) {
+      if (shift.status !== "no_show" || !shift.coverageId) continue;
+      const key = String(shift.coverageId);
+      noShowsByCoverage.set(key, (noShowsByCoverage.get(key) || 0) + 1);
+    }
+    const nowMs = Date.now();
     let openSlots = 0;
     const coverageRows = coverage.map((row) => {
       const assignedCount = assigned.get(String(row._id)) || 0;
-      const remaining = Math.max(0, row.requiredCount - assignedCount);
+      const short = Math.max(0, row.requiredCount - assignedCount);
+      // A spot that has ended can't be filled any more: it's "short", not open.
+      const isPast = new Date(row.endTime).getTime() <= nowMs;
+      const remaining = isPast ? 0 : short;
       openSlots += remaining;
       return {
         ...row,
         dateKey: coverageDateToKey(row.date),
         assignedCount,
         remaining,
+        short,
+        isPast,
+        noShows: noShowsByCoverage.get(String(row._id)) || 0,
       };
     });
 
@@ -173,6 +187,7 @@ exports.getWeek = async (req, res, next) => {
         openSlots,
         shifts: schedules.filter((s) => s.status !== "call_out").length,
         callOuts: schedules.filter((s) => s.status === "call_out").length,
+        noShows: schedules.filter((s) => s.status === "no_show").length,
         unpublishedChanges: schedules.filter((s) => s.state === "draft").length,
         // "Not sent yet" by role + area, for "Publish a section".
         notSentSections: (() => {

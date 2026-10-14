@@ -4,15 +4,10 @@ const cookieParser = require("cookie-parser");
 const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const cron = require("node-cron");
-const FacilityPreferences = require("./models/facilityPreferencesModel");
-const Schedule = require("./models/scheduleModel");
-const TimeEntry = require("./models/timeEntryModel");
-const {
-  getAttendanceOutcomeForClockOut,
-} = require("./utils/timeTrackingAttendanceUtils");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
+const { closeOutPastShifts } = require("./utils/closeOutShifts");
 
 // Routers
 const tenantRouter = require("./routes/tenantRoutes");
@@ -132,162 +127,12 @@ cron.schedule("5 * * * *", async () => {
   }
 });
 
-// ✅ Cron job: every 2 hours close out past schedules
+// ✅ Cron job: every 2 hours close out past schedules (no-show / completed)
 cron.schedule("0 */2 * * *", async () => {
   console.log("⏰ Running schedule status updater (every 2 hours)...");
   try {
-    const now = new Date();
-    const [scheduledPast, facilityPrefs] = await Promise.all([
-      Schedule.find({
-        status: "scheduled",
-        endTime: { $lt: now },
-      })
-        .select("tenantId")
-        .lean(),
-      FacilityPreferences.find({})
-        .select(
-          "tenantId timeTracking.enabled timeTracking.clockOutGraceMinutes",
-        )
-        .lean(),
-    ]);
-
-    const timeTrackingEnabledTenantIds = new Set(
-      facilityPrefs
-        .filter((prefs) => prefs?.timeTracking?.enabled)
-        .map((prefs) => String(prefs.tenantId)),
-    );
-    const clockOutGraceMinutesByTenant = new Map(
-      facilityPrefs
-        .filter((prefs) => prefs?.timeTracking?.enabled)
-        .map((prefs) => {
-          const graceMinutes = Number(
-            prefs?.timeTracking?.clockOutGraceMinutes,
-          );
-          return [
-            String(prefs.tenantId),
-            Number.isFinite(graceMinutes) && graceMinutes >= 0
-              ? graceMinutes
-              : 30,
-          ];
-        }),
-    );
-
-    const noShowScheduleIds = [];
-    const completedScheduleIds = [];
-
-    for (const schedule of scheduledPast) {
-      if (timeTrackingEnabledTenantIds.has(String(schedule.tenantId))) {
-        noShowScheduleIds.push(schedule._id);
-      } else {
-        completedScheduleIds.push(schedule._id);
-      }
-    }
-
-    const noShowResult = noShowScheduleIds.length
-      ? await Schedule.updateMany(
-          { _id: { $in: noShowScheduleIds } },
-          { $set: { status: "no_show", "meta.noShowAt": now } },
-        )
-      : { modifiedCount: 0, nModified: 0 };
-
-    const completedScheduledResult = completedScheduleIds.length
-      ? await Schedule.updateMany(
-          { _id: { $in: completedScheduleIds } },
-          { $set: { status: "completed", "meta.completedAt": now } },
-        )
-      : { modifiedCount: 0, nModified: 0 };
-
-    const completedInProgressResult = await Schedule.updateMany(
-      {
-        status: "in_progress",
-        endTime: { $lt: now },
-      },
-      { $set: { status: "completed", "meta.completedAt": now } },
-    );
-
-    const enabledTenantObjectIds = facilityPrefs
-      .filter((prefs) => prefs?.timeTracking?.enabled)
-      .map((prefs) => prefs.tenantId);
-
-    const overdueTimeEntries = await TimeEntry.find({
-      tenantId: { $in: enabledTenantObjectIds },
-      status: "in_progress",
-      clockInAt: { $lte: now },
-    })
-      .select("_id tenantId scheduleId")
-      .lean();
-
-    if (overdueTimeEntries.length) {
-      const scheduleIds = overdueTimeEntries
-        .map((entry) => entry.scheduleId)
-        .filter(Boolean);
-      const schedules = await Schedule.find({
-        _id: { $in: scheduleIds },
-      })
-        .select("_id endTime tenantId")
-        .lean();
-      const scheduleById = new Map(
-        schedules.map((schedule) => [String(schedule._id), schedule]),
-      );
-
-      const overdueEntriesWithEndedSchedules = overdueTimeEntries.filter(
-        (entry) => {
-          if (!entry.scheduleId) return false;
-          const schedule = scheduleById.get(String(entry.scheduleId));
-          if (!schedule?.endTime) return false;
-          return new Date(schedule.endTime).getTime() <= now.getTime();
-        },
-      );
-
-      const bulkOps = overdueEntriesWithEndedSchedules.map((entry) => {
-        const schedule = entry.scheduleId
-          ? scheduleById.get(String(entry.scheduleId))
-          : null;
-        const graceMinutes = clockOutGraceMinutesByTenant.get(
-          String(entry.tenantId),
-        );
-        const attendanceOutcome = getAttendanceOutcomeForClockOut({
-          scheduledEndTime: schedule?.endTime,
-          clockOutAt: now,
-          clockOutGraceMinutes: graceMinutes,
-        });
-
-        return {
-          updateOne: {
-            filter: { _id: entry._id, status: "in_progress" },
-            update: {
-              $set: {
-                clockOutAt: now,
-                status: "completed",
-                attendanceOutcome,
-              },
-            },
-          },
-        };
-      });
-
-      if (bulkOps.length) {
-        await TimeEntry.bulkWrite(bulkOps);
-      }
-    }
-
-    const noShowCount =
-      noShowResult.modifiedCount !== undefined
-        ? noShowResult.modifiedCount
-        : noShowResult.nModified;
-    const completedScheduledCount =
-      completedScheduledResult.modifiedCount !== undefined
-        ? completedScheduledResult.modifiedCount
-        : completedScheduledResult.nModified;
-    const completedInProgressCount =
-      completedInProgressResult.modifiedCount !== undefined
-        ? completedInProgressResult.modifiedCount
-        : completedInProgressResult.nModified;
-    const completedCount = completedScheduledCount + completedInProgressCount;
-
-    console.log(
-      `✅ Updated ${noShowCount} schedule(s) to 'no_show' and ${completedCount} schedule(s) to 'completed'`,
-    );
+    const { noShow, completed } = await closeOutPastShifts();
+    console.log(`✅ Updated ${noShow} schedule(s) to 'no_show' and ${completed} schedule(s) to 'completed'`);
   } catch (err) {
     console.error("🚫 Error updating schedules status:", err);
   }

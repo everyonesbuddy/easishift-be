@@ -30,6 +30,26 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "staff.view",
     "facility_preferences.view",
   ],
+  // Admin: everything the owner can do (plan and billing, inviting people)
+  // except deleting the facility and transferring ownership. Stored as
+  // "administrator" because "admin" is the legacy name for scheduler.
+  administrator: [
+    "schedule.view",
+    "schedule.manage",
+    "coverage.view",
+    "coverage.manage",
+    "staff.view",
+    "staff.manage",
+    "staff.reset_password",
+    "timeoff.review",
+    "messages.manage",
+    "facility_preferences.view",
+    "facility_preferences.manage",
+    "billing.view",
+    "billing.manage",
+    "tenant.settings",
+    "roles.manage",
+  ],
   owner: [
     "schedule.view",
     "schedule.manage",
@@ -46,6 +66,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "tenant.settings",
     "tenant.delete",
     "roles.manage",
+    "ownership.transfer",
   ],
 });
 
@@ -62,7 +83,7 @@ const RESERVED_ROLES = new Set([
 ]);
 
 // Roles that make someone a workspace account (can sign in).
-const ACCOUNT_ROLES = new Set(["owner", "scheduler", "viewer"]);
+const ACCOUNT_ROLES = new Set(["owner", "administrator", "scheduler", "viewer"]);
 
 const normalizeRole = (role) =>
   String(role || "")

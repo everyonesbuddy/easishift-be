@@ -2,7 +2,7 @@
  * Plan limit checks.
  *
  * Staff  = active people who are scheduled (no workspace role).
- * Schedulers = owner + schedulers (+ legacy admins). Viewers are free.
+ * Schedulers = owner + admins + schedulers (+ legacy "admin"). Viewers are free.
  */
 const User = require("../models/userModel");
 const {
@@ -11,7 +11,7 @@ const {
   inPostTrialGrace,
 } = require("../config/plans");
 
-const SCHEDULER_ROLES = ["owner", "admin", "scheduler"];
+const SCHEDULER_ROLES = ["owner", "administrator", "admin", "scheduler"];
 const ACCOUNT_ROLES = [...SCHEDULER_ROLES, "viewer"];
 
 const countActiveStaff = (tenantId) =>

@@ -44,10 +44,10 @@ const ROUTES = [
 
   // ── Members (accounts) ────────────────────────────────────────────────────
   ["get", "/members", "Members", "List owner, schedulers and viewers"],
-  ["post", "/members/invite", "Members", "Invite a scheduler or viewer (viewers are free)", { body: { name: "Sam", email: "sam@example.com", role: "scheduler" } }],
+  ["post", "/members/invite", "Members", "Invite an admin, scheduler or viewer (role: administrator | scheduler | viewer; viewers are free)", { body: { name: "Sam", email: "sam@example.com", role: "scheduler" } }],
   ["post", "/members/{id}/resend-invite", "Members", "Resend invite"],
   ["patch", "/members/{id}", "Members", "Change role", { body: { role: "viewer" } }],
-  ["post", "/members/{id}/make-owner", "Members", "Transfer ownership"],
+  ["post", "/members/{id}/make-owner", "Members", "Transfer ownership (owner only)"],
   ["post", "/members/{id}/staff-profile", "Members", "Also put this member on the schedule (creates their staff contact)", { body: { role: "lpn", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],
   ["delete", "/members/{id}", "Members", "Remove"],
 
@@ -63,8 +63,8 @@ const ROUTES = [
   ["get", "/weeks/current", "Schedule", "This week's start date, previous and next"],
   ["get", "/weeks/{weekStart}", "Schedule", "Everything for one week: needs, shifts, staff, time off, counts"],
   ["get", "/weeks/{weekStart}/candidates", "Schedule", "Who can take a slot, eligible first, with reasons", { query: ["coverageId"] }],
-  ["post", "/weeks/{weekStart}/publish", "Schedule", "Publish: one text/email per person; returns who wasn't reached", { body: { resendAll: false, includeEveryone: false } }],
-  ["post", "/weeks/{weekStart}/auto-fill", "Schedule", "Auto-fill open slots with available people (drafts in a draft week; sent right away in a published week)", { body: { coverageIds: [] } }],
+  ["post", "/weeks/{weekStart}/publish", "Schedule", "Publish or send changes: one text/email per person; returns who wasn't reached. roles/areas publish only that section; the rest stays Not sent yet", { body: { roles: [], areas: [], resendAll: false, includeEveryone: false } }],
+  ["post", "/weeks/{weekStart}/auto-fill", "Schedule", "Auto-fill open slots (Not sent yet). roles/areas fill only that section; keepLastWeek (default true) first puts last week's people back on the same Weekly Needs spots", { body: { roles: [], areas: [], keepLastWeek: true, coverageIds: [] } }],
   ["post", "/weeks/{weekStart}/slots", "Schedule", "Add a one-off need on one day (hand-edited, kept through template changes)", { body: { date: "2026-10-23", shiftType: "day", shiftTag: "day_1", role: "caregiver", unitArea: "memory care", requiredCertificationTags: [], count: 1 } }],
 
   // ── Coverage (needs per day) ──────────────────────────────────────────────

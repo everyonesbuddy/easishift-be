@@ -23,8 +23,10 @@ module.exports = async (req, res, next) => {
     req.plan = getPlan(getEffectivePlanKey(tenant));
 
     const roles = req.user?.loginEnabled ? getUserRoles(req.user) : [];
+    // Owners and admins can always act (they're the ones who fix the plan).
     const isNonOwnerScheduler =
       !roles.includes("owner") &&
+      !roles.includes("administrator") &&
       (roles.includes("scheduler") || roles.includes("admin"));
     if (isNonOwnerScheduler && Number.isFinite(req.plan.schedulers)) {
       const schedulers = await countSchedulers(req.tenantId);

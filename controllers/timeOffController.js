@@ -3,7 +3,12 @@ const TimeOff = require("../models/timeOffModel");
 const { DateTime } = require("luxon");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
-const { sendToStaff } = require("../utils/notify");
+const {
+  sendToStaff,
+  notifySchedulers,
+  escapeHtml,
+  firstName,
+} = require("../utils/notify");
 const { getEffectivePlanKey } = require("../config/plans");
 const User = require("../models/userModel");
 const Preferences = require("../models/preferencesModel");
@@ -66,7 +71,7 @@ exports.requestTimeOff = async (req, res, next) => {
       reason: reason ? String(reason).slice(0, 500) : undefined,
     });
 
-    // Notify tenant admins about the new time-off request (best-effort)
+    // Tell the schedulers (email; best-effort).
     try {
       const facilityTimezone = await getFacilityTimezone(req.tenantId);
       const timeOffWindow = formatRangeInFacilityZone(
@@ -74,64 +79,22 @@ exports.requestTimeOff = async (req, res, next) => {
         endTime,
         facilityTimezone,
       );
-      const admins = await findSchedulers(req.tenantId).select(
-        "name email userPhone userPhoneCountryCode",
-      );
-      if (admins && admins.length) {
-        const recipients = admins.map((admin) => admin.email).filter(Boolean);
-
-        if (recipients.length) {
-          const subject = `Time-off request: ${req.user.name || req.user._id}`;
-          const html = `
-            <p>Administrator,</p>
-            <p>${req.user.name || "A staff member"} has requested time off:</p>
-            <ul>
-              <li><strong>Staff:</strong> ${req.user.name || "(unknown)"} &lt;${req.user.email || ""}&gt;</li>
-              <li><strong>When:</strong> ${timeOffWindow}</li>
-              <li><strong>Reason:</strong> ${reason || "(none)"}</li>
-            </ul>
-            <p>Please review the request in the admin dashboard.</p>
-          `;
-
-          const result = await sendEmail(recipients, subject, html, null, {
-            tenantId: req.tenantId,
-          });
-          if (result && result.success) {
-            console.log(
-              `Notification email sent to admins for time-off request ${timeOffRequest._id}`,
-            );
-          } else {
-            console.error(
-              `Notification email failed for time-off request ${timeOffRequest._id}:`,
-              result && result.error ? result.error : "unknown error",
-            );
-          }
-        }
-
-        for (const admin of admins) {
-          const adminPhone = buildE164Number(
-            admin.userPhoneCountryCode,
-            admin.userPhone,
-          );
-          if (!adminPhone) continue;
-
-          const smsBody = `${req.user.name || "A staff member"} requested time off: ${timeOffWindow}.`;
-          const smsResult = await sendSMS(adminPhone, smsBody);
-          if (smsResult && smsResult.success) {
-            console.log(
-              `Notification SMS sent to admin ${adminPhone} for time-off request ${timeOffRequest._id}`,
-            );
-          } else {
-            console.error(
-              `Notification SMS failed for admin ${adminPhone} (time-off request ${timeOffRequest._id}):`,
-              smsResult && smsResult.error ? smsResult.error : "unknown error",
-            );
-          }
-        }
-      }
+      const staffName = escapeHtml(req.user.name || "A staff member");
+      await notifySchedulers({
+        tenantId: req.tenantId,
+        subject: `Time-off request: ${req.user.name || "staff member"}`,
+        html: (person) => `
+          <p>Hi ${escapeHtml(firstName(person.name))},</p>
+          <p>${staffName} requested time off:</p>
+          <ul>
+            <li><strong>When:</strong> ${escapeHtml(timeOffWindow)}</li>
+            <li><strong>Reason:</strong> ${escapeHtml(reason || "(none)")}</li>
+          </ul>
+          <p>Review it under Requests in WiserShifts.</p>`,
+      });
     } catch (err) {
       console.error(
-        `Error sending time-off notifications:`,
+        "Error notifying schedulers about time off:",
         err && err.message ? err.message : err,
       );
     }

@@ -22,7 +22,8 @@ module.exports = async (req, res, next) => {
     req.user = await User.findById(decoded.id);
     req.tenantId = decoded.tenantId;
 
-    if (!req.user)
+    // Only active workspace accounts hold sessions (staff use their link).
+    if (!req.user || !req.user.loginEnabled || req.user.status === "archived")
       return res.status(401).json({ message: "Invalid authentication" });
 
     req.user.roles = getUserRoles(req.user);

@@ -1035,12 +1035,35 @@ const getOpenCoverageForStaff = async ({ tenantId, staff, facilityConfig }) => {
 
   // Coverage tied to an in-progress AI draft is still open for pickup until a
   // live Schedule exists for it (see remaining/assignedCount below).
-  const eligibleCoverages = coverages.filter((coverage) =>
-    isStaffCompatibleWithCoverage({
-      staff,
-      coverage,
-      facilityConfig,
-    }),
+  // Hide slots I'm already on, called out of, or that overlap my shifts.
+  const myShifts = await Schedule.find({
+    tenantId,
+    staffId: staff._id,
+    endTime: { $gt: now },
+    status: { $in: [...PICKUP_ACTIVE_STATUSES, "call_out"] },
+  })
+    .select("coverageId startTime endTime status")
+    .lean();
+  const myCoverageIds = new Set(
+    myShifts.filter((s) => s.coverageId).map((s) => String(s.coverageId)),
+  );
+  const overlapsMyShift = (coverage) =>
+    myShifts.some(
+      (s) =>
+        s.status !== "call_out" &&
+        new Date(s.startTime) < new Date(coverage.endTime) &&
+        new Date(s.endTime) > new Date(coverage.startTime),
+    );
+
+  const eligibleCoverages = coverages.filter(
+    (coverage) =>
+      !myCoverageIds.has(String(coverage._id)) &&
+      !overlapsMyShift(coverage) &&
+      isStaffCompatibleWithCoverage({
+        staff,
+        coverage,
+        facilityConfig,
+      }),
   );
   if (!eligibleCoverages.length) return [];
 
@@ -1086,7 +1109,62 @@ exports.getOpenCoverageForMe = async (req, res, next) => {
  * Used by link pickup and by YES replies to call-out texts.
  * Returns { ok: true, schedule } or { ok: false, status, code, message }.
  */
+const CLAIM_LOCK_MS = 10 * 1000;
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Takes the per-slot claim lock (atomic single-document update), so claims
+ * on the same slot run one at a time across every server process.
+ */
+const acquireClaimLock = async (tenantId, coverageId) => {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const now = new Date();
+    const locked = await Coverage.findOneAndUpdate(
+      {
+        _id: coverageId,
+        tenantId,
+        $or: [{ claimLockUntil: null }, { claimLockUntil: { $lt: now } }],
+      },
+      { $set: { claimLockUntil: new Date(now.getTime() + CLAIM_LOCK_MS) } },
+      { new: true, timestamps: false },
+    );
+    if (locked) return locked.claimLockUntil;
+    await sleep(50 + Math.floor(Math.random() * 50));
+  }
+  return null;
+};
+
+const releaseClaimLock = (tenantId, coverageId, lockUntil) =>
+  Coverage.updateOne(
+    { _id: coverageId, tenantId, claimLockUntil: lockUntil },
+    { $set: { claimLockUntil: null } },
+    { timestamps: false },
+  ).catch(() => {});
+
+/**
+ * Puts `staff` on an open slot of `coverageId`, safely.
+ * Used by link pickup and by YES replies to call-out texts.
+ * Returns { ok: true, schedule } or { ok: false, status, code, message }.
+ */
 const claimCoverage = async ({ tenantId, coverageId, staff, source }) => {
+  if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
+    return { ok: false, status: 400, code: "INVALID_COVERAGE", message: "Valid coverageId is required" };
+  }
+  const lockUntil = await acquireClaimLock(tenantId, coverageId);
+  if (!lockUntil) {
+    const exists = await Coverage.exists({ _id: coverageId, tenantId });
+    return exists
+      ? { ok: false, status: 409, code: "BUSY", message: "Someone else is taking this shift right now; try again" }
+      : { ok: false, status: 404, code: "COVERAGE_NOT_FOUND", message: "Coverage not found" };
+  }
+  try {
+    return await claimCoverageLocked({ tenantId, coverageId, staff, source });
+  } finally {
+    await releaseClaimLock(tenantId, coverageId, lockUntil);
+  }
+};
+
+const claimCoverageLocked = async ({ tenantId, coverageId, staff, source }) => {
   if (!coverageId || !mongoose.isValidObjectId(coverageId)) {
     return { ok: false, status: 400, code: "INVALID_COVERAGE", message: "Valid coverageId is required" };
   }
@@ -1152,20 +1230,14 @@ const claimCoverage = async ({ tenantId, coverageId, staff, source }) => {
     meta: { createdBy: staff._id, source, publishedAt: new Date() },
   });
 
-  // Two people can pass the checks above at the same moment. Re-count and
-  // keep the earliest N (by _id); anyone past the limit is undone.
-  const occupying = await Schedule.find({
+  // Belt and braces (the claim lock already serializes claims): if the slot
+  // is somehow over capacity now, undo this one.
+  const occupying = await Schedule.countDocuments({
     tenantId,
     coverageId: coverage._id,
     status: { $in: COVERAGE_OCCUPYING_STATUSES },
-  })
-    .sort({ _id: 1 })
-    .select("_id")
-    .lean();
-  const position = occupying.findIndex(
-    (row) => String(row._id) === String(schedule._id),
-  );
-  if (position >= coverage.requiredCount) {
+  });
+  if (occupying > coverage.requiredCount) {
     await Schedule.deleteOne({ _id: schedule._id });
     return { ok: false, status: 409, code: "SHIFT_ALREADY_FILLED", message: "Sorry, someone just took this shift" };
   }
@@ -2741,7 +2813,7 @@ exports.requestShiftSwap = async (req, res, next) => {
           <li><strong>Shift:</strong> ${shiftWindow}</li>
           <li><strong>Status:</strong> pending admin approval</li>
         </ul>
-        ${note ? `<p><strong>Note:</strong> ${note}</p>` : ""}
+        ${note ? `<p><strong>Note:</strong> ${escapeHtml(note)}</p>` : ""}
       `,
       smsBody: () =>
         `Shift swap requested: ${schedule.role}, ${shiftWindow}. Awaiting admin approval before receiver response.`,
@@ -2895,7 +2967,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Status:</strong> ${swapRequest.status}</li>
           </ul>
-          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+          ${responseNote ? `<p><strong>Response note:</strong> ${escapeHtml(responseNote)}</p>` : ""}
         `,
         smsBody: () =>
           `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
@@ -2924,7 +2996,22 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
           });
         }
 
-        if (!isRoleCompatible(receiver.role, schedule.role)) {
+        if (schedule.status !== "scheduled") {
+          return res.status(409).json({
+            message: "This shift is no longer scheduled; swap cannot be completed",
+          });
+        }
+
+        const swapFacilityPrefs = await FacilityPreferences.findOne({
+          tenantId: req.tenantId,
+        }).lean();
+        if (
+          !isStaffRoleCompatible(
+            receiver,
+            schedule.role,
+            getCompatibleFacilityConfig(swapFacilityPrefs),
+          )
+        ) {
           return res.status(400).json({
             message:
               "Swap cannot be accepted because receiver no longer has a compatible role for this shift",
@@ -2980,7 +3067,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
             <li><strong>Shift:</strong> ${shiftWindow}</li>
             <li><strong>Decision:</strong> ${decisionWord}</li>
           </ul>
-          ${responseNote ? `<p><strong>Response note:</strong> ${responseNote}</p>` : ""}
+          ${responseNote ? `<p><strong>Response note:</strong> ${escapeHtml(responseNote)}</p>` : ""}
         `,
         smsBody: () =>
           `Shift swap ${decisionWord}: ${swapRequest.role}, ${shiftWindow}.`,
@@ -3436,6 +3523,15 @@ exports.updateSchedule = async (req, res, next) => {
         return res.status(409).json({ message: "Schedule conflict", conflict });
     }
 
+    // Moving a shift into another week takes on that week's state
+    // (published week -> published; unpublished week -> silent draft).
+    if (updates.startTime !== undefined) {
+      updates.state = await stateForNewSchedule({
+        tenantId: req.tenantId,
+        startTime: updates.startTime,
+      });
+    }
+
     const updated = await Schedule.findOneAndUpdate(
       { _id: req.params.id, tenantId: req.tenantId },
       {
@@ -3460,12 +3556,29 @@ exports.updateSchedule = async (req, res, next) => {
         new Date(updated.startTime).getTime() ||
       new Date(currentSchedule.endTime).getTime() !==
         new Date(updated.endTime).getTime();
+    const wasVisible = currentSchedule.state === "published";
+    const isVisible = updated.state === "published";
     if (
-      currentSchedule.state === "published" &&
+      (wasVisible || isVisible) &&
       req.body?.notify !== false &&
       new Date(updated.endTime) > new Date()
     ) {
-      if (staffChanged) {
+      if (wasVisible && !isVisible) {
+        // Moved into a week staff can't see yet: it's gone from their view.
+        await notifyShiftChange({
+          req,
+          staffId: currentSchedule.staffId,
+          kind: "shift_removed",
+          schedule: currentSchedule,
+        });
+      } else if (!wasVisible && isVisible) {
+        await notifyShiftChange({
+          req,
+          staffId: updated.staffId?._id || updated.staffId,
+          kind: "shift_added",
+          schedule: updated,
+        });
+      } else if (staffChanged) {
         await notifyShiftChange({
           req,
           staffId: currentSchedule.staffId,

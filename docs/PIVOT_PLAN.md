@@ -5,6 +5,11 @@
 
 This is a **change list against the code that exists today**, written so you (or a backend LLM) can work through it in order. Every stage leaves the server running. Do not start a stage until the one before it passes its checks.
 
+> **Status:** implemented in PRs #1–#9 (one per stage, stacked). The README describes the result. Where the code differs from this plan:
+> - `claimCoverage` lives in `scheduleController.js` (it needs that file's open-shift helpers) instead of `utils/claimCoverage.js`.
+> - The staff-only JWT routes (`/schedules/open-for-me`, `/schedules/pick-up`, `/schedules/:id/status`, `/preferences/me`, `/time-tracking/me|clock-in|clock-out|breaks`) were removed; staff use `/s/:token/...`.
+> - `PUT /schedules/:id` and `PUT /coverage/:id` also got field whitelists (both accepted any body, including `tenantId`).
+
 ---
 
 ## 0. Read this first (ground rules for whoever implements this)

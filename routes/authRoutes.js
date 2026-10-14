@@ -9,6 +9,7 @@ const {
   sendPasswordReset,
   resetPassword,
   getMe,
+  updateMe,
 } = require("../controllers/authController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -24,6 +25,7 @@ router.post("/signup/tenant", registerTenant); // old path, kept for the current
 router.post("/login", loginStaff);
 router.post("/login/staff", loginStaff); // old path, kept for the current app
 router.get("/me", auth, tenant, getMe);
+router.patch("/me", auth, updateMe);
 router.patch("/change-password", auth, changePassword);
 router.post("/forgot-password", forgotPassword);
 router.post("/reset-password", resetPassword); // also accepts invites

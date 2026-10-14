@@ -5,6 +5,7 @@ const router = express.Router();
 const summaryCtrl = require("../controllers/summaryController");
 
 const auth = require("../middleware/authMiddleware");
+const { requireFeature } = require("../middleware/planMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
 const { requirePermission } = require("../middleware/roleMiddleware");
 
@@ -14,9 +15,14 @@ router.use(auth, tenant);
 router.get(
   "/admin/:adminId",
   requirePermission("staff.view"),
+  requireFeature("dashboard"),
   summaryCtrl.getAdminSummary,
 );
 
-router.get("/staff/:staffId", summaryCtrl.getStaffSummary);
+router.get(
+  "/staff/:staffId",
+  requirePermission("staff.view"),
+  summaryCtrl.getStaffSummary,
+);
 
 module.exports = router;

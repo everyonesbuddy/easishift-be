@@ -330,7 +330,7 @@ exports.clockIn = async (req, res, next) => {
       });
     }
 
-    const clockInAt = toDateOrNow(req.body.at);
+    const clockInAt = toDateOrNow(req.authKind === "staff_link" ? undefined : req.body.at);
     if (!clockInAt) {
       return res.status(400).json({ message: "Invalid clock-in time" });
     }
@@ -430,7 +430,7 @@ exports.startBreak = async (req, res, next) => {
         .json({ message: "There is already an active break" });
     }
 
-    const startAt = toDateOrNow(req.body.at);
+    const startAt = toDateOrNow(req.authKind === "staff_link" ? undefined : req.body.at);
     if (!startAt) {
       return res.status(400).json({ message: "Invalid break start time" });
     }
@@ -481,7 +481,7 @@ exports.endBreak = async (req, res, next) => {
       return res.status(409).json({ message: "No active break found" });
     }
 
-    const endAt = toDateOrNow(req.body.at);
+    const endAt = toDateOrNow(req.authKind === "staff_link" ? undefined : req.body.at);
     if (!endAt) {
       return res.status(400).json({ message: "Invalid break end time" });
     }
@@ -517,7 +517,7 @@ exports.clockOut = async (req, res, next) => {
       return res.status(404).json({ message: "No active time entry found" });
     }
 
-    const clockOutAt = toDateOrNow(req.body.at);
+    const clockOutAt = toDateOrNow(req.authKind === "staff_link" ? undefined : req.body.at);
     if (!clockOutAt) {
       return res.status(400).json({ message: "Invalid clock-out time" });
     }

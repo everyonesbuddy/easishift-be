@@ -100,7 +100,11 @@ const getFacilityRoleSet = async (tenantId) => {
  * Validates and normalizes one staff payload.
  * Returns { value } or { error }.
  */
-const normalizeStaffInput = (input, facilityRoles, { partial = false } = {}) => {
+const normalizeStaffInput = (
+  input,
+  facilityRoles,
+  { partial = false, existing = null } = {},
+) => {
   const value = {};
 
   if (!partial || input.name !== undefined) {
@@ -122,14 +126,21 @@ const normalizeStaffInput = (input, facilityRoles, { partial = false } = {}) => 
       ? input.userPhoneCountryCode
       : input.countryCode;
   if (!partial || phone !== undefined || countryCode !== undefined) {
-    const rawPhone = phone ? String(phone).trim() : null;
-    if (rawPhone && !buildE164Number(countryCode, rawPhone)) {
+    // In a partial update, a field that wasn't sent keeps its stored value.
+    const phoneInput =
+      phone !== undefined ? phone : partial ? existing?.userPhone : undefined;
+    const codeInput =
+      countryCode !== undefined
+        ? countryCode
+        : partial
+          ? existing?.userPhoneCountryCode
+          : undefined;
+    const rawPhone = phoneInput ? String(phoneInput).trim() : null;
+    if (rawPhone && !buildE164Number(codeInput, rawPhone)) {
       return { error: `Invalid phone number '${rawPhone}'` };
     }
     value.userPhone = rawPhone;
-    value.userPhoneCountryCode = countryCode
-      ? String(countryCode).trim()
-      : null;
+    value.userPhoneCountryCode = codeInput ? String(codeInput).trim() : null;
   }
 
   const rolesInput =
@@ -171,6 +182,16 @@ const normalizeStaffInput = (input, facilityRoles, { partial = false } = {}) => 
   }
 
   return { value };
+};
+
+// If this number ever texted STOP (at any facility), keep honoring it.
+const inheritedSmsConsent = async (phoneE164) => {
+  if (!phoneE164) return undefined;
+  const optedOut = await User.exists({
+    phoneE164,
+    "smsConsent.status": "opted_out",
+  });
+  return optedOut ? { status: "opted_out", updatedAt: new Date() } : undefined;
 };
 
 // Another contact in this workspace with the same email or phone.
@@ -276,8 +297,10 @@ exports.createStaff = async (req, res, next) => {
 
     await assertLimit(req, "staff");
 
+    const smsConsent = await inheritedSmsConsent(phoneE164);
     const staff = await User.create({
       ...value,
+      ...(smsConsent ? { smsConsent } : {}),
       tenantId: req.tenantId,
       loginEnabled: false,
       status: "active",
@@ -339,8 +362,12 @@ const importRows = async (req, rows) => {
   let created = 0;
   for (const { rowNumber, value } of toCreate) {
     try {
+      const smsConsent = await inheritedSmsConsent(
+        buildE164Number(value.userPhoneCountryCode, value.userPhone),
+      );
       const staff = await User.create({
         ...value,
+        ...(smsConsent ? { smsConsent } : {}),
         tenantId: req.tenantId,
         loginEnabled: false,
         status: "active",
@@ -461,7 +488,7 @@ exports.updateStaff = async (req, res, next) => {
     const { value, error, allowedRoles } = normalizeStaffInput(
       input,
       facilityRoles,
-      { partial: true },
+      { partial: true, existing: staff },
     );
     if (error) return res.status(400).json({ message: error, allowedRoles });
 
@@ -472,8 +499,10 @@ exports.updateStaff = async (req, res, next) => {
 
     Object.assign(staff, value);
     if (phoneChanged) {
-      // A new number has to opt in again.
-      staff.smsConsent = { status: "none", updatedAt: new Date() };
+      // A new number has to opt in again (unless it already said STOP).
+      staff.smsConsent = (await inheritedSmsConsent(
+        buildE164Number(staff.userPhoneCountryCode, staff.userPhone),
+      )) || { status: "none", updatedAt: new Date() };
     }
 
     const nextPhone = buildE164Number(staff.userPhoneCountryCode, staff.userPhone);

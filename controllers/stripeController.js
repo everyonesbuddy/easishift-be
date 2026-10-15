@@ -522,11 +522,14 @@ exports.handleWebhook = async (req, res) => {
 
     if (type === "checkout.session.completed") {
       const session = event.data.object;
-      const tenantId = session.metadata?.tenantId;
-      if (tenantId && session.subscription) {
-        const subscription = await stripe.subscriptions.retrieve(
-          session.subscription,
-        );
+      const subscription = session.subscription
+        ? await stripe.subscriptions.retrieve(session.subscription)
+        : null;
+      // In-app checkout puts the tenant on the session; payment links made
+      // by scripts/create-payment-link.js put it on the subscription.
+      const meta = { ...(subscription?.metadata || {}), ...(session.metadata || {}) };
+      const tenantId = meta.tenantId;
+      if (tenantId && subscription) {
         const update = {
           ...buildSubscriptionUpdate(subscription),
           billingEmail:
@@ -535,11 +538,11 @@ exports.handleWebhook = async (req, res) => {
           stripeSubscriptionId: session.subscription,
         };
         // Fall back to metadata if the Price ID isn't mapped in env.
-        if (!update.plan && PAID_PLAN_KEYS.includes(session.metadata.plan)) {
-          update.plan = session.metadata.plan;
-          update.billingInterval = session.metadata.interval || null;
+        if (!update.plan && PAID_PLAN_KEYS.includes(meta.plan)) {
+          update.plan = meta.plan;
+          update.billingInterval = meta.interval || null;
         }
-        if (session.metadata.cardTrial) update.cardTrialUsedAt = new Date();
+        if (meta.cardTrial) update.cardTrialUsedAt = new Date();
 
         await Tenant.findByIdAndUpdate(tenantId, update);
         console.log(`✅ Tenant ${tenantId} subscribed (${update.plan})`);

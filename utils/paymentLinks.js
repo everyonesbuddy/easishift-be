@@ -110,8 +110,10 @@ const metadataFor = (tenant, o) => ({
   source: o.payBy === "invoice" ? "operator_invoice" : "operator_payment_link",
 });
 
+// Only the subscription's key depends on --no-bank-transfer, so a rerun
+// after a bank-transfer error reuses the customer and prices made before it.
 const idemKey = (tenant, o, part) =>
-  ["ws-pay", part, String(tenant._id), o.plan, o.interval, o.amountCents, o.payBy, o.bankTransfer === false ? "nobt" : "", o.backPay || "", o.attempt || ""].join(":");
+  ["ws-pay", part, String(tenant._id), o.plan, o.interval, o.amountCents, o.payBy, part === "subscription" && o.bankTransfer === false ? "nobt" : "", o.backPay || "", o.attempt || ""].join(":");
 
 /** The recurring Price: a dashboard Price from env when it matches, else one made here. */
 async function recurringPriceId(stripe, tenant, o) {

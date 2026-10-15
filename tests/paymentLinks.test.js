@@ -92,6 +92,8 @@ test("invoice without bank transfer: card and ACH debit only", async () => {
   const sub = stripe.calls.find((c) => c.name === "subscriptions.create");
   assert.deepEqual(sub.params.payment_settings, { payment_method_types: ["card", "us_bank_account"] });
   assert.match(sub.options.idempotencyKey, /nobt/);
+  const customer = stripe.calls.find((c) => c.name === "customers.create");
+  assert.doesNotMatch(customer.options.idempotencyKey, /nobt/);
   assert.doesNotMatch(pay.summary(TENANT, o, "x@y.z"), /bank transfer/);
 });
 

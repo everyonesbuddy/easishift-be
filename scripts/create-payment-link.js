@@ -23,6 +23,9 @@
  *   --back-pay="September 2026"  Also charge one extra period now, once.
  *   --days-until-due=30          Invoices only (default 30).
  *   --send-invoice               Invoices only: Stripe emails it now.
+ *   --no-bank-transfer           Invoices only: card and ACH debit, no bank
+ *                                transfer (use until Bank transfers is on
+ *                                in Stripe > Settings > Payment methods).
  *   --notify-email=you@...       Email the link to you as well.
  *   --confirm-live               Required when using a live Stripe key.
  *   --attempt=2                  Make a new link instead of returning the
@@ -93,6 +96,12 @@ async function main() {
 main()
   .catch((error) => {
     console.error(error.message);
+    if (/customer_balance/.test(error.message || "")) {
+      console.error(
+        "\nBank transfers aren't turned on in Stripe. Either turn on Bank transfers in Stripe > Settings > Payment methods, " +
+          "or rerun with --no-bank-transfer (card and ACH debit only).",
+      );
+    }
     process.exitCode = 1;
   })
   .finally(() => mongoose.disconnect());

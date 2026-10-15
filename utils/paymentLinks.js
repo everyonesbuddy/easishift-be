@@ -22,7 +22,7 @@ const formatUsd = (cents) =>
   `$${(cents / 100).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
 function parseArgs(argv) {
-  const opts = { interval: "month", payBy: "link", daysUntilDue: 30 };
+  const opts = { interval: "month", payBy: "link", daysUntilDue: 30, bankTransfer: true };
   const positional = [];
   for (const arg of argv) {
     if (!arg.startsWith("--")) {
@@ -44,6 +44,7 @@ function parseArgs(argv) {
       case "create": opts.create = true; break;
       case "confirm-live": opts.confirmLive = true; break;
       case "send-invoice": opts.sendInvoice = true; break;
+      case "no-bank-transfer": opts.bankTransfer = false; break;
       default: throw new Error(`Unknown option --${key}`);
     }
   }
@@ -95,7 +96,7 @@ function summary(tenant, o, email) {
   lines.push(`Due now:  ${formatUsd(o.amountCents * (o.backPay ? 2 : 1))}`);
   lines.push(
     o.payBy === "invoice"
-      ? `Pay by:   invoice, due in ${o.daysUntilDue} days (card, ACH debit, or bank transfer)`
+      ? `Pay by:   invoice, due in ${o.daysUntilDue} days (card, ACH debit${o.bankTransfer ? ", or bank transfer" : ""})`
       : "Pay by:   payment link (card or ACH debit from a bank account), renews automatically",
   );
   lines.push(`Email:    ${email || (o.payBy === "invoice" ? "(none: required for invoices)" : "customer types it in")}`);
@@ -110,7 +111,7 @@ const metadataFor = (tenant, o) => ({
 });
 
 const idemKey = (tenant, o, part) =>
-  ["ws-pay", part, String(tenant._id), o.plan, o.interval, o.amountCents, o.payBy, o.backPay || "", o.attempt || ""].join(":");
+  ["ws-pay", part, String(tenant._id), o.plan, o.interval, o.amountCents, o.payBy, o.bankTransfer === false ? "nobt" : "", o.backPay || "", o.attempt || ""].join(":");
 
 /** The recurring Price: a dashboard Price from env when it matches, else one made here. */
 async function recurringPriceId(stripe, tenant, o) {
@@ -172,12 +173,14 @@ function invoiceSubscriptionParams(tenant, o, customerId, priceId, backPayId) {
     collection_method: "send_invoice",
     days_until_due: o.daysUntilDue,
     metadata: metadataFor(tenant, o),
-    payment_settings: {
-      payment_method_types: ["card", "us_bank_account", "customer_balance"],
-      payment_method_options: {
-        customer_balance: { funding_type: "bank_transfer", bank_transfer: { type: "us_bank_transfer" } },
-      },
-    },
+    payment_settings: o.bankTransfer === false
+      ? { payment_method_types: ["card", "us_bank_account"] }
+      : {
+          payment_method_types: ["card", "us_bank_account", "customer_balance"],
+          payment_method_options: {
+            customer_balance: { funding_type: "bank_transfer", bank_transfer: { type: "us_bank_transfer" } },
+          },
+        },
   };
 }
 

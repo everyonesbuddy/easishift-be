@@ -85,6 +85,18 @@ test("invoice: net-30 with card, ACH debit and bank transfer; tenant saved", asy
   });
 });
 
+test("invoice without bank transfer: card and ACH debit only", async () => {
+  const stripe = fakeStripe();
+  const o = pay.validate(pay.parseArgs([TENANT._id, "growth", "--pay-by=invoice", "--no-bank-transfer"]));
+  await pay.createPayment({ stripe, saveTenant: async () => {} }, TENANT, o, "ap@palmgrove.test");
+  const sub = stripe.calls.find((c) => c.name === "subscriptions.create");
+  assert.deepEqual(sub.params.payment_settings, { payment_method_types: ["card", "us_bank_account"] });
+  assert.match(sub.options.idempotencyKey, /nobt/);
+  const customer = stripe.calls.find((c) => c.name === "customers.create");
+  assert.doesNotMatch(customer.options.idempotencyKey, /nobt/);
+  assert.doesNotMatch(pay.summary(TENANT, o, "x@y.z"), /bank transfer/);
+});
+
 test("invoice needs an email", async () => {
   const o = pay.validate(pay.parseArgs([TENANT._id, "starter", "--pay-by=invoice"]));
   await assert.rejects(() => pay.createPayment({ stripe: fakeStripe(), saveTenant: async () => {} }, TENANT, o, null), /need an email/);

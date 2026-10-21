@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const { normalizeViewFilters } = require("../utils/viewFilters");
 const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
 const User = require("../models/userModel");
@@ -545,7 +546,7 @@ exports.updateMe = async (req, res, next) => {
     const user = await User.findById(req.user._id);
     if (!user) return res.status(404).json({ message: "User not found" });
 
-    const { name, userPhone, userPhoneCountryCode, profilePicture } =
+    const { name, userPhone, userPhoneCountryCode, profilePicture, viewFilters } =
       req.body || {};
     if (name !== undefined) {
       const trimmed = String(name || "").trim();
@@ -566,6 +567,20 @@ exports.updateMe = async (req, res, next) => {
           .json({ message: "Profile picture must be an image under 2 MB" });
       }
       user.profilePicture = profilePicture || null;
+    }
+
+    if (viewFilters !== undefined) {
+      let cleaned;
+      try {
+        cleaned = normalizeViewFilters(viewFilters);
+      } catch (err) {
+        return res.status(400).json({ message: err.message });
+      }
+      // Only the kinds sent change, so the website and the app don't
+      // overwrite each other's other filter.
+      for (const [kind, value] of Object.entries(cleaned)) {
+        user.set(`viewFilters.${kind}`, value);
+      }
     }
 
     await user.save();

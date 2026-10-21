@@ -60,6 +60,19 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    // What this scheduler chose to see on the week view and Weekly Needs
+    // (roles and/or unit areas). Empty = everything. Saved per person so it
+    // follows them between the website and the app.
+    viewFilters: {
+      schedule: {
+        roles: { type: [String], default: [] },
+        areas: { type: [String], default: [] },
+      },
+      needs: {
+        roles: { type: [String], default: [] },
+        areas: { type: [String], default: [] },
+      },
+    },
     passwordHash: {
       type: String,
       select: false, // never return password hash in queries by default

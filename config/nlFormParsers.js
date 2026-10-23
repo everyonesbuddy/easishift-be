@@ -1,4 +1,5 @@
 const { DateTime } = require("luxon");
+const { weeklyNeedsParser } = require("./nlWeeklyNeedsParser");
 
 function dedupeStrings(values) {
   return Array.from(
@@ -760,6 +761,21 @@ function validateCoverageDraft(draft, context) {
 // until their own follow-up work.
 
 const FORM_PARSERS = {
+  // Weekly Needs ("4 CNAs on days, 3 on weekends..."): nlWeeklyNeedsParser.js
+  weeklyNeeds: {
+    permission: "coverage.manage",
+    // Paid plans only, and a daily cap per workspace (routes/nlRoutes.js).
+    feature: "describeNeeds",
+    contextFields: ["roleFamilies", "unitAreas", "shiftTypeDefinitions"],
+    maxTokens: 2048,
+    buildContext: buildCoverageContext,
+    buildTool: weeklyNeedsParser.buildTool,
+    buildSystemPrompt: weeklyNeedsParser.buildSystemPrompt,
+    normalizeDraft: weeklyNeedsParser.normalizeDraft,
+    validateDraft: weeklyNeedsParser.validateDraft,
+    describeConfigGaps: weeklyNeedsParser.describeGaps,
+  },
+
   coverage: {
     permission: "coverage.manage",
     contextFields: [

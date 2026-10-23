@@ -24,6 +24,8 @@ const FACILITY_FEATURES = [
   "timesheets",
   "messaging",
   "dashboard",
+  // Weekly Needs from typed or spoken words (POST /nl/parse weeklyNeeds)
+  "describeNeeds",
 ];
 
 const PLANS = Object.freeze({

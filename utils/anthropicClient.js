@@ -18,7 +18,7 @@ class AnthropicParseError extends Error {
  * reply is structured JSON instead of freeform text. Returns the parsed
  * tool input, or throws AnthropicParseError on any failure.
  */
-async function callAnthropicTool({ systemPrompt, userMessage, tool }) {
+async function callAnthropicTool({ systemPrompt, userMessage, tool, maxTokens = 1024 }) {
   const apiKey = process.env.ANTHROPIC_API_KEY;
   if (!apiKey) {
     throw new AnthropicParseError(
@@ -33,7 +33,7 @@ async function callAnthropicTool({ systemPrompt, userMessage, tool }) {
       ANTHROPIC_API_URL,
       {
         model: process.env.ANTHROPIC_MODEL || DEFAULT_MODEL,
-        max_tokens: 1024,
+        max_tokens: maxTokens,
         system: systemPrompt,
         messages: [{ role: "user", content: userMessage }],
         tools: [tool],

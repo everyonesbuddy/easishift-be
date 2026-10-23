@@ -129,7 +129,7 @@ exports.parseForm = async (req, res, next) => {
 
     let draft;
     try {
-      draft = await callAnthropicTool({ systemPrompt, userMessage, tool });
+      draft = await callAnthropicTool({ systemPrompt, userMessage, tool, maxTokens: config.maxTokens });
     } catch (err) {
       if (err instanceof AnthropicParseError) {
         return res.status(502).json({ code: err.code, message: err.message });

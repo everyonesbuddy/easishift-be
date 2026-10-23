@@ -14,7 +14,8 @@
  *   { rows: [{ shiftType, shiftTag, role, unitArea, countsByWeekday }],
  *     notUnderstood: [string] }
  * countsByWeekday is Sunday-first; null = "not mentioned, keep what's there".
- * A row whose numbers are all 0 means "remove this row".
+ * The website only ever adds rows or changes the numbers on a row with the
+ * same shift + role + area; it never deletes or changes anything else.
  */
 
 const DAYS = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
@@ -124,7 +125,7 @@ Rules:
 2. Match shifts by name or time ("days", "morning", "7 to 3", "11-7", "nights"). If two shifts fit equally, pick the one already used in currentFormState, else the first, and add a note.
 3. Match roles by meaning: "aides", "caregivers", "nursing assistants" usually mean CNA; "med aide", "med passer" usually mean med tech; "LPN", "RN", "nurse" mean the closest nurse role. If no role fits, add a note instead of guessing.
 4. Counts: if no days are given, use the number for all 7 days. "Weekdays" = mon–fri, "weekends" = sat and sun. If the message only changes some days of a row that already exists, set those days and leave the others null.
-5. "Every shift" means one row per shift. "No X on nights" or "drop X" means that row with every day 0.
+5. "Every shift" means one row per shift. "No X on nights" means that row with 0 on the days mentioned (every day if none are).
 6. Leave unitArea out unless the message names one of the listed areas.
 7. Put anything you couldn't match in notUnderstood, in a few plain words.`;
 }

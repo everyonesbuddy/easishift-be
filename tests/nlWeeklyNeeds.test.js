@@ -137,3 +137,54 @@ test("POST /nl/parse weeklyNeeds: sends current rules, returns a checked draft",
     delete require.cache[ctrlPath];
   }
 });
+
+test("route: Free gets 402, paid is limited per workspace per minute", async () => {
+  const express = require("express");
+  const http = require("node:http");
+  const stub = (rel, exports) => {
+    const p = require.resolve(rel);
+    const saved = require.cache[p];
+    require.cache[p] = { id: p, filename: p, loaded: true, exports };
+    return () => { if (saved) require.cache[p] = saved; else delete require.cache[p]; };
+  };
+  const { getPlan } = require("../config/plans");
+  const routesPath = require.resolve("../routes/nlRoutes");
+  const restore = [
+    stub("../middleware/authMiddleware", (req, _res, next) => next()),
+    stub("../middleware/tenantMiddleware", (req, _res, next) => {
+      req.tenantId = req.headers["x-tenant"];
+      req.plan = getPlan(req.headers["x-plan"]);
+      req.tenant = { _id: req.tenantId, trialUsedAt: new Date() };
+      next();
+    }),
+    stub("../controllers/nlParseController", { parseForm: (_req, res) => res.json({ ok: true }) }),
+  ];
+  delete require.cache[routesPath];
+  const app = express();
+  app.use(express.json());
+  app.use("/nl", require(routesPath));
+  const server = app.listen(0);
+  const { port } = server.address();
+  const post = (tenant, plan, formType = "weeklyNeeds") =>
+    new Promise((resolve, reject) => {
+      const body = JSON.stringify({ formType, message: "x" });
+      const req = http.request(
+        { port, path: "/nl/parse", method: "POST", headers: { "content-type": "application/json", "x-tenant": tenant, "x-plan": plan } },
+        (res) => { res.resume(); res.on("end", () => resolve(res.statusCode)); },
+      );
+      req.on("error", reject);
+      req.end(body);
+    });
+  try {
+    assert.equal(await post("free1", "free"), 402);
+    const { DESCRIBE_PER_MINUTE } = require(routesPath);
+    for (let i = 0; i < DESCRIBE_PER_MINUTE; i += 1) assert.equal(await post("paid1", "starter"), 200);
+    assert.equal(await post("paid1", "starter"), 429);
+    assert.equal(await post("paid2", "growth"), 200, "another workspace has its own limit");
+    assert.equal(await post("paid1", "starter", "coverage"), 200, "other form types aren't limited here");
+  } finally {
+    server.close();
+    restore.forEach((r) => r());
+    delete require.cache[routesPath];
+  }
+});

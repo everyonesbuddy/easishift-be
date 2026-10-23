@@ -764,6 +764,8 @@ const FORM_PARSERS = {
   // Weekly Needs ("4 CNAs on days, 3 on weekends..."): nlWeeklyNeedsParser.js
   weeklyNeeds: {
     permission: "coverage.manage",
+    // Paid plans only, and a daily cap per workspace (routes/nlRoutes.js).
+    feature: "describeNeeds",
     contextFields: ["roleFamilies", "unitAreas", "shiftTypeDefinitions"],
     maxTokens: 2048,
     buildContext: buildCoverageContext,

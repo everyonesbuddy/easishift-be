@@ -3,6 +3,7 @@ const cors = require("cors");
 const cookieParser = require("cookie-parser");
 const bodyParser = require("body-parser");
 const morgan = require("morgan");
+const compression = require("compression");
 const cron = require("node-cron");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
@@ -46,6 +47,9 @@ if (process.env.NODE_ENV === "development") {
 }
 
 // ✅ Middleware
+// Gzip responses (Heroku doesn't); big JSON lists shrink several times over.
+app.use(compression());
+
 // JSON parser with Stripe webhook-safe verification.
 // Capture raw request body for Stripe webhook endpoints so signature
 // verification code can use `req.rawBody`.

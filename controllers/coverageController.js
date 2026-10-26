@@ -113,6 +113,15 @@ function isOvernightShift(startTime, endTime) {
   );
 }
 
+// Optional ?from= / ?to= (ISO dates): spots that overlap that window.
+function applyTimeWindow(filter, query) {
+  const from = query.from ? new Date(query.from) : null;
+  const to = query.to ? new Date(query.to) : null;
+  if (from && !Number.isNaN(from.getTime())) filter.endTime = { $gte: from };
+  if (to && !Number.isNaN(to.getTime())) filter.startTime = { $lte: to };
+  return filter;
+}
+
 function withOvernightFlag(coverage) {
   const plain =
     coverage && typeof coverage.toObject === "function"
@@ -419,8 +428,9 @@ exports.getCoverage = async (req, res, next) => {
       filter.shiftType = normalizeShiftType(req.query.shiftType);
     if (req.query.shiftTag)
       filter.shiftTag = normalizeShiftTag(req.query.shiftTag);
+    applyTimeWindow(filter, req.query);
 
-    const list = await Coverage.find(filter).sort({ date: 1, startTime: 1 });
+    const list = await Coverage.find(filter).sort({ date: 1, startTime: 1 }).lean();
 
     if (!list.length) return res.json([]);
 
@@ -729,17 +739,23 @@ exports.getUnfilledCoverageForAuto = async (req, res, next) => {
     const { role, unitArea, shiftType, shiftTag } = req.query; // optional
     const tenantId = req.tenantId;
 
-    // 1. Get all coverages, optionally filtered by role
+    // 1. Get coverages, optionally filtered by role
     const filter = { tenantId };
     if (role) filter.role = role;
     if (unitArea) filter.unitArea = normalizeAreaTag(unitArea);
     if (shiftType) filter.shiftType = normalizeShiftType(shiftType);
     if (shiftTag) filter.shiftTag = normalizeShiftTag(shiftTag);
 
-    const coverages = await Coverage.find(filter).sort({
-      date: 1,
-      startTime: 1,
-    });
+    // Open spots only matter until they end: by default skip spots that are
+    // over (?includePast=true for the old behaviour). ?from= / ?to= narrow it.
+    applyTimeWindow(filter, req.query);
+    if (!filter.endTime && req.query.includePast !== "true") {
+      filter.endTime = { $gte: new Date() };
+    }
+
+    const coverages = await Coverage.find(filter)
+      .sort({ date: 1, startTime: 1 })
+      .lean();
 
     if (!coverages.length) return res.json([]);
 

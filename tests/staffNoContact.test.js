@@ -53,3 +53,12 @@ test("staff without a phone or email can be added, one by one and by import", as
     delete require.cache[ctrlPath];
   }
 });
+
+test("the User model itself accepts a staff contact with no phone or email", async () => {
+  const User = require("../models/userModel");
+  const staff = new User({ name: "Rosa Diaz", tenantId: "6a04bfda5193b12fac01131b", loginEnabled: false, roles: ["cna"], role: "cna" });
+  await staff.validate(); // throws if invalid
+  assert.equal(staff.phoneE164 ?? null, null);
+  const account = new User({ name: "Sam", loginEnabled: true });
+  await assert.rejects(() => account.validate(), /Accounts need an email address/);
+});

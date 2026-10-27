@@ -139,9 +139,8 @@ userSchema.pre("validate", function (next) {
   if (this.loginEnabled && !this.email) {
     this.invalidate("email", "Accounts need an email address");
   }
-  if (!this.loginEnabled && !this.email && !this.phoneE164) {
-    this.invalidate("userPhone", "Add a phone number or an email address");
-  }
+  // Staff contacts may have no phone and no email: they get no texts or
+  // emails, and the scheduler shares their personal link by hand.
   next();
 });
 

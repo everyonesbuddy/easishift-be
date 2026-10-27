@@ -2,7 +2,9 @@
  * Staff (contacts)
  * ----------------
  * The people being scheduled. They never log in: the scheduler adds them
- * with a name plus a phone and/or email, and they get a personal link.
+ * with a name and a role, and they get a personal link. A phone and/or
+ * email is optional: without one they get no texts or emails (publish lists
+ * them as "not reached"), and the scheduler shares their link by hand.
  *
  * Routes: /api/v1/staff
  */
@@ -78,6 +80,8 @@ const toStaffResponse = (user) => {
     userPhoneCountryCode: doc.userPhoneCountryCode || null,
     phoneE164: doc.phoneE164 || null,
     hasPhone: Boolean(doc.phoneE164),
+    // No phone and no email: gets no texts or emails; share their link by hand.
+    hasContact: Boolean(doc.phoneE164 || doc.email),
     hasEmail: Boolean(doc.email),
     smsStatus: doc.smsConsent?.status || "none",
     linkPinSet: Boolean(doc.linkPinSetAt),
@@ -277,13 +281,8 @@ const createStaffContact = async (req, input) => {
   );
   if (error) return { status: 400, body: { message: error, allowedRoles } };
 
+  // Phone and email are optional (no contact = no texts/emails; share the link).
   const phoneE164 = buildE164Number(value.userPhoneCountryCode, value.userPhone);
-  if (!value.email && !phoneE164) {
-    return {
-      status: 400,
-      body: { message: "Add a phone number or an email address" },
-    };
-  }
 
   const existing = await findDuplicate({
     tenantId: req.tenantId,
@@ -361,10 +360,6 @@ const importRows = async (req, rows) => {
       continue;
     }
     const phoneE164 = buildE164Number(value.userPhoneCountryCode, value.userPhone);
-    if (!value.email && !phoneE164) {
-      results.push({ rowNumber, name: value.name, status: "failed_validation", reason: "Add a phone number or an email address" });
-      continue;
-    }
     if ((value.email && seenEmails.has(value.email)) || (phoneE164 && seenPhones.has(phoneE164))) {
       results.push({ rowNumber, name: value.name, status: "skipped_duplicate", reason: "Same phone or email appears earlier in this list" });
       continue;

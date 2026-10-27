@@ -29,7 +29,7 @@ const ROUTES = [
 
   // ── Staff (contacts, no login) ────────────────────────────────────────────
   ["get", "/staff", "Staff", "List staff", { query: ["status", "q"] }],
-  ["post", "/staff", "Staff", "Add a staff contact (name + phone or email). Sends nothing.", { body: { name: "Kim Tran", phone: "(555) 123-4567", email: "kim@example.com", roles: ["cna"], allowedShiftTypes: [], notes: "" } }],
+  ["post", "/staff", "Staff", "Add a staff contact (name + role; phone and email optional). Sends nothing.", { body: { name: "Kim Tran", phone: "(555) 123-4567", email: "kim@example.com", roles: ["cna"], allowedShiftTypes: [], notes: "" } }],
   ["post", "/staff/bulk", "Staff", "Add many (paste from a list)", { body: { rows: [{ name: "Kim Tran", phone: "5551234567", role: "cna" }] } }],
   ["post", "/staff/import", "Staff", "Import a CSV (multipart field 'file')", { plan: "starter" }],
   ["get", "/staff/{id}", "Staff", "Get one"],

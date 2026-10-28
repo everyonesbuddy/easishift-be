@@ -29,6 +29,11 @@ const ROUTES = [
 
   // ── Staff (contacts, no login) ────────────────────────────────────────────
   ["get", "/staff", "Staff", "List staff", { query: ["status", "q"] }],
+  ["get", "/labor/report", "Labor", "One week of labor for this building: hours scheduled/worked, hours per resident day vs budget, cost (owners/admins), overtime coming, call-outs and no-shows, open shifts, credentials expiring, turnover watch. ?weekStart=YYYY-MM-DD (default this week). Paid plans.", {}],
+  ["post", "/labor/report/send", "Labor", "Email the Monday labor report now to owners, admins and extra recipients (owners/admins)", {}],
+  ["get", "/labor/settings", "Labor", "Budget (hours per resident day), usual residents, daily resident counts, Monday email settings; pay rates for owners/admins", {}],
+  ["put", "/labor/settings", "Labor", "Update pay rates (per role, per person), overtime multiplier, budget, usual residents, Monday email (owners/admins)", { body: { payRates: [{ role: "cna", hourlyRate: 18.5 }], budgetHoursPerResidentDay: 3.2, typicalCensus: 48, mondayReport: { enabled: true, extraRecipients: ["vp@example.com"] } } }],
+  ["put", "/labor/census", "Labor", "Residents by day (null removes a day; it falls back to the usual number)", { body: { entries: [{ date: "2026-10-26", residents: 47 }] } }],
   ["post", "/staff", "Staff", "Add a staff contact (name + role; phone and email optional). Sends nothing.", { body: { name: "Kim Tran", phone: "(555) 123-4567", email: "kim@example.com", roles: ["cna"], allowedShiftTypes: [], notes: "" } }],
   ["post", "/staff/bulk", "Staff", "Add many (paste from a list)", { body: { rows: [{ name: "Kim Tran", phone: "5551234567", role: "cna" }] } }],
   ["post", "/staff/import", "Staff", "Import a CSV (multipart field 'file')", { plan: "starter" }],

@@ -60,6 +60,17 @@ const userSchema = new mongoose.Schema(
       type: [String],
       default: [],
     },
+    // Expiry dates for certifications (staff contacts). One entry per tag in
+    // certificationTags that has a date; tags without one never expire.
+    credentials: {
+      type: [
+        new mongoose.Schema(
+          { tag: { type: String, required: true }, expiresAt: { type: Date, required: true } },
+          { _id: false },
+        ),
+      ],
+      default: [],
+    },
     // What this scheduler chose to see on the week view and Weekly Needs
     // (roles and/or unit areas). Empty = everything. Saved per person so it
     // follows them between the website and the app.

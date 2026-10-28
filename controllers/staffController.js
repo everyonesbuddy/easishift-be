@@ -39,6 +39,7 @@ const EDITABLE_FIELDS = [
   "allowedShiftTypes",
   "allowedAreas",
   "certificationTags",
+  "credentials",
   "notes",
 ];
 
@@ -89,6 +90,7 @@ const toStaffResponse = (user) => {
     allowedShiftTypes: doc.allowedShiftTypes || [],
     allowedAreas: doc.allowedAreas || [],
     certificationTags: doc.certificationTags || [],
+    credentials: (doc.credentials || []).map((c) => ({ tag: c.tag, expiresAt: c.expiresAt })),
     notes: doc.notes || "",
     createdAt: doc.createdAt,
     updatedAt: doc.updatedAt,
@@ -181,6 +183,27 @@ const normalizeStaffInput = (
         new Set(toList(input[key]).map((item) => item.toLowerCase())),
       );
     }
+  }
+
+  // Certification expiry dates: [{ tag, expiresAt }]. Only tags the person
+  // has are kept; removing a certification drops its date too.
+  const tags = value.certificationTags || existing?.certificationTags || [];
+  if (!partial || input.credentials !== undefined || value.certificationTags) {
+    const source =
+      input.credentials !== undefined ? input.credentials : existing?.credentials || [];
+    if (source !== null && !Array.isArray(source)) {
+      return { error: "credentials must be a list of { tag, expiresAt }" };
+    }
+    const byTag = new Map();
+    for (const item of source || []) {
+      const tag = String(item?.tag || "").trim().toLowerCase();
+      if (!tag || !tags.includes(tag)) continue;
+      if (item.expiresAt === null || item.expiresAt === "" || item.expiresAt === undefined) continue;
+      const date = new Date(item.expiresAt);
+      if (Number.isNaN(date.getTime())) return { error: `Invalid expiry date for '${tag}'` };
+      byTag.set(tag, { tag, expiresAt: date });
+    }
+    value.credentials = [...byTag.values()];
   }
 
   if (!partial || input.notes !== undefined) {

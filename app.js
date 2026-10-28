@@ -9,6 +9,7 @@ const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
 const { closeOutPastShifts } = require("./utils/closeOutShifts");
+const { sendWeeklyLaborReports } = require("./utils/laborReportJobs");
 
 // Routers
 const tenantRouter = require("./routes/tenantRoutes");
@@ -18,6 +19,7 @@ const summaryRouter = require("./routes/summaryRoutes");
 const scheduleRoutes = require("./routes/scheduleRoutes");
 const timeOffRoutes = require("./routes/timeOffRoutes");
 const coverageRoutes = require("./routes/coverageRoutes");
+const laborRoutes = require("./routes/laborRoutes");
 const preferencesRoutes = require("./routes/preferencesRoutes");
 const facilityPreferencesRoutes = require("./routes/facilityPreferencesRoutes");
 const timeTrackingRoutes = require("./routes/timeTrackingRoutes");
@@ -121,6 +123,16 @@ cron.schedule("0 14 * * *", async () => {
   }
 });
 
+// ✅ Cron job: Monday labor email (hourly at :20; sends at 7 a.m. local on Mondays)
+cron.schedule("20 * * * *", async () => {
+  try {
+    const { sent } = await sendWeeklyLaborReports();
+    if (sent) console.log(`📊 Sent ${sent} Monday labor report(s)`);
+  } catch (err) {
+    console.error("🚫 Error sending labor reports:", err);
+  }
+});
+
 // ✅ Cron job: shift reminders (hourly, at :05)
 cron.schedule("5 * * * *", async () => {
   try {
@@ -156,6 +168,7 @@ app.use("/api/v1/summary", summaryRouter);
 app.use("/api/v1/schedules", scheduleRoutes);
 app.use("/api/v1/timeoff", timeOffRoutes);
 app.use("/api/v1/coverage", coverageRoutes);
+app.use("/api/v1/labor", laborRoutes);
 app.use("/api/v1/preferences", preferencesRoutes);
 app.use("/api/v1/facility-preferences", facilityPreferencesRoutes);
 app.use("/api/v1/time-tracking", timeTrackingRoutes);

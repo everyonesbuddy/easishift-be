@@ -22,6 +22,8 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "messages.manage",
     "facility_preferences.view",
     "facility_preferences.manage",
+    "labor.view",
+    "labor.census",
   ],
   // Read-only access to the schedule (e.g. a DON). Free on every plan.
   viewer: [
@@ -29,6 +31,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "coverage.view",
     "staff.view",
     "facility_preferences.view",
+    "labor.view",
   ],
   // Admin: everything the owner can do (plan and billing, inviting people)
   // except deleting the facility and transferring ownership. Stored as
@@ -49,6 +52,10 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "billing.manage",
     "tenant.settings",
     "roles.manage",
+    "labor.view",
+    "labor.costs",
+    "labor.manage",
+    "labor.census",
   ],
   owner: [
     "schedule.view",
@@ -67,6 +74,10 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "tenant.delete",
     "roles.manage",
     "ownership.transfer",
+    "labor.view",
+    "labor.costs",
+    "labor.manage",
+    "labor.census",
   ],
 });
 

@@ -12,6 +12,9 @@ const { requirePermission } = require("../middleware/roleMiddleware");
 // Must be logged in + tenant-scoped
 router.use(auth, tenant);
 
+// The home page: what needs doing today and the next two days. Every plan.
+router.get("/today", requirePermission("schedule.view"), summaryCtrl.getToday);
+
 router.get(
   "/admin/:adminId",
   requirePermission("staff.view"),

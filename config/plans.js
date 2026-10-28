@@ -26,6 +26,9 @@ const FACILITY_FEATURES = [
   "dashboard",
   // Weekly Needs from typed or spoken words (POST /nl/parse weeklyNeeds)
   "describeNeeds",
+  // Labor page (hours vs budget, overtime coming, call-outs, credentials,
+  // who's at risk of leaving) and the Monday labor email.
+  "labor",
 ];
 
 const PLANS = Object.freeze({

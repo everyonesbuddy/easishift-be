@@ -6,6 +6,7 @@
  * Routes: /api/v1/labor
  */
 const mongoose = require("mongoose");
+const { DateTime } = require("luxon");
 const Schedule = require("../models/scheduleModel");
 const TimeEntry = require("../models/timeEntryModel");
 const Coverage = require("../models/coverageModel");
@@ -20,9 +21,11 @@ const {
   weekBounds,
   addDaysToKey,
   dateKeyToCoverageDate,
+  weekdayOfKey,
 } = require("../utils/dateUtils");
 const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
 const { buildLaborReport } = require("../utils/laborReport");
+const { eligibleStaffForCoverage, getCompatibleFacilityConfig } = require("../utils/eligibility");
 
 const KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
 const MAX_CENSUS_DAYS = 400;
@@ -40,16 +43,32 @@ const shiftLabeler = (prefs) => {
     labels.get(`${String(type || "").toLowerCase()}:${String(tag || "").toLowerCase()}`) || [type, tag].filter(Boolean).join(" ");
 };
 
-/** Loads everything for one week and builds the report. */
-async function loadLaborReport({ tenantId, weekStart, includeCosts, now = new Date() }) {
-  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
-  const start = weekStart || weekStartFor(now, timezone, weekStartsOn);
-  assertWeekStart(start, weekStartsOn);
-  const days = weekDays(start);
-  const { start: from, end: to } = weekBounds(start, timezone);
-  // 8 weeks back for the turnover watch.
-  const lookback = new Date(to.getTime() - 56 * 24 * 60 * 60 * 1000);
+const MONTH_RE = /^\d{4}-\d{2}$/;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** Every date key in a "YYYY-MM" month. */
+const monthDays = (month) => {
+  const first = DateTime.fromISO(`${month}-01`, { zone: "UTC" });
+  return Array.from({ length: first.daysInMonth }, (_, i) => first.plus({ days: i }).toISODate());
+};
+
+/** Week-start keys of every payroll week touching these days. */
+const weeksCovering = (days, weekStartsOn) => {
+  const keys = [];
+  for (const d of days) {
+    const diff = ((weekdayOfKey(d) - weekStartsOn) + 7) % 7;
+    const key = addDaysToKey(d, -diff);
+    if (!keys.includes(key)) keys.push(key);
+  }
+  return keys;
+};
+
+/** Everything the report needs for a run of whole payroll weeks. */
+async function loadLaborData({ tenantId, weekKeys, days, timezone }) {
+  const from = weekBounds(weekKeys[0], timezone).start;
+  const to = weekBounds(weekKeys[weekKeys.length - 1], timezone).end;
+  // 8 weeks back from the end for the turnover watch.
+  const lookback = new Date(Math.min(from.getTime(), to.getTime() - 56 * DAY_MS));
   const [prefs, settings, schedules, timeEntries, coverageRows, staff] = await Promise.all([
     FacilityPreferences.findOne({ tenantId }).select("shiftTypeDefinitions weeklyOvertimeThresholdHours").lean(),
     LaborSettings.findOne({ tenantId }).lean(),
@@ -60,7 +79,7 @@ async function loadLaborReport({ tenantId, weekStart, includeCosts, now = new Da
       .select("staffId scheduleId clockInAt clockOutAt totals")
       .lean(),
     Coverage.find({ tenantId, date: { $in: days.map(dateKeyToCoverageDate) } })
-      .select("role shiftType shiftTag startTime endTime requiredCount")
+      .select("date role shiftType shiftTag startTime endTime requiredCount")
       .lean(),
     User.find({ tenantId, loginEnabled: false, status: "active" })
       .select("name roles certificationTags credentials status")
@@ -68,43 +87,262 @@ async function loadLaborReport({ tenantId, weekStart, includeCosts, now = new Da
   ]);
   const assigned = await countAssignmentsByCoverage({ tenantId, coverageIds: coverageRows.map((c) => c._id) });
   const coverage = coverageRows.map((c) => ({ ...c, assignedCount: assigned.get(String(c._id)) || 0 }));
+  return { prefs, settings, schedules, timeEntries, coverage, staff };
+}
+
+/**
+ * Loads everything for one week (weekStart) or one calendar month
+ * (month: "YYYY-MM") and builds the report.
+ */
+async function loadLaborReport({ tenantId, weekStart, month, includeCosts, now = new Date() }) {
+  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  let days;
+  let start;
+  if (month) {
+    if (!MONTH_RE.test(month)) {
+      const err = new Error("month must be YYYY-MM");
+      err.statusCode = 400;
+      throw err;
+    }
+    days = monthDays(month);
+    start = days[0];
+  } else {
+    start = weekStart || weekStartFor(now, timezone, weekStartsOn);
+    assertWeekStart(start, weekStartsOn);
+    days = weekDays(start);
+  }
+  const weekKeys = month ? weeksCovering(days, weekStartsOn) : [start];
+  const data = await loadLaborData({ tenantId, weekKeys, days, timezone });
 
   return buildLaborReport({
+    period: month ? "month" : "week",
     weekStart: start,
     days,
+    weekStarts: weekKeys,
     timezone,
-    thresholdHours: Number(prefs?.weeklyOvertimeThresholdHours) || 40,
-    schedules,
-    timeEntries,
-    coverage,
-    staff,
-    settings,
-    shiftLabel: shiftLabeler(prefs),
+    thresholdHours: Number(data.prefs?.weeklyOvertimeThresholdHours) || 40,
+    schedules: data.schedules,
+    timeEntries: data.timeEntries,
+    coverage: data.coverage,
+    staff: data.staff,
+    settings: data.settings,
+    shiftLabel: shiftLabeler(data.prefs),
     includeCosts,
     now,
   });
 }
 
 /**
+ * Week-by-week numbers for the trend lines, ending with `endWeek`. One load
+ * for the whole range, then the same report math per week.
+ */
+async function loadLaborTrends({ tenantId, endWeek, weeks = 12, includeCosts, now = new Date() }) {
+  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  const last = endWeek || weekStartFor(now, timezone, weekStartsOn);
+  assertWeekStart(last, weekStartsOn);
+  const weekKeys = Array.from({ length: weeks }, (_, i) => addDaysToKey(last, (i - weeks + 1) * 7));
+  const allDays = weekKeys.flatMap((k) => weekDays(k));
+  const data = await loadLaborData({ tenantId, weekKeys, days: allDays, timezone });
+  const thresholdHours = Number(data.prefs?.weeklyOvertimeThresholdHours) || 40;
+  const thisWeek = weekStartFor(now, timezone, weekStartsOn);
+
+  return weekKeys.map((key) => {
+    const days = weekDays(key);
+    const daySet = new Set(days);
+    const r = buildLaborReport({
+      weekStart: key,
+      days,
+      weekStarts: [key],
+      timezone,
+      thresholdHours,
+      schedules: data.schedules,
+      timeEntries: data.timeEntries,
+      coverage: data.coverage.filter((c) => daySet.has(new Date(c.date).toISOString().slice(0, 10))),
+      staff: data.staff,
+      settings: data.settings,
+      includeCosts,
+      now,
+    });
+    return {
+      weekStart: key,
+      // This week and later aren't over yet.
+      inProgress: key >= thisWeek,
+      staffedHours: r.hours.scheduled,
+      neededHours: r.hours.needed,
+      ppd: r.budget?.scheduledPPD ?? null,
+      targetPPD: r.budget?.targetPPD ?? null,
+      overtimeHours: r.overtime.totalOvertimeHours,
+      callOuts: r.attendance.callOuts,
+      noShows: r.attendance.noShows,
+      cost: r.costs?.scheduled ?? null,
+    };
+  });
+}
+
+const shiftMonth = (month, delta) =>
+  DateTime.fromISO(`${month}-01`, { zone: "UTC" }).plus({ months: delta }).toFormat("yyyy-MM");
+
+/**
  * GET /api/v1/labor/report?weekStart=YYYY-MM-DD (default: this week)
+ * GET /api/v1/labor/report?month=YYYY-MM — a calendar month
  */
 exports.getReport = async (req, res, next) => {
   try {
     const weekStart = req.query.weekStart ? String(req.query.weekStart) : null;
+    const month = req.query.month ? String(req.query.month) : null;
     const { timezone, weekStartsOn } = await getWeekSettings(req.tenantId);
-    const thisWeek = weekStartFor(new Date(), timezone, weekStartsOn);
+    const now = new Date();
+    const thisWeek = weekStartFor(now, timezone, weekStartsOn);
+    const thisMonth = DateTime.fromJSDate(now, { zone: timezone || "UTC" }).toFormat("yyyy-MM");
     const report = await loadLaborReport({
       tenantId: req.tenantId,
-      weekStart: weekStart || thisWeek,
+      weekStart: month ? null : weekStart || thisWeek,
+      month,
       includeCosts: hasPermission(req.user, "labor.costs"),
+      now,
     });
     res.json({
       ...report,
       thisWeek,
-      previous: addDaysToKey(report.weekStart, -7),
-      next: addDaysToKey(report.weekStart, 7),
+      thisMonth,
+      ...(month
+        ? { month, previous: shiftMonth(month, -1), next: shiftMonth(month, 1) }
+        : { previous: addDaysToKey(report.weekStart, -7), next: addDaysToKey(report.weekStart, 7) }),
       canSeeCosts: hasPermission(req.user, "labor.costs"),
       canManage: hasPermission(req.user, "labor.manage"),
+      canFixOvertime: hasPermission(req.user, "schedule.manage"),
+      canEnterCensus: hasPermission(req.user, "labor.census"),
+    });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, errorCode: err.errorCode });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/v1/labor/trends?weeks=12&endWeek=YYYY-MM-DD — one point per
+ * week (hours per resident day, overtime, call-outs, cost for owners/admins).
+ */
+exports.getTrends = async (req, res, next) => {
+  try {
+    const weeks = Math.min(26, Math.max(4, Number(req.query.weeks) || 12));
+    const endWeek = req.query.endWeek ? String(req.query.endWeek) : null;
+    const points = await loadLaborTrends({
+      tenantId: req.tenantId,
+      endWeek,
+      weeks,
+      includeCosts: hasPermission(req.user, "labor.costs"),
+    });
+    res.json({ weeks: points });
+  } catch (err) {
+    if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, errorCode: err.errorCode });
+    next(err);
+  }
+};
+
+/**
+ * GET /api/v1/labor/overtime/:staffId/options?weekStart=YYYY-MM-DD
+ *
+ * For someone heading into overtime: their shifts that week that haven't
+ * started, and for each, who could take it without going into overtime
+ * themselves (right role, area, shift and certifications; free; not on time
+ * off). The website then reassigns with PUT /schedules/:id { staffId }.
+ */
+exports.getOvertimeOptions = async (req, res, next) => {
+  try {
+    const { staffId } = req.params;
+    if (!mongoose.isValidObjectId(staffId)) return res.status(400).json({ message: "Invalid staffId" });
+    const { timezone, weekStartsOn } = await getWeekSettings(req.tenantId);
+    const now = new Date();
+    const weekStart = req.query.weekStart ? String(req.query.weekStart) : weekStartFor(now, timezone, weekStartsOn);
+    assertWeekStart(weekStart, weekStartsOn);
+    const { start, end } = weekBounds(weekStart, timezone);
+
+    const [prefs, person, staffList] = await Promise.all([
+      FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
+      User.findOne({ _id: staffId, tenantId: req.tenantId, loginEnabled: false }).select("name").lean(),
+      User.find({ tenantId: req.tenantId, loginEnabled: false, status: "active" })
+        .select("tenantId name role roles allowedAreas allowedShiftTypes certificationTags phoneE164 email smsConsent")
+        .lean(),
+    ]);
+    if (!person) return res.status(404).json({ message: "Staff not found" });
+    const thresholdHours = Number(prefs?.weeklyOvertimeThresholdHours) || 40;
+
+    const weekShifts = await Schedule.find({
+      tenantId: req.tenantId,
+      staffId,
+      status: { $nin: ["call_out", "no_show"] },
+      startTime: { $gte: start, $lt: end },
+    })
+      .select("coverageId role unitArea shiftType shiftTag certificationTags startTime endTime status state")
+      .sort({ startTime: 1 })
+      .lean();
+    const hoursOf = (s) => (new Date(s.endTime) - new Date(s.startTime)) / 3600000;
+    const weekHours = weekShifts.reduce((sum, s) => sum + hoursOf(s), 0);
+    const overtimeHours = Math.max(0, weekHours - thresholdHours);
+
+    const movable = weekShifts.filter((s) => new Date(s.startTime) > now && s.status === "scheduled");
+    const coverageById = new Map(
+      (await Coverage.find({ _id: { $in: movable.map((s) => s.coverageId).filter(Boolean) }, tenantId: req.tenantId }).lean())
+        .map((c) => [String(c._id), c]),
+    );
+    const facilityConfig = getCompatibleFacilityConfig(prefs);
+    const labelOf = shiftLabeler(prefs);
+
+    const shifts = [];
+    // Latest first: the end of the week is where the overtime is.
+    for (const s of movable.slice().reverse()) {
+      const cov = s.coverageId ? coverageById.get(String(s.coverageId)) : null;
+      const target = cov || {
+        _id: null,
+        role: s.role,
+        unitArea: s.unitArea,
+        shiftType: s.shiftType,
+        shiftTag: s.shiftTag,
+        requiredCertificationTags: s.certificationTags || [],
+        startTime: s.startTime,
+        endTime: s.endTime,
+      };
+      const rows = await eligibleStaffForCoverage({
+        tenantId: req.tenantId,
+        coverage: { ...target, startTime: s.startTime, endTime: s.endTime },
+        facilityConfig,
+        weekStart: start,
+        weekEnd: end,
+        overtimeThresholdMinutes: thresholdHours * 60,
+        excludeStaffIds: [staffId],
+        staffList,
+      });
+      const h = hoursOf(s);
+      shifts.push({
+        scheduleId: s._id,
+        startTime: s.startTime,
+        endTime: s.endTime,
+        role: s.role,
+        unitArea: s.unitArea || null,
+        label: s.shiftType ? labelOf(s.shiftType, s.shiftTag) : null,
+        hours: Math.round(h * 10) / 10,
+        published: s.state === "published",
+        // Overtime saved by moving just this shift.
+        saves: Math.round(Math.min(h, overtimeHours) * 10) / 10,
+        candidates: rows
+          .filter((r) => r.eligible && !r.overtimeIfAssigned)
+          .slice(0, 5)
+          .map((r) => ({
+            staffId: r.staff._id,
+            name: r.staff.name,
+            weekHours: Math.round((r.weekMinutes / 60) * 10) / 10,
+          })),
+      });
+    }
+    res.json({
+      staffId,
+      name: person.name,
+      weekStart,
+      thresholdHours,
+      weekHours: Math.round(weekHours * 10) / 10,
+      overtimeHours: Math.round(overtimeHours * 10) / 10,
+      shifts,
     });
   } catch (err) {
     if (err.statusCode) return res.status(err.statusCode).json({ message: err.message, errorCode: err.errorCode });
@@ -225,7 +463,7 @@ exports.updateSettings = async (req, res, next) => {
 };
 
 /**
- * PUT /api/v1/labor/census — residents by day (owners/admins).
+ * PUT /api/v1/labor/census — residents by day (owners, admins, schedulers).
  * Body: { entries: [{ date: "YYYY-MM-DD", residents: 42 | null }] }
  * null removes that day (it falls back to the usual number).
  */
@@ -274,3 +512,4 @@ exports.sendReportNow = async (req, res, next) => {
 };
 
 exports.loadLaborReport = loadLaborReport;
+exports.loadLaborTrends = loadLaborTrends;

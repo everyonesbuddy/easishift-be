@@ -41,9 +41,18 @@ const entryHours = (e, now) => {
   return Math.max(0, (end - new Date(e.clockInAt)) / HOUR);
 };
 
+/**
+ * `days` is the period: 7 days for a week, or every day of a month. Overtime
+ * is always counted per payroll week (`weekStarts`, the weeks overlapping the
+ * period; `schedules` and `timeEntries` must cover those whole weeks), and
+ * each overtime hour belongs to the day it's worked, so a month only counts
+ * the overtime that falls inside it.
+ */
 function buildLaborReport({
   weekStart,
   days,
+  weekStarts = null,
+  period = "week",
   timezone = "UTC",
   thresholdHours = 40,
   schedules = [],
@@ -56,9 +65,11 @@ function buildLaborReport({
   now = new Date(),
 }) {
   const zone = timezone || "UTC";
-  const weekStartAt = DateTime.fromISO(days[0], { zone }).startOf("day").toJSDate();
-  const weekEndAt = DateTime.fromISO(days[6], { zone }).plus({ days: 1 }).startOf("day").toJSDate();
+  const startOf = (key) => DateTime.fromISO(key, { zone }).startOf("day").toJSDate();
+  const weekStartAt = startOf(days[0]);
+  const weekEndAt = DateTime.fromISO(days[days.length - 1], { zone }).plus({ days: 1 }).startOf("day").toJSDate();
   const inWeek = (t) => new Date(t) >= weekStartAt && new Date(t) < weekEndAt;
+  const daySet = new Set(days);
   const staffById = new Map(staff.map((p) => [idOf(p._id), p]));
   const nameOf = (id) => staffById.get(id)?.name || "Someone";
 
@@ -66,7 +77,7 @@ function buildLaborReport({
   const worked = weekShifts.filter((s) => !NOT_WORKED.has(s.status));
   const weekEntries = timeEntries.filter((e) => inWeek(e.clockInAt));
   const entryBySchedule = new Map(
-    weekEntries.filter((e) => e.scheduleId).map((e) => [idOf(e.scheduleId), e]),
+    timeEntries.filter((e) => e.scheduleId).map((e) => [idOf(e.scheduleId), e]),
   );
 
   // ---- hours ----
@@ -144,45 +155,78 @@ function buildLaborReport({
       }
     : null;
 
-  // ---- overtime coming (projected for the week, per person) ----
+  // ---- overtime (per payroll week, per person) ----
+  // Walk each person's week in order; hours past the limit are overtime and
+  // belong to the day of the shift that crosses it (and every one after).
+  const payWeeks = (weekStarts && weekStarts.length ? weekStarts : [days[0]]).map((key) => ({
+    key,
+    from: startOf(key),
+    to: DateTime.fromISO(key, { zone }).plus({ days: 7 }).startOf("day").toJSDate(),
+  }));
+  const allShiftIds = new Set(schedules.map((s) => idOf(s._id)));
   const perPerson = new Map();
   const personRow = (id) => {
-    if (!perPerson.has(id)) perPerson.set(id, { events: [], roles: new Map() });
+    if (!perPerson.has(id)) perPerson.set(id, { weeks: new Map(), roles: new Map() });
     return perPerson.get(id);
   };
-  for (const s of worked) {
+  const weekOf = (t) => payWeeks.find((w) => new Date(t) >= w.from && new Date(t) < w.to);
+  const addEvent = (staffId, at, hours, role) => {
+    const w = weekOf(at);
+    if (!w) return;
+    const p = personRow(staffId);
+    if (!p.weeks.has(w.key)) p.weeks.set(w.key, []);
+    p.weeks.get(w.key).push({ at: new Date(at), hours, role });
+    if (role && daySet.has(dayKeyIn(at, zone))) p.roles.set(role, (p.roles.get(role) || 0) + hours);
+  };
+  for (const s of schedules) {
+    if (NOT_WORKED.has(s.status)) continue;
     const entry = entryBySchedule.get(idOf(s._id));
     let h = shiftHours(s);
     if (entry) h = entry.clockOutAt ? entryHours(entry, now) : Math.max(entryHours(entry, now), h);
-    const p = personRow(idOf(s.staffId));
-    p.events.push({ at: new Date(s.startTime), hours: h, role: s.role });
-    p.roles.set(s.role, (p.roles.get(s.role) || 0) + h);
+    addEvent(idOf(s.staffId), s.startTime, h, s.role);
   }
-  for (const e of weekEntries) {
-    if (e.scheduleId && shiftById.has(idOf(e.scheduleId))) continue;
-    personRow(idOf(e.staffId)).events.push({ at: new Date(e.clockInAt), hours: entryHours(e, now), role: null });
+  for (const e of timeEntries) {
+    if (e.scheduleId && allShiftIds.has(idOf(e.scheduleId))) continue;
+    addEvent(idOf(e.staffId), e.clockInAt, entryHours(e, now), null);
   }
   const overtimePeople = [];
   for (const [id, p] of perPerson) {
-    p.events.sort((a, b) => a.at - b.at);
-    let total = 0;
-    let crossesAt = null;
-    for (const ev of p.events) {
-      total += ev.hours;
-      if (!crossesAt && total > thresholdHours) crossesAt = ev.at;
+    let otInPeriod = 0;
+    let weeksOver = 0;
+    let most = 0;
+    let firstCross = null;
+    for (const events of p.weeks.values()) {
+      events.sort((a, b) => a.at - b.at);
+      let total = 0;
+      let crossedInPeriod = false;
+      for (const ev of events) {
+        const before = total;
+        total += ev.hours;
+        const ot = Math.max(0, total - Math.max(before, thresholdHours));
+        if (ot > 0 && daySet.has(dayKeyIn(ev.at, zone))) {
+          otInPeriod += ot;
+          crossedInPeriod = true;
+          if (!firstCross || ev.at < firstCross) firstCross = ev.at;
+        }
+      }
+      if (crossedInPeriod) {
+        weeksOver += 1;
+        most = Math.max(most, total);
+      }
     }
-    p.total = total;
-    if (total > thresholdHours) {
+    if (otInPeriod > 0.05) {
       const mainRole = [...p.roles.entries()].sort((a, b) => b[1] - a[1])[0]?.[0]
         || staffById.get(id)?.roles?.[0] || null;
       overtimePeople.push({
         staffId: id,
         name: nameOf(id),
         role: mainRole,
-        projectedHours: round1(total),
-        overtimeHours: round1(total - thresholdHours),
-        crossesOn: dayKeyIn(crossesAt, zone),
-        alreadyOver: crossesAt <= now,
+        // Week: hours that week. Month: the person's biggest week.
+        projectedHours: round1(most),
+        overtimeHours: round1(otInPeriod),
+        weeksOver,
+        crossesOn: dayKeyIn(firstCross, zone),
+        alreadyOver: firstCross <= now,
       });
     }
   }
@@ -330,6 +374,7 @@ function buildLaborReport({
   turnoverWatch.sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 
   return {
+    period,
     weekStart,
     days,
     hours: {

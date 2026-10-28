@@ -29,7 +29,9 @@ const ROUTES = [
 
   // ── Staff (contacts, no login) ────────────────────────────────────────────
   ["get", "/staff", "Staff", "List staff", { query: ["status", "q"] }],
-  ["get", "/labor/report", "Labor", "One week of labor for this building: hours scheduled/worked, hours per resident day vs budget, cost (owners/admins), overtime coming, call-outs and no-shows, open shifts, credentials expiring, turnover watch. ?weekStart=YYYY-MM-DD (default this week). Paid plans.", {}],
+  ["get", "/labor/report", "Labor", "One week or one month of labor for this building: hours staffed/needed/worked, hours per resident day vs budget, cost (owners/admins), overtime (per payroll week), call-outs and no-shows, open shifts, credentials expiring, turnover watch. ?weekStart=YYYY-MM-DD (default this week) or ?month=YYYY-MM. Paid plans.", { query: ["weekStart", "month"] }],
+  ["get", "/labor/trends", "Labor", "One point per week for trend lines: hours per resident day, overtime hours, call-outs, no-shows, staffed/needed hours, cost (owners/admins)", { query: ["weeks", "endWeek"] }],
+  ["get", "/labor/overtime/{staffId}/options", "Labor", "For someone heading into overtime: their shifts that week that haven't started, latest first, each with up to 5 qualified people who'd stay under the limit. Reassign with PUT /schedules/{id} { staffId }. Needs schedule.manage.", { query: ["weekStart"] }],
   ["post", "/labor/report/send", "Labor", "Email the Monday labor report now to owners, admins and extra recipients (owners/admins)", {}],
   ["get", "/labor/settings", "Labor", "Budget (hours per resident day), usual residents, daily resident counts, Monday email settings; pay rates for owners/admins", {}],
   ["put", "/labor/settings", "Labor", "Update pay rates (per role, per person), overtime multiplier, budget, usual residents, Monday email (owners/admins)", { body: { payRates: [{ role: "cna", hourlyRate: 18.5 }], budgetHoursPerResidentDay: 3.2, typicalCensus: 48, mondayReport: { enabled: true, extraRecipients: ["vp@example.com"] } } }],

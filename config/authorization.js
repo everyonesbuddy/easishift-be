@@ -23,6 +23,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "facility_preferences.view",
     "facility_preferences.manage",
     "labor.view",
+    "labor.census",
   ],
   // Read-only access to the schedule (e.g. a DON). Free on every plan.
   viewer: [
@@ -54,6 +55,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "labor.view",
     "labor.costs",
     "labor.manage",
+    "labor.census",
   ],
   owner: [
     "schedule.view",
@@ -75,6 +77,7 @@ const SYSTEM_ROLE_PERMISSIONS = Object.freeze({
     "labor.view",
     "labor.costs",
     "labor.manage",
+    "labor.census",
   ],
 });
 

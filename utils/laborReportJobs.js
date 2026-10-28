@@ -36,10 +36,14 @@ function buildLaborEmail({ facilityName, last, current }) {
     items.length ? `<ul style="margin:0;padding-left:18px">${items.map((i) => `<li style="margin:4px 0">${i}</li>`).join("")}</ul>` : `<p style="margin:0;color:#667085">None.</p>`;
 
   const lastRows = [
-    row("Hours scheduled", hrs(last.hours.scheduled)),
+    row("Hours staffed", hrs(last.hours.scheduled),
+      last.hours.needed ? `of ${hrs(last.hours.needed)} needed${last.hours.open ? `, ${hrs(last.hours.open)} unfilled` : ""}` : ""),
     last.hours.worked !== null ? row("Hours worked (time clock)", hrs(last.hours.worked)) : "",
     last.budget ? row("Hours per resident day", last.budget.scheduledPPD,
-      last.budget.targetPPD !== null ? `target ${last.budget.targetPPD} · ${last.budget.varianceHours >= 0 ? "+" : ""}${last.budget.varianceHours} h vs budget` : "") : "",
+      `${hrs(last.hours.scheduled)} ÷ ${last.budget.residentDays.toLocaleString("en-US")} resident days` +
+      (last.budget.targetPPD !== null
+        ? `; target ${last.budget.targetPPD} = ${hrs(last.budget.budgetHours)} (${last.budget.varianceHours >= 0 ? "+" : ""}${last.budget.varianceHours} h)`
+        : "")) : "",
     last.costs && last.costs.scheduled !== null ? row("Labor cost (scheduled)", money(last.costs.scheduled),
       last.costs.overtimePremium ? `incl. ${money(last.costs.overtimePremium)} overtime premium` : "") : "",
     row("Overtime", hrs(last.overtime.totalOvertimeHours), `${last.overtime.people.length} people over ${last.overtime.thresholdHours} h`),

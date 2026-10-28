@@ -97,6 +97,19 @@ function buildLaborReport({
     if (day) day.worked += h;
   }
 
+  // ---- hours needed (every spot in Weekly Needs / one-off needs) ----
+  // Staffed hours only count spots with someone in them; "needed" counts
+  // every spot, so leadership can see how much of a gap is open shifts.
+  let neededHours = 0;
+  let openHours = 0;
+  for (const c of coverage) {
+    const need = Number(c.requiredCount) || 0;
+    const got = Math.min(need, Number(c.assignedCount) || 0);
+    const len = c.startTime && c.endTime ? shiftHours(c) : 0;
+    neededHours += need * len;
+    openHours += (need - got) * len;
+  }
+
   // ---- residents and budget (hours per resident day) ----
   const censusByDay = new Map((settings?.census || []).map((c) => [c.date, Number(c.residents)]));
   const typical = Number.isFinite(settings?.typicalCensus) ? settings.typicalCensus : null;
@@ -119,7 +132,11 @@ function buildLaborReport({
     ? {
         residentDays,
         censusSource: dailyCounted === 7 ? "daily" : dailyCounted ? "mixed" : "typical",
+        residentsPerDay: round1(residentDays / days.filter((d) => byDay.get(d).residents !== null && byDay.get(d).residents !== undefined).length),
+        countedDays: days.filter((d) => byDay.get(d).residents !== null && byDay.get(d).residents !== undefined).length,
         scheduledPPD: round2(hoursOnCountedDays / residentDays),
+        // If every open spot were filled.
+        neededPPD: neededHours ? round2((hoursOnCountedDays + openHours) / residentDays) : null,
         workedPPD: workedOnCountedDays ? round2(workedOnCountedDays / residentDays) : null,
         targetPPD: target,
         budgetHours: target !== null ? round1(target * residentDays) : null,
@@ -317,6 +334,9 @@ function buildLaborReport({
     days,
     hours: {
       scheduled: round1(scheduledTotal),
+      // Every spot in the needs (filled or not), and the part still unfilled.
+      needed: round1(neededHours),
+      open: round1(openHours),
       worked: weekEntries.length ? round1(workedTotal) : null,
       timeClockUsed: weekEntries.length > 0,
       byRole: [...byRole.values()]

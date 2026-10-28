@@ -164,6 +164,8 @@ test("Monday email reads well and escapes names", () => {
   const html = buildLaborEmail({ facilityName: "Palm & Grove", last, current });
   assert.match(html, /Palm &amp; Grove: labor for Oct 19 – Oct 25/);
   assert.match(html, /Hours per resident day/);
+  assert.match(html, /Hours staffed/);
+  assert.match(html, /÷ 280 resident days/);
   assert.match(html, /\$1,400/); // 60h*20 + 20h OT*20*0.5
   assert.match(html, /&lt;Maria&gt;/);
   assert.match(html, /goes over Thu Oct 22/);
@@ -249,4 +251,20 @@ test("PUT /labor/settings validates and saves only what was sent", async () => {
     LaborSettings.findOneAndUpdate = orig.fu;
     User.find = orig.find;
   }
+});
+
+test("needed vs staffed: open spots show as hours still needed; PPD if all filled", () => {
+  const r = base({
+    schedules: DAYS.map((d) => shift("maria", d, 7, 8)), // 56h staffed
+    coverage: DAYS.map((d) => ({ requiredCount: 2, assignedCount: 1, startTime: at(d, 7), endTime: at(d, 15) })), // 112h needed
+    settings: { typicalCensus: 10, budgetHoursPerResidentDay: 2 },
+  });
+  assert.equal(r.hours.scheduled, 56);
+  assert.equal(r.hours.needed, 112);
+  assert.equal(r.hours.open, 56);
+  assert.equal(r.budget.residentsPerDay, 10);
+  assert.equal(r.budget.countedDays, 7);
+  assert.equal(r.budget.scheduledPPD, 0.8); // 56 / 70
+  assert.equal(r.budget.neededPPD, 1.6); // (56 + 56) / 70
+  assert.equal(r.budget.budgetHours, 140);
 });

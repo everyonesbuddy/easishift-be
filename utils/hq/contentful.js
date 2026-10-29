@@ -6,7 +6,8 @@
  *   Settings → API keys → Add API key → "Content Delivery API - access
  *   token"), CONTENTFUL_ENVIRONMENT (default "master").
  *
- * Content type id: blogPost. Fields: title (Short text), slug (Short text,
+ * Content type id: blogPost by default; set CONTENTFUL_CONTENT_TYPE if yours
+ * is different (e.g. wisershiftsBlogPost). Fields: title (Short text), slug (Short text,
  * unique), excerpt (Long text), body (Rich text), coverImage (Media),
  * audience (Short text, list: schedulers / directors / operators),
  * publishDate (Date), author (Short text), seoDescription (Short text).
@@ -19,7 +20,7 @@ const get = (params) =>
   axios
     .get(
       `https://cdn.contentful.com/spaces/${process.env.CONTENTFUL_SPACE_ID}/environments/${process.env.CONTENTFUL_ENVIRONMENT || "master"}/entries`,
-      { params: { content_type: "blogPost", ...params }, headers: { Authorization: `Bearer ${process.env.CONTENTFUL_DELIVERY_TOKEN}` }, timeout: 15000 },
+      { params: { content_type: process.env.CONTENTFUL_CONTENT_TYPE || "blogPost", ...params }, headers: { Authorization: `Bearer ${process.env.CONTENTFUL_DELIVERY_TOKEN}` }, timeout: 15000 },
     )
     .then((r) => r.data);
 

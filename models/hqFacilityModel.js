@@ -36,6 +36,8 @@ const hqFacilitySchema = new mongoose.Schema(
     currentTool: { type: String, default: "" },
     biggestPain: { type: String, default: "" },
     notes: { type: String, default: "" },
+    // What the spreadsheet said at the last import (re-imports only write fields the sheet changed).
+    imported: { type: Object, default: null },
     tenantId: { type: mongoose.Schema.Types.ObjectId, ref: "Tenant", default: null },
     source: { type: String, enum: ["crm", "signup", "manual"], default: "manual" },
   },

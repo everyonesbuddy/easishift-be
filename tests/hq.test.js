@@ -249,3 +249,31 @@ test("HQ and workspace sessions never open each other", async () => {
   const hqToken = signHqToken({ _id: "66f000000000000000000002" });
   assert.deepEqual(await run(workspaceAuth, hqToken), { status: 401, passed: false });
 });
+
+test("re-import only writes what the sheet changed, so HQ edits survive", () => {
+  const { changedFields } = require("../utils/hq/importCsv");
+  const sheetBefore = { name: "Maple", stage: "Trying", nextDate: "2026-11-01" };
+  // First import: everything.
+  assert.deepEqual(changedFields(sheetBefore, null), sheetBefore);
+  // Sheet unchanged (HQ moved the stage meanwhile): nothing written.
+  assert.deepEqual(changedFields({ ...sheetBefore }, sheetBefore), {});
+  // Sheet changed the next date only: only that is written.
+  assert.deepEqual(changedFields({ ...sheetBefore, nextDate: "2026-11-05" }, sheetBefore), { nextDate: "2026-11-05" });
+});
+
+test("Google Sheet tabs: kind guessed from the tab name; links and rows become CSV", () => {
+  const { guessTab, cleanSources } = require("../utils/hq/sheetSync");
+  const { rowsToCsv } = require("../utils/hq/importCsv");
+  const { spreadsheetIdFrom } = require("../utils/hq/google");
+  assert.deepEqual(guessTab("2 Next Up"), { kind: "facilities", tier: 2 });
+  assert.equal(guessTab("Lead Bank").kind, "contacts");
+  assert.equal(guessTab("Outreach").kind, "activities");
+  assert.equal(guessTab("Dashboard").kind, "");
+  assert.equal(spreadsheetIdFrom("https://docs.google.com/spreadsheets/d/1btxuNDMsvSXnBuYc2qM_tP8HOq3bLr_tL5Qe7c147v0/edit?usp=sharing"), "1btxuNDMsvSXnBuYc2qM_tP8HOq3bLr_tL5Qe7c147v0");
+  assert.equal(spreadsheetIdFrom("not a sheet"), "");
+  assert.deepEqual(
+    cleanSources([{ url: "https://docs.google.com/spreadsheets/d/1btxuNDMsvSXnBuYc2qM_tP8HOq3bLr_tL5Qe7c147v0/edit", tab: "Lead Bank", kind: "contacts" }, { spreadsheetId: "x", tab: "A", kind: "nope" }]).length,
+    1,
+  );
+  assert.equal(rowsToCsv([["Lead ID", "Notes"], ["L-1", 'said "hi", call back']]), 'Lead ID,Notes\nL-1,"said ""hi"", call back"');
+});

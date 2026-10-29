@@ -6,6 +6,7 @@ const morgan = require("morgan");
 const compression = require("compression");
 const cron = require("node-cron");
 const hqKlaviyo = require("./utils/hq/klaviyo");
+const hqSheets = require("./utils/hq/sheetSync");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
@@ -157,6 +158,18 @@ cron.schedule("40 * * * *", async () => {
     if (!r.ok) console.error("🚫 HQ Klaviyo sync:", r.error);
   } catch (err) {
     console.error("🚫 HQ Klaviyo sync failed:", err);
+  }
+});
+
+// ✅ Cron job: HQ ← Google Sheets (every 2 hours at :50; no-op until tabs are saved in HQ)
+cron.schedule("50 */2 * * *", async () => {
+  try {
+    const { sources } = await hqSheets.getConfig();
+    if (!sources.length) return;
+    const r = await hqSheets.syncSheets();
+    if (!r.ok) console.error("🚫 HQ sheet sync:", r.error || "some tabs failed");
+  } catch (err) {
+    console.error("🚫 HQ sheet sync failed:", err);
   }
 });
 

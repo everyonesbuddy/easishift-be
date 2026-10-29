@@ -241,20 +241,44 @@ function normalize(kind, text, { defaultTier = null } = {}) {
 
 const norm = (s) => String(s || "").toLowerCase().replace(/[^a-z0-9]/g, "");
 
+const same = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+
+/**
+ * Which fields to write when re-importing (pure). Each row remembers what the
+ * spreadsheet said last time (`imported`). A field is written only if the
+ * spreadsheet changed it since then, so edits made in HQ (stage, next date,
+ * notes…) aren't overwritten by an unchanged sheet.
+ */
+function changedFields(row, imported) {
+  if (!imported) return { ...row };
+  const out = {};
+  for (const [k, v] of Object.entries(row)) if (!same(v, imported[k])) out[k] = v;
+  return out;
+}
+
+async function upsertMerged(Model, filter, row, extra = {}) {
+  const existing = await Model.findOne(filter).select("_id imported").lean();
+  if (!existing) {
+    await Model.create({ ...row, ...extra, imported: row });
+    return "created";
+  }
+  const set = changedFields(row, existing.imported);
+  await Model.updateOne({ _id: existing._id }, { $set: { ...set, imported: row } });
+  return Object.keys(set).length ? "updated" : "unchanged";
+}
+
 /** Writes normalized rows. Returns { created, updated, skipped }. */
 async function apply(kind, rows, { by = "" } = {}) {
   const HqFacility = require("../../models/hqFacilityModel");
   const HqContact = require("../../models/hqContactModel");
   const HqActivity = require("../../models/hqActivityModel");
   const HqLinkedinPost = require("../../models/hqLinkedinPostModel");
-  const result = { created: 0, updated: 0, skipped: 0 };
+  const result = { created: 0, updated: 0, unchanged: 0, skipped: 0 };
 
   if (kind === "facilities") {
     for (const r of rows) {
       const filter = r.ref ? { ref: r.ref } : { name: r.name, city: r.city, state: r.state };
-      const res = await HqFacility.updateOne(filter, { $set: { ...r, source: "crm" } }, { upsert: true });
-      if (res.upsertedCount) result.created += 1;
-      else result.updated += 1;
+      result[await upsertMerged(HqFacility, filter, r, { source: "crm" })] += 1;
     }
     return result;
   }
@@ -280,11 +304,9 @@ async function apply(kind, rows, { by = "" } = {}) {
         });
         byName.set(norm(r.facilityName), facility);
       }
-      const doc = { ...contact, facilityId: facility?._id || null, source: "crm" };
+      const doc = { ...contact, facilityId: facility?._id ? String(facility._id) : null };
       const filter = r.ref ? { ref: r.ref } : r.email ? { email: r.email } : { name: r.name, group: r.group };
-      const res = await HqContact.updateOne(filter, { $set: doc }, { upsert: true });
-      if (res.upsertedCount) result.created += 1;
-      else result.updated += 1;
+      result[await upsertMerged(HqContact, filter, doc, { source: "crm" })] += 1;
     }
     return result;
   }
@@ -327,4 +349,14 @@ async function apply(kind, rows, { by = "" } = {}) {
   return result;
 }
 
-module.exports = { KINDS, normalize, apply, readCsv, toDate };
+/**
+ * Rows from a spreadsheet API (array of arrays) → the same CSV text the
+ * importer reads, so sheets and uploaded files go through one path.
+ */
+const rowsToCsv = (rows) =>
+  rows.map((r) => r.map((c) => {
+    const v = c === null || c === undefined ? "" : String(c);
+    return /[",\r\n]/.test(v) ? `"${v.replace(/"/g, '""')}"` : v;
+  }).join(",")).join("\n");
+
+module.exports = { KINDS, normalize, apply, readCsv, toDate, changedFields, rowsToCsv };

@@ -9,6 +9,9 @@
  *   Console API" in that Cloud project.
  * TODO(keys): GA4_PROPERTY_ID  numeric property id (GA → Admin → Property
  *   details). Add the service account's email as a Viewer on the property.
+ * Google Sheets (CRM sync): enable "Google Sheets API" in the same Cloud
+ *   project and share each spreadsheet with the service account's email
+ *   (Viewer is enough). No extra key.
  * TODO(keys): GSC_SITE_URL  exactly as Search Console shows it, e.g.
  *   "sc-domain:wisershifts.com" or "https://www.wisershifts.com/". Add the
  *   service account's email as a user (Restricted is enough) on the property.
@@ -19,6 +22,7 @@ const axios = require("axios");
 const SCOPES = {
   ga: "https://www.googleapis.com/auth/analytics.readonly",
   gsc: "https://www.googleapis.com/auth/webmasters.readonly",
+  sheets: "https://www.googleapis.com/auth/spreadsheets.readonly",
 };
 
 const credentials = () => {
@@ -32,6 +36,50 @@ const credentials = () => {
     return null;
   }
 };
+
+const sheetsConfigured = () => Boolean(credentials());
+const serviceAccountEmail = () => credentials()?.email || "";
+
+/** "https://docs.google.com/spreadsheets/d/<id>/edit…" or a bare id → id. */
+const spreadsheetIdFrom = (value = "") => {
+  const s = String(value).trim();
+  const m = s.match(/\/spreadsheets\/d\/([a-zA-Z0-9_-]{20,})/);
+  if (m) return m[1];
+  return /^[a-zA-Z0-9_-]{20,}$/.test(s) ? s : "";
+};
+
+async function sheetTabs(spreadsheetId) {
+  const token = await accessToken(SCOPES.sheets);
+  const res = await axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}`, {
+    params: { fields: "properties.title,sheets.properties.title" },
+    headers: { Authorization: `Bearer ${token}` },
+    timeout: 20000,
+  });
+  return { title: res.data.properties?.title || "", tabs: (res.data.sheets || []).map((x) => x.properties.title) };
+}
+
+/**
+ * One tab as rows of strings: what you see in each cell, except link cells
+ * (=HYPERLINK) keep their formula so the URL isn't lost.
+ */
+async function sheetRows(spreadsheetId, tab) {
+  const token = await accessToken(SCOPES.sheets);
+  const range = `'${String(tab).replace(/'/g, "''")}'`;
+  const get = (valueRenderOption) =>
+    axios.get(`https://sheets.googleapis.com/v4/spreadsheets/${spreadsheetId}/values/${encodeURIComponent(range)}`, {
+      params: { valueRenderOption, dateTimeRenderOption: "FORMATTED_STRING" },
+      headers: { Authorization: `Bearer ${token}` },
+      timeout: 30000,
+    });
+  const [shown, formulas] = await Promise.all([get("FORMATTED_VALUE"), get("FORMULA")]);
+  const f = formulas.data.values || [];
+  return (shown.data.values || []).map((row, i) =>
+    row.map((cell, j) => {
+      const raw = f[i]?.[j];
+      return typeof raw === "string" && /^=\s*HYPERLINK\(/i.test(raw) ? raw : cell;
+    }),
+  );
+}
 
 const gaConfigured = () => Boolean(credentials() && process.env.GA4_PROPERTY_ID);
 const gscConfigured = () => Boolean(credentials() && process.env.GSC_SITE_URL);
@@ -124,4 +172,16 @@ async function searchSummary({ days = 28 } = {}) {
   return { days, from: ymd(start), to: ymd(end), totals: totals[0] || { clicks: 0, impressions: 0 }, queries, pages, byDay };
 }
 
-module.exports = { gaConfigured, gscConfigured, webSummary, searchSummary, signJwt, errText };
+module.exports = {
+  gaConfigured,
+  gscConfigured,
+  sheetsConfigured,
+  serviceAccountEmail,
+  spreadsheetIdFrom,
+  sheetTabs,
+  sheetRows,
+  webSummary,
+  searchSummary,
+  signJwt,
+  errText,
+};

@@ -92,6 +92,7 @@ const CONNECTIONS = () => [
   { key: "klaviyo", name: "Klaviyo", configured: klaviyo.isConfigured(), env: ["KLAVIYO_PRIVATE_KEY", "KLAVIYO_LIST_ID"], what: "Email clicks per person (real vs scanner), calculator sign-ups" },
   { key: "ga4", name: "Google Analytics", configured: google.gaConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON", "GA4_PROPERTY_ID"], what: "Website visitors, top pages, sources, sign-ups" },
   { key: "gsc", name: "Search Console", configured: google.gscConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON", "GSC_SITE_URL"], what: "Google searches that found us, clicks, positions" },
+  { key: "sheets", name: "Google Sheets", configured: google.sheetsConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON"], what: "Your CRM and call list, synced every 2 hours (set up below)" },
   { key: "youtube", name: "YouTube", configured: youtube.isConfigured(), env: ["YOUTUBE_API_KEY", "YOUTUBE_CHANNEL_ID"], what: "Subscribers, views per video" },
   { key: "contentful", name: "Contentful", configured: contentful.isConfigured(), env: ["CONTENTFUL_SPACE_ID", "CONTENTFUL_DELIVERY_TOKEN", "CONTENTFUL_ENVIRONMENT"], what: "Blog posts" },
   { key: "linkedin", name: "LinkedIn", configured: true, env: [], what: "Upload your LinkedIn analytics export (no API for personal posts)" },
@@ -229,7 +230,7 @@ exports.listFacilities = async (req, res, next) => {
     if (customers === "0") filter.tenantId = null;
     const sorts = { tier: { tier: 1, score: -1, name: 1 }, name: { name: 1 }, next: { nextDate: 1 }, recent: { updatedAt: -1 } };
     const [rows, total, stages, states] = await Promise.all([
-      HqFacility.find(filter).sort(sorts[sort] || sorts.tier).skip((page - 1) * limit).limit(limit).lean(),
+      HqFacility.find(filter).select("-imported").sort(sorts[sort] || sorts.tier).skip((page - 1) * limit).limit(limit).lean(),
       HqFacility.countDocuments(filter),
       HqFacility.distinct("stage"),
       HqFacility.distinct("state"),
@@ -262,10 +263,10 @@ exports.listFacilities = async (req, res, next) => {
 exports.getFacility = async (req, res, next) => {
   try {
     if (!isId(req.params.id)) return res.status(404).json({ message: "Not found" });
-    const facility = await HqFacility.findById(req.params.id).lean();
+    const facility = await HqFacility.findById(req.params.id).select("-imported").lean();
     if (!facility) return res.status(404).json({ message: "Not found" });
     const [contacts, activities, workspace, sameGroup] = await Promise.all([
-      HqContact.find({ facilityId: facility._id }).sort({ role: 1, name: 1 }).lean(),
+      HqContact.find({ facilityId: facility._id }).select("-imported").sort({ role: 1, name: 1 }).lean(),
       HqActivity.find({ facilityId: facility._id }).sort({ at: -1 }).limit(100).lean(),
       facility.tenantId ? loadWorkspaces({ tenantIds: [facility.tenantId] }).then((w) => w[0] || null) : null,
       facility.group
@@ -334,7 +335,7 @@ exports.listContacts = async (req, res, next) => {
       filter.email = { $in: clickers.map((c) => c.email) };
     }
     const [rows, total] = await Promise.all([
-      HqContact.find(filter).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+      HqContact.find(filter).select("-imported").sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
       HqContact.countDocuments(filter),
     ]);
     const signals = await signalsFor(rows.map((r) => r.email));

@@ -10,6 +10,7 @@ const rateLimit = require("express-rate-limit");
 const { hqAuth } = require("../middleware/hqAuthMiddleware");
 const hq = require("../controllers/hqController");
 const hqAuthController = require("../controllers/hqAuthController");
+const sheets = require("../controllers/hqSheetsController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
@@ -47,6 +48,11 @@ router.get("/activities", hq.listActivities);
 router.post("/activities", hq.createActivity);
 
 router.post("/import/:kind", upload.single("file"), hq.importCsv);
+
+router.get("/sheets", sheets.getSheets);
+router.post("/sheets/tabs", sheets.listTabs);
+router.put("/sheets", sheets.saveSheets);
+router.post("/sheets/sync", sheets.syncSheets);
 
 router.get("/signups", hq.getSignups);
 router.get("/content", hq.getContent);

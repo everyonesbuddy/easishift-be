@@ -41,6 +41,10 @@ const swaggerUi = require("swagger-ui-express");
 const buildOpenApiSpec = require("./docs/openapiSpec");
 
 const app = express();
+// Heroku puts one proxy in front of us: without this every request looks
+// like it came from the proxy, and per-visitor rate limits lump everyone
+// together.
+app.set("trust proxy", 1);
 const openApiSpec = buildOpenApiSpec();
 
 // ✅ Dev logging

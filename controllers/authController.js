@@ -1,4 +1,5 @@
 const jwt = require("jsonwebtoken");
+const { checkSignup } = require("../utils/signupGuard");
 const { normalizeViewFilters } = require("../utils/viewFilters");
 const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
@@ -96,6 +97,11 @@ const parseBoolean = (value) => {
 exports.registerTenant = async (req, res, next) => {
   try {
     const body = req.body || {};
+    const guard = checkSignup(body);
+    if (!guard.ok) {
+      console.warn(`Signup blocked (${guard.reason}) from ${req.ip}`);
+      return res.status(400).json({ message: guard.message, errorCode: "SIGNUP_BLOCKED" });
+    }
     const isLegacyShape = !body.facilityName && body.adminName;
     const personName = String(
       (isLegacyShape ? body.adminName : body.name) || "",

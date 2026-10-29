@@ -1,7 +1,6 @@
 const jwt = require("jsonwebtoken");
 const { escapeHtml } = require("../utils/notify");
 const { checkSignup } = require("../utils/signupGuard");
-const { isPlatformAdmin } = require("../config/platformAdmin");
 const { normalizeViewFilters } = require("../utils/viewFilters");
 const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
@@ -71,8 +70,6 @@ const getUserResponse = (user) => {
   const response = user.toObject ? user.toObject() : { ...user };
   response.roles = getUserRoles(user);
   response.permissions = getEffectivePermissions(user);
-  // WiserShifts' own team: shows the HQ link in the app (the API checks again).
-  response.platformAdmin = isPlatformAdmin(user);
   return response;
 };
 
@@ -167,14 +164,6 @@ exports.registerTenant = async (req, res, next) => {
       return res.status(400).json({
         message: `Invalid timezone '${timezone}'`,
         errorCode: "INVALID_TIMEZONE",
-      });
-    }
-
-    // Our own team's emails can only belong to the accounts we made.
-    if (isPlatformAdmin({ email })) {
-      return res.status(409).json({
-        message: "An account with this email already exists. Log in instead.",
-        errorCode: "EMAIL_IN_USE",
       });
     }
 

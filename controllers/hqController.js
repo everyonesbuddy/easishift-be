@@ -1,6 +1,6 @@
 /**
- * HQ: WiserShifts' own command center (founders only; see
- * middleware/platformAdminMiddleware). Facilities we market to, the people
+ * HQ: WiserShifts' own command center (founders only; HQ accounts and
+ * sign-in are separate from workspaces, see middleware/hqAuthMiddleware). Facilities we market to, the people
  * there, who signed up and how they're doing, what to do next, and the
  * marketing numbers from Klaviyo, GA4, Search Console, YouTube, LinkedIn
  * and the Contentful blog.
@@ -27,7 +27,7 @@ const contentful = require("../utils/hq/contentful");
 const HOUR = 60 * 60 * 1000;
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const escapeRe = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-const by = (req) => req.user?.name || req.user?.email || "";
+const by = (req) => req.hqUser?.name || req.hqUser?.email || "";
 const errText = (err) =>
   err?.response?.data?.error?.message || err?.response?.data?.errors?.[0]?.detail || err?.response?.data?.message || err?.message || "Failed";
 
@@ -86,7 +86,7 @@ async function cached(key, ttlMs, refresh, load) {
 }
 
 // ── Access / connections ────────────────────────────────────────────────────
-exports.getAccess = (req, res) => res.json({ ok: true, email: req.user.email });
+exports.getAccess = (req, res) => res.json({ ok: true, email: req.hqUser.email });
 
 const CONNECTIONS = () => [
   { key: "klaviyo", name: "Klaviyo", configured: klaviyo.isConfigured(), env: ["KLAVIYO_PRIVATE_KEY", "KLAVIYO_LIST_ID"], what: "Email clicks per person (real vs scanner), calculator sign-ups" },

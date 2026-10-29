@@ -1,17 +1,31 @@
 /**
- * HQ command center: WiserShifts' own team only (PLATFORM_ADMIN_EMAILS).
- * Everyone else gets 404, so the area doesn't advertise itself.
+ * HQ command center: WiserShifts' own team only. HQ has its own accounts and
+ * sign-in (HqUser), separate from every workspace; workspace logins can't
+ * open anything here.
  */
 const express = require("express");
 const multer = require("multer");
 const router = express.Router();
-const auth = require("../middleware/authMiddleware");
-const platformAdmin = require("../middleware/platformAdminMiddleware");
+const rateLimit = require("express-rate-limit");
+const { hqAuth } = require("../middleware/hqAuthMiddleware");
 const hq = require("../controllers/hqController");
+const hqAuthController = require("../controllers/hqAuthController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
-router.use(auth, platformAdmin);
+// Sign-in (public, limited per visitor; accounts also lock after 8 wrong tries).
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 20,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many tries. Wait a few minutes and try again." },
+});
+router.post("/auth/login", loginLimiter, hqAuthController.login);
+
+router.use(hqAuth);
+router.get("/auth/me", hqAuthController.me);
+router.post("/auth/change-password", hqAuthController.changePassword);
 
 router.get("/access", hq.getAccess);
 router.get("/overview", hq.getOverview);

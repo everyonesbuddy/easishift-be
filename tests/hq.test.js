@@ -10,7 +10,6 @@ const { matchFacility } = require("../utils/hq/linkSignups");
 const { summarizeWorkspace } = require("../utils/hq/productSignals");
 const { isBotClick } = require("../utils/hq/klaviyo");
 const { signJwt } = require("../utils/hq/google");
-const { isPlatformAdmin } = require("../config/platformAdmin");
 
 const DAY = 86400000;
 const NOW = new Date("2026-10-29T15:00:00Z");
@@ -35,17 +34,6 @@ test("company domain from websites and emails, not free mail", () => {
   assert.equal(domainOf("mbeggs@edenwald.org"), "edenwald.org");
   assert.equal(domainOf("someone@gmail.com"), "");
   assert.equal(domainOf("not a url"), "");
-});
-
-test("platform admins come from PLATFORM_ADMIN_EMAILS", () => {
-  const prev = process.env.PLATFORM_ADMIN_EMAILS;
-  process.env.PLATFORM_ADMIN_EMAILS = " Joe@WiserShifts.com , co@wisershifts.com";
-  assert.equal(isPlatformAdmin({ email: "joe@wisershifts.com" }), true);
-  assert.equal(isPlatformAdmin({ email: "someone@else.com" }), false);
-  assert.equal(isPlatformAdmin(null), false);
-  process.env.PLATFORM_ADMIN_EMAILS = "";
-  assert.equal(isPlatformAdmin({ email: "joe@wisershifts.com" }), false);
-  process.env.PLATFORM_ADMIN_EMAILS = prev || "";
 });
 
 test("Klaviyo scanner clicks are told apart from real clicks", () => {
@@ -230,20 +218,6 @@ test("plays: due call-list follow-ups, not dead ones; done plays stay hidden", (
   assert.equal(buildPlays({ facilities, doneKeys: new Set([plays[0].key]), now: NOW }).length, 0);
 });
 
-test("HQ guard: 404 for anyone not on the list", () => {
-  const guard = require("../middleware/platformAdminMiddleware");
-  process.env.PLATFORM_ADMIN_EMAILS = "joe@wisershifts.com";
-  let status = null;
-  let nexted = false;
-  const res = { status: (s) => ((status = s), { json: () => {} }) };
-  guard({ user: { email: "owner@facility.com" } }, res, () => (nexted = true));
-  assert.equal(status, 404);
-  assert.equal(nexted, false);
-  guard({ user: { email: "JOE@wisershifts.com" } }, res, () => (nexted = true));
-  assert.equal(nexted, true);
-  process.env.PLATFORM_ADMIN_EMAILS = "";
-});
-
 test("import: typo dates are dropped; RVP is regional; merged title rows are skipped", () => {
   const { toDate } = require("../utils/hq/importCsv");
   assert.equal(toDate("90/25/2026"), null);
@@ -254,4 +228,24 @@ test("import: typo dates are dropped; RVP is regional; merged title rows are ski
   const { rows } = normalize("facilities", csv);
   assert.equal(rows[0].name, "Annandale");
   assert.equal(rows[0].leadRef, "L-0052");
+});
+
+test("HQ and workspace sessions never open each other", async () => {
+  process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
+  const jwt = require("jsonwebtoken");
+  const { hqAuth, signHqToken } = require("../middleware/hqAuthMiddleware");
+  const run = async (mw, token) => {
+    let status = null;
+    let passed = false;
+    const res = { status: (s) => ((status = s), { json: () => {} }) };
+    await mw({ headers: { authorization: `Bearer ${token}` }, cookies: {} }, res, () => (passed = true));
+    return { status, passed };
+  };
+  // A workspace token is refused by HQ (no HQ marker/audience).
+  const workspaceToken = jwt.sign({ id: "66f000000000000000000001", tenantId: "t" }, process.env.JWT_SECRET);
+  assert.deepEqual(await run(hqAuth, workspaceToken), { status: 401, passed: false });
+  // An HQ token is refused by workspace auth before any lookup.
+  const workspaceAuth = require("../middleware/authMiddleware");
+  const hqToken = signHqToken({ _id: "66f000000000000000000002" });
+  assert.deepEqual(await run(workspaceAuth, hqToken), { status: 401, passed: false });
 });

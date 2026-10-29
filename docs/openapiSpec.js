@@ -180,7 +180,10 @@ const ROUTES = [
   ["post", "/marketing/time-clock-accuracy/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
   ["post", "/marketing/lead", "Marketing", "Save an email from a calculator, the blog or newsletter form (HQ + Klaviyo; joins the newsletter list only with newsletter: true)", { auth: "none", body: { email: "maria@example.com", source: "hours-per-resident-day", company: "Sunrise Care", summary: "3.4 hours per resident day", newsletter: true, utm: { utm_source: "linkedin" } } }],
 
-  // ── HQ (WiserShifts' own team only: PLATFORM_ADMIN_EMAILS; 404 for everyone else) ──
+  // ── HQ (WiserShifts' own team; separate HQ accounts and sign-in, Bearer HQ token) ──
+  ["post", "/hq/auth/login", "HQ", "Sign in to HQ (HQ accounts only; workspace logins don't work here). Returns an HQ token for the Authorization header.", { auth: "none", body: { email: "joseph@wisershifts.com", password: "..." } }],
+  ["get", "/hq/auth/me", "HQ", "The signed-in HQ account"],
+  ["post", "/hq/auth/change-password", "HQ", "Change your HQ password (12+ characters)", { body: { currentPassword: "...", newPassword: "..." } }],
   ["get", "/hq/access", "HQ", "Whether you can open HQ"],
   ["get", "/hq/overview", "HQ", "Counts: facilities, people by role, signups, email clicks, leads, top plays, connections"],
   ["get", "/hq/connections", "HQ", "Each outside source: connected or not, which env vars it needs, last sync, last error"],

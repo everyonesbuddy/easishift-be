@@ -178,6 +178,20 @@ const tenantSchema = new mongoose.Schema(
     /**
      * WHITE-LABEL BRANDING (logo + colors used in emails)
      */
+    /**
+     * SIGNUP ANSWERS (for WiserShifts' own marketing; optional)
+     * Who signed up, how they heard about us, and the first page/UTMs that
+     * brought them (from the website).
+     */
+    signupRole: {
+      type: String,
+      enum: ["scheduler", "don", "executive_director", "administrator", "regional", "owner", "other", null],
+      default: null,
+    },
+    heardAbout: { type: String, trim: true, default: null },
+    heardAboutOther: { type: String, trim: true, maxlength: 120, default: null },
+    signupSource: { type: Object, default: null },
+
     branding: {
       displayName: { type: String, trim: true, maxlength: 80, default: null },
       primaryColor: {

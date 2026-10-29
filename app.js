@@ -5,6 +5,7 @@ const bodyParser = require("body-parser");
 const morgan = require("morgan");
 const compression = require("compression");
 const cron = require("node-cron");
+const hqKlaviyo = require("./utils/hq/klaviyo");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
@@ -34,6 +35,7 @@ const staffLinkRoutes = require("./routes/staffLinkRoutes");
 const staffLinkRequestRoutes = require("./routes/staffLinkRequestRoutes");
 const smsRoutes = require("./routes/smsRoutes");
 const marketingRoutes = require("./routes/marketingRoutes");
+const hqRoutes = require("./routes/hqRoutes");
 const nlRoutes = require("./routes/nlRoutes");
 const exportRoutes = require("./routes/exportRoutes");
 const publicRoutes = require("./routes/publicRoutes");
@@ -147,6 +149,17 @@ cron.schedule("5 * * * *", async () => {
   }
 });
 
+// ✅ Cron job: HQ email signals from Klaviyo (hourly at :40; no-op without KLAVIYO_PRIVATE_KEY)
+cron.schedule("40 * * * *", async () => {
+  if (!hqKlaviyo.isConfigured()) return;
+  try {
+    const r = await hqKlaviyo.syncEmailSignals();
+    if (!r.ok) console.error("🚫 HQ Klaviyo sync:", r.error);
+  } catch (err) {
+    console.error("🚫 HQ Klaviyo sync failed:", err);
+  }
+});
+
 // ✅ Cron job: every 2 hours close out past schedules (no-show / completed)
 cron.schedule("0 */2 * * *", async () => {
   console.log("⏰ Running schedule status updater (every 2 hours)...");
@@ -190,6 +203,7 @@ app.use("/api/v1/marketing", marketingRoutes);
 app.use("/api/v1/nl", nlRoutes);
 app.use("/api/v1/exports", exportRoutes);
 app.use("/api/v1/public", publicRoutes);
+app.use("/api/v1/hq", hqRoutes);
 
 // ✅ Global Error Handler
 app.use(errorHandler);

@@ -11,7 +11,7 @@
 
 const ROUTES = [
   // ── Auth (accounts: owner / schedulers / viewers) ─────────────────────────
-  ["post", "/auth/signup", "Auth", "Create a workspace (Free) and its owner", { auth: "none", body: { name: "Maria Okafor", facilityName: "Sunrise Care", email: "maria@example.com", password: "at-least-8", timezone: "America/New_York", termsAccepted: true } }],
+  ["post", "/auth/signup", "Auth", "Create a workspace (Free) and its owner", { auth: "none", body: { name: "Maria Okafor", facilityName: "Sunrise Care", email: "maria@example.com", password: "at-least-8", timezone: "America/New_York", termsAccepted: true, signupRole: "scheduler", heardAbout: "linkedin", signupSource: { utm_source: "linkedin", landingPage: "/for/schedulers", referrer: "https://www.linkedin.com/" } } }],
   ["post", "/auth/login", "Auth", "Log in (accounts only; staff use their link)", { auth: "none", body: { email: "maria@example.com", password: "..." } }],
   ["post", "/auth/signup/tenant", "Auth", "Old signup path (same as /auth/signup; also accepts the old body)", { auth: "none" }],
   ["post", "/auth/login/staff", "Auth", "Old login path (same as /auth/login)", { auth: "none" }],
@@ -176,6 +176,29 @@ const ROUTES = [
   ["post", "/marketing/overtime-cost/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
   ["post", "/marketing/payroll-accuracy/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
   ["post", "/marketing/time-clock-accuracy/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
+  ["post", "/marketing/lead", "Marketing", "Save an email from a calculator, the blog or newsletter form (HQ + Klaviyo; joins the newsletter list only with newsletter: true)", { auth: "none", body: { email: "maria@example.com", source: "hours-per-resident-day", company: "Sunrise Care", summary: "3.4 hours per resident day", newsletter: true, utm: { utm_source: "linkedin" } } }],
+
+  // ── HQ (WiserShifts' own team only: PLATFORM_ADMIN_EMAILS; 404 for everyone else) ──
+  ["get", "/hq/access", "HQ", "Whether you can open HQ"],
+  ["get", "/hq/overview", "HQ", "Counts: facilities, people by role, signups, email clicks, leads, top plays, connections"],
+  ["get", "/hq/connections", "HQ", "Each outside source: connected or not, which env vars it needs, last sync, last error"],
+  ["get", "/hq/plays", "HQ", "Next plays: who to reach and why (signups stuck in setup, leadership not reached, upgrade, real email clicks, groups with 2+ engaged buildings, call-list follow-ups)", { query: ["role", "kind"] }],
+  ["post", "/hq/plays/done", "HQ", "Mark a play done (hidden until the facts change)", { body: { key: "clicked:66f…:3", outcome: "Emailed", notes: "" } }],
+  ["get", "/hq/facilities", "HQ", "Facilities we market to, with contacts and real email clicks", { query: ["q", "tier", "stage", "state", "group", "customers", "sort", "page", "limit"] }],
+  ["post", "/hq/facilities", "HQ", "Add a facility", { body: { name: "Sunrise Care", city: "Dayton", state: "OH", group: "Sunrise Senior Living", tier: 2 } }],
+  ["get", "/hq/facilities/{id}", "HQ", "One facility: contacts (with email signals), people at the group, activity, its workspace if it signed up, sister buildings"],
+  ["patch", "/hq/facilities/{id}", "HQ", "Update a facility", { body: { stage: "Got scheduler name", nextDate: "2026-11-02" } }],
+  ["get", "/hq/contacts", "HQ", "People (executives mostly) with email signals", { query: ["q", "role", "group", "engaged", "page", "limit"] }],
+  ["post", "/hq/contacts", "HQ", "Add a person", { body: { name: "Dana Lee", title: "Director of Nursing", email: "dana@example.com", facilityId: "…" } }],
+  ["patch", "/hq/contacts/{id}", "HQ", "Update a person"],
+  ["get", "/hq/activities", "HQ", "Recent calls, emails and notes", { query: ["facilityId", "contactId", "limit"] }],
+  ["post", "/hq/activities", "HQ", "Log a call, email, LinkedIn touch, meeting or note; also updates the facility's attempts, last call, next date and stage", { body: { facilityId: "…", kind: "call", outcome: "Voicemail", nextDate: "2026-11-03", nextStep: "Call back", stage: "Trying (no answer / voicemail)" } }],
+  ["post", "/hq/import/{kind}", "HQ", "Import a CSV (multipart field 'file', or { csv }): facilities (call-list tiers), contacts (Lead Bank), activities (Outreach), linkedin (post analytics export). dryRun=1 previews.", { query: ["dryRun", "tier"] }],
+  ["get", "/hq/signups", "HQ", "Every workspace with how it's doing (setup, active, leadership reached, plan, trial, signup answers) and recent calculator leads"],
+  ["get", "/hq/content", "HQ", "Blog posts (Contentful, with GA4 views), YouTube channel and videos, LinkedIn posts", { query: ["refresh"] }],
+  ["get", "/hq/web", "HQ", "Website (GA4) and Google search (Search Console), last 28 days", { query: ["refresh"] }],
+  ["get", "/hq/email", "HQ", "Klaviyo: delivered, real clicks vs scanner clicks, top clickers matched to people"],
+  ["post", "/hq/sync/klaviyo", "HQ", "Pull new Klaviyo email events now (also runs hourly)"],
 ];
 
 const PLAN_LABELS = { starter: "Starter (or the free trial)", enterprise: "Enterprise" };

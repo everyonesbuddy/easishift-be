@@ -129,6 +129,8 @@ const userSchema = new mongoose.Schema(
       lowercase: true,
       trim: true,
     },
+    // Last time this account used the app (login or app open; hourly at most).
+    lastSeenAt: { type: Date, default: null },
     passwordResetToken: {
       type: String,
       select: false,

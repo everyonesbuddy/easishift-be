@@ -1,6 +1,7 @@
 const jwt = require("jsonwebtoken");
 const { escapeHtml } = require("../utils/notify");
 const { checkSignup } = require("../utils/signupGuard");
+const { isPlatformAdmin } = require("../config/platformAdmin");
 const { normalizeViewFilters } = require("../utils/viewFilters");
 const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
@@ -70,7 +71,33 @@ const getUserResponse = (user) => {
   const response = user.toObject ? user.toObject() : { ...user };
   response.roles = getUserRoles(user);
   response.permissions = getEffectivePermissions(user);
+  // WiserShifts' own team: shows the HQ link in the app (the API checks again).
+  response.platformAdmin = isPlatformAdmin(user);
   return response;
+};
+
+/** Last time this account used the app (HQ uses it to see who's active). */
+const markSeen = (user, now = new Date()) => {
+  const last = user?.lastSeenAt ? new Date(user.lastSeenAt) : null;
+  if (last && now - last < 60 * 60 * 1000) return; // at most once an hour
+  User.updateOne({ _id: user._id }, { $set: { lastSeenAt: now } }).catch(() => {});
+};
+
+const SIGNUP_ROLES = ["scheduler", "don", "executive_director", "administrator", "regional", "owner", "other"];
+const HEARD_ABOUT = ["google", "linkedin", "youtube", "facebook", "email", "colleague", "calculator", "conference", "other"];
+const short = (v, n = 200) => (typeof v === "string" ? v.trim().slice(0, n) : "");
+
+/** First-touch marketing source sent by the website (UTMs, referrer, landing page). */
+const cleanSignupSource = (src) => {
+  if (!src || typeof src !== "object") return null;
+  const out = {};
+  for (const k of ["utm_source", "utm_medium", "utm_campaign", "utm_content", "utm_term", "referrer", "landingPage"]) {
+    const v = short(src[k], 300);
+    if (v) out[k] = v;
+  }
+  const at = src.firstSeenAt ? new Date(src.firstSeenAt) : null;
+  if (at && !Number.isNaN(at.getTime())) out.firstSeenAt = at;
+  return Object.keys(out).length ? out : null;
 };
 
 const parseBoolean = (value) => {
@@ -143,6 +170,14 @@ exports.registerTenant = async (req, res, next) => {
       });
     }
 
+    // Our own team's emails can only belong to the accounts we made.
+    if (isPlatformAdmin({ email })) {
+      return res.status(409).json({
+        message: "An account with this email already exists. Log in instead.",
+        errorCode: "EMAIL_IN_USE",
+      });
+    }
+
     const existing = await User.findOne({ email, loginEnabled: true })
       .select("_id")
       .lean();
@@ -160,6 +195,10 @@ exports.registerTenant = async (req, res, next) => {
       termsAccepted: true,
       termsVersion: body.termsVersion ? String(body.termsVersion).trim() : "1.0",
       termsAcceptedAt: new Date(),
+      signupRole: SIGNUP_ROLES.includes(body.signupRole) ? body.signupRole : null,
+      heardAbout: HEARD_ABOUT.includes(body.heardAbout) ? body.heardAbout : null,
+      heardAboutOther: short(body.heardAboutOther, 120) || null,
+      signupSource: cleanSignupSource(body.signupSource),
     });
 
     let owner;
@@ -268,6 +307,7 @@ exports.loginStaff = async (req, res, next) => {
     const roles = getUserRoles(user);
     const token = signToken(user._id, roles, user.tenantId);
     user.passwordHash = undefined;
+    markSeen(user);
     sendTokenResponse(res, token, {
       user: getUserResponse(user),
       tenantBranding: tenant ? getPublicBranding(tenant) : null,
@@ -507,6 +547,7 @@ exports.resetPassword = async (req, res, next) => {
 exports.getMe = async (req, res, next) => {
   try {
     const tenant = req.tenant;
+    markSeen(req.user);
     const usage = await getUsage(req);
     res.status(200).json({
       user: getUserResponse(req.user),

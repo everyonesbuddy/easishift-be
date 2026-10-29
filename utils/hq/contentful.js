@@ -1,40 +1,66 @@
 /**
- * Contentful blog posts (Content Delivery API, read-only).
+ * Contentful blog posts (Content Delivery API, read-only). Used by the public
+ * blog on the website (/api/v1/public/blog) and by HQ's Content tab.
  *
  * TODO(keys): CONTENTFUL_SPACE_ID, CONTENTFUL_DELIVERY_TOKEN (Contentful →
- *   Settings → API keys → Content delivery / preview tokens → "Content
- *   Delivery API - access token"), CONTENTFUL_ENVIRONMENT (default "master").
+ *   Settings → API keys → Add API key → "Content Delivery API - access
+ *   token"), CONTENTFUL_ENVIRONMENT (default "master").
  *
- * Content type id: blogPost (see the PR for the fields to create).
+ * Content type id: blogPost. Fields: title (Short text), slug (Short text,
+ * unique), excerpt (Long text), body (Rich text), coverImage (Media),
+ * audience (Short text, list: schedulers / directors / operators),
+ * publishDate (Date), author (Short text), seoDescription (Short text).
  */
 const axios = require("axios");
 
 const isConfigured = () => Boolean(process.env.CONTENTFUL_SPACE_ID && process.env.CONTENTFUL_DELIVERY_TOKEN);
 
-async function listPosts({ limit = 100 } = {}) {
-  const env = process.env.CONTENTFUL_ENVIRONMENT || "master";
-  const res = await axios.get(
-    `https://cdn.contentful.com/spaces/${process.env.CONTENTFUL_SPACE_ID}/environments/${env}/entries`,
-    {
-      params: {
-        content_type: "blogPost",
-        order: "-fields.publishDate",
-        limit,
-        select: "sys.id,sys.updatedAt,fields.title,fields.slug,fields.excerpt,fields.audience,fields.publishDate",
-      },
-      headers: { Authorization: `Bearer ${process.env.CONTENTFUL_DELIVERY_TOKEN}` },
-      timeout: 15000,
-    },
+const get = (params) =>
+  axios
+    .get(
+      `https://cdn.contentful.com/spaces/${process.env.CONTENTFUL_SPACE_ID}/environments/${process.env.CONTENTFUL_ENVIRONMENT || "master"}/entries`,
+      { params: { content_type: "blogPost", ...params }, headers: { Authorization: `Bearer ${process.env.CONTENTFUL_DELIVERY_TOKEN}` }, timeout: 15000 },
+    )
+    .then((r) => r.data);
+
+const assetMap = (data) =>
+  new Map(
+    (data.includes?.Asset || []).map((a) => [
+      a.sys.id,
+      { url: a.fields?.file?.url ? `https:${a.fields.file.url}` : "", title: a.fields?.title || "", width: a.fields?.file?.details?.image?.width || null, height: a.fields?.file?.details?.image?.height || null },
+    ]),
   );
-  return (res.data.items || []).map((e) => ({
-    id: e.sys.id,
-    title: e.fields?.title || "",
-    slug: e.fields?.slug || "",
-    excerpt: e.fields?.excerpt || "",
-    audience: e.fields?.audience || [],
-    publishDate: e.fields?.publishDate || null,
-    updatedAt: e.sys.updatedAt,
-  }));
+
+const summary = (e, assets) => ({
+  id: e.sys.id,
+  title: e.fields?.title || "",
+  slug: e.fields?.slug || "",
+  excerpt: e.fields?.excerpt || "",
+  audience: e.fields?.audience || [],
+  publishDate: e.fields?.publishDate || e.sys.createdAt,
+  author: e.fields?.author || "",
+  coverImage: e.fields?.coverImage?.sys?.id ? assets.get(e.fields.coverImage.sys.id) || null : null,
+  updatedAt: e.sys.updatedAt,
+});
+
+async function listPosts({ limit = 100 } = {}) {
+  const data = await get({ order: "-fields.publishDate", limit, include: 1, select: "sys.id,sys.createdAt,sys.updatedAt,fields.title,fields.slug,fields.excerpt,fields.audience,fields.publishDate,fields.author,fields.coverImage" });
+  const assets = assetMap(data);
+  return (data.items || []).map((e) => summary(e, assets));
 }
 
-module.exports = { isConfigured, listPosts };
+/** One post with its rich-text body; embedded images resolved to { url, title }. */
+async function getPost(slug) {
+  const data = await get({ "fields.slug": slug, limit: 1, include: 2 });
+  const e = data.items?.[0];
+  if (!e) return null;
+  const assets = assetMap(data);
+  return {
+    ...summary(e, assets),
+    seoDescription: e.fields?.seoDescription || e.fields?.excerpt || "",
+    body: e.fields?.body || null,
+    assets: Object.fromEntries(assets),
+  };
+}
+
+module.exports = { isConfigured, listPosts, getPost };

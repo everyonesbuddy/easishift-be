@@ -170,6 +170,8 @@ const ROUTES = [
   ["post", "/sms/inbound", "Texting", "Twilio inbound webhook (START / STOP / YES / HELP)", { auth: "none" }],
   ["post", "/nl/parse", "Other", "Parse a natural-language form"],
   ["get", "/public/tenants/{tenantId}/logo", "Other", "Workspace logo image", { auth: "none" }],
+  ["get", "/public/blog", "Other", "Published blog posts from Contentful (newest first); ?audience=schedulers|directors|operators", { auth: "none", query: ["audience"] }],
+  ["get", "/public/blog/{slug}", "Other", "One blog post with its rich-text body", { auth: "none" }],
   ["post", "/marketing/turnover-roi/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
   ["post", "/marketing/cost-leak/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],
   ["post", "/marketing/call-out-cost/email-summary", "Marketing", "Email a calculator summary", { auth: "none" }],

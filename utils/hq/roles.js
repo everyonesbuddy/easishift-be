@@ -3,7 +3,7 @@
  * "Regional Director of Operations" is regional, not executive director.
  */
 const RULES = [
-  ["regional", /\b(regional|vp|vice president|svp|evp|chief|coo|ceo|cfo|cno|president|director of operations|area director|divisional)\b/i],
+  ["regional", /\b(regional|rvp|rdo|avp|svp|vp|vice president|svp|evp|chief|coo|ceo|cfo|cno|president|director of (?:business )?operations|area director|divisional)\b/i],
   ["owner", /\b(owner|founder|co-founder|principal|proprietor|managing member|partner)\b/i],
   ["don", /\b(d\.?o\.?n\.?|director of nursing|director of clinical|nurse manager|health services director|director of health|wellness director|director of wellness|resident care director|dhs|rcd|adon|assistant director of nursing)\b/i],
   ["executive_director", /\b(executive director|e\.?d\.?|community director|general manager|residence director)\b/i],

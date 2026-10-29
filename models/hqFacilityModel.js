@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const hqFacilitySchema = new mongoose.Schema(
   {
     ref: { type: String, trim: true }, // e.g. "C-0001" from the call list
+    leadRef: { type: String, trim: true, default: "" }, // CRM Lead ID it came from, e.g. "L-0052"
     name: { type: String, required: true, trim: true },
     city: { type: String, trim: true, default: "" },
     state: { type: String, trim: true, default: "" },

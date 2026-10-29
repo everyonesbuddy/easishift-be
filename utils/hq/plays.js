@@ -188,7 +188,7 @@ function buildPlays({ workspaces = [], facilities = [], contacts = [], signals =
       role: "scheduler",
       facilityId: String(f._id),
       title: `${f.nextStep || "Follow up"}: ${f.name}`,
-      why: `${f.stage || "On the call list"}${f.tier ? `, tier ${f.tier}` : ""}. Due ${overdue < 1 ? "today" : `${Math.floor(overdue)} days ago`}.`,
+      why: `${f.stage || "On the call list"}${f.tier ? `, tier ${f.tier}` : ""}. Due ${overdue < 1 ? "today" : overdue < 2 ? "yesterday" : `${Math.floor(overdue)} days ago`}.`,
       action: f.scheduler?.name ? `Ask for ${f.scheduler.name}.` : "Ask the front desk for whoever makes the schedule.",
     });
   }

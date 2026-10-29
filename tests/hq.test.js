@@ -243,3 +243,15 @@ test("HQ guard: 404 for anyone not on the list", () => {
   assert.equal(nexted, true);
   process.env.PLATFORM_ADMIN_EMAILS = "";
 });
+
+test("import: typo dates are dropped; RVP is regional; merged title rows are skipped", () => {
+  const { toDate } = require("../utils/hq/importCsv");
+  assert.equal(toDate("90/25/2026"), null);
+  assert.equal(toDate("09/28/2026").toISOString().slice(0, 10), "2026-09-28");
+  assert.equal(roleFromTitle("RVP of Operations"), "regional");
+  assert.equal(roleFromTitle("Director of Business Operations"), "regional");
+  const csv = ['"TIER 1: call first","TIER 1: call first","TIER 1: call first","TIER 1: call first"', "Call ID,Building,City,State,Old Lead ID", "C-0001,Annandale,Suwanee,GA,L-0052"].join("\n");
+  const { rows } = normalize("facilities", csv);
+  assert.equal(rows[0].name, "Annandale");
+  assert.equal(rows[0].leadRef, "L-0052");
+});

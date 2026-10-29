@@ -19,6 +19,8 @@ const key = (h) => String(h || "").toLowerCase().replace(/\(.*?\)/g, "").replace
 const ALIASES = {
   facilities: {
     ref: ["callid", "id", "ref"],
+    leadRef: ["oldleadid", "leadid"],
+    oldHistory: ["oldcrmhistory"],
     tier: ["tier"],
     score: ["score"],
     whyTier: ["whythistier", "why"],
@@ -89,6 +91,8 @@ const toDate = (v) => {
   const s = String(v ?? "").trim();
   if (!s) return null;
   const us = s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/);
+  // Typos like 90/25/2026 are dropped, not rolled into another year.
+  if (us && (Number(us[1]) < 1 || Number(us[1]) > 12 || Number(us[2]) < 1 || Number(us[2]) > 31)) return null;
   const d = us ? new Date(Date.UTC(us[3].length === 2 ? 2000 + Number(us[3]) : Number(us[3]), us[1] - 1, us[2], 12)) : new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 };
@@ -111,15 +115,20 @@ const cleanUrl = (v) => {
   return m ? m[1] : s;
 };
 
-function readCsv(text) {
+function readCsv(text, known = null) {
   const rows = parse(String(text || ""), { relax_column_count: true, skip_empty_lines: true, bom: true, trim: true });
   if (!rows.length) return { header: [], records: [] };
-  // Some sheets have a title row above the header; use the first row with 3+ known-looking cells.
+  // Some sheets have a title row (often merged across the top) above the
+  // header: use the row among the first 5 with the most recognized columns.
   let h = 0;
-  for (let i = 0; i < Math.min(rows.length, 5); i += 1) {
-    if (rows[i].filter((c) => String(c).trim()).length >= 3) {
-      h = i;
-      break;
+  if (known) {
+    let best = -1;
+    for (let i = 0; i < Math.min(rows.length, 5); i += 1) {
+      const hits = new Set(rows[i].map(key).filter((k) => known.has(k))).size;
+      if (hits > best) {
+        best = hits;
+        h = i;
+      }
     }
   }
   const header = rows[h].map(key);
@@ -139,8 +148,8 @@ function pickFields(kind, rec) {
 /** CSV text → clean records for one kind (pure). */
 function normalize(kind, text, { defaultTier = null } = {}) {
   if (!KINDS.includes(kind)) throw new Error(`Unknown import kind: ${kind}`);
-  const { header, records } = readCsv(text);
   const known = new Set(Object.values(ALIASES[kind]).flat());
+  const { header, records } = readCsv(text, known);
   const matched = header.filter((h) => known.has(h));
   const rows = records.map((r) => pickFields(kind, r));
   let out = [];
@@ -170,7 +179,8 @@ function normalize(kind, text, { defaultTier = null } = {}) {
         scheduler: { name: r.schedulerName, title: r.schedulerTitle, email: cleanEmail(r.schedulerEmail), phone: r.schedulerPhone },
         currentTool: r.currentTool,
         biggestPain: r.biggestPain,
-        notes: r.notes,
+        leadRef: r.leadRef,
+        notes: [r.notes, r.oldHistory && `Earlier: ${r.oldHistory}`].filter(Boolean).join("\n"),
       }));
   } else if (kind === "contacts") {
     out = rows
@@ -251,11 +261,13 @@ async function apply(kind, rows, { by = "" } = {}) {
 
   if (kind === "contacts") {
     // Link each contact to its entry-point building; create the building if it's new.
-    const facilities = await HqFacility.find({}).select("name group").lean();
+    const facilities = await HqFacility.find({}).select("name group leadRef").lean();
     const byName = new Map(facilities.map((f) => [norm(f.name), f]));
+    // The call list remembers which CRM lead each building came from.
+    const byLead = new Map(facilities.filter((f) => f.leadRef).map((f) => [f.leadRef, f]));
     for (const r of rows) {
       const { buildingsInGroup, city, state, ...contact } = r;
-      let facility = r.facilityName ? byName.get(norm(r.facilityName)) : null;
+      let facility = (r.ref && byLead.get(r.ref)) || (r.facilityName ? byName.get(norm(r.facilityName)) : null);
       if (!facility && r.facilityName) {
         facility = await HqFacility.create({
           name: r.facilityName,

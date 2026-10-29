@@ -14,12 +14,15 @@ const hqActivitySchema = new mongoose.Schema(
     importKey: { type: String, default: null },
     // Set when this activity closes a play from the Plays list.
     playKey: { type: String, default: null },
+    // Which playbook play this was (for the weekly scoreboard).
+    playId: { type: mongoose.Schema.Types.ObjectId, ref: "HqPlaybookPlay", default: null },
   },
   { timestamps: true },
 );
 
 hqActivitySchema.index({ facilityId: 1, at: -1 });
 hqActivitySchema.index({ contactId: 1, at: -1 });
+hqActivitySchema.index({ playId: 1, at: -1 });
 hqActivitySchema.index({ playKey: 1 }, { partialFilterExpression: { playKey: { $type: "string" } } });
 hqActivitySchema.index({ importKey: 1 }, { unique: true, partialFilterExpression: { importKey: { $type: "string" } } });
 

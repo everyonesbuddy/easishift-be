@@ -277,3 +277,44 @@ test("Google Sheet tabs: kind guessed from the tab name; links and rows become C
   );
   assert.equal(rowsToCsv([["Lead ID", "Notes"], ["L-1", 'said "hi", call back']]), 'Lead ID,Notes\nL-1,"said ""hi"", call back"');
 });
+
+test("weeks: Monday buckets in the team's time zone", () => {
+  const { lastWeeks, bucket } = require("../utils/hq/weeks");
+  const weeks = lastWeeks(2, new Date("2026-10-29T15:00:00Z"));
+  assert.deepEqual(weeks.map((w) => w.key), ["2026-10-19", "2026-10-26"]);
+  // Sunday 11 p.m. New York is still the earlier week.
+  const counts = bucket(weeks, [new Date("2026-10-26T03:30:00Z"), new Date("2026-10-27T15:00:00Z"), null, new Date("2025-01-01")]);
+  assert.deepEqual(counts, { "2026-10-19": 1, "2026-10-26": 1 });
+});
+
+test("content numbers are matched by link", () => {
+  const { metricsFor, youtubeId } = require("../controllers/hqContentPlanController");
+  assert.equal(youtubeId("https://youtu.be/abcdefghijk"), "abcdefghijk");
+  assert.equal(youtubeId("https://www.youtube.com/watch?v=abcdefghijk&t=3"), "abcdefghijk");
+  const sources = {
+    videos: [{ id: "abcdefghijk", views: 120, likes: 4, comments: 1 }],
+    pages: [{ pagePath: "/blog/hprd", screenPageViews: 40 }],
+    linkedin: [{ url: "https://www.linkedin.com/feed/update/urn:li:activity:1/", impressions: 900, reactions: 20, comments: 3, reposts: 1 }],
+  };
+  assert.equal(metricsFor({ url: "https://youtu.be/abcdefghijk" }, sources).views, 120);
+  assert.equal(metricsFor({ url: "https://wisershifts.com/blog/hprd" }, sources).views, 40);
+  assert.equal(metricsFor({ url: "https://www.linkedin.com/feed/update/urn:li:activity:1?utm=x" }, sources).engagement, 24);
+  assert.equal(metricsFor({ url: "" }, sources), null);
+});
+
+test("signup source label: UTM, then referrer, then what they told us", () => {
+  const { sourceLabel } = require("../controllers/hqFunnelController");
+  assert.equal(sourceLabel({ signupSource: { utm_source: "LinkedIn" } }), "linkedin");
+  assert.equal(sourceLabel({ signupSource: { referrer: "https://www.google.com/" } }), "google.com");
+  assert.equal(sourceLabel({ heardAbout: "colleague" }), "a colleague");
+  assert.equal(sourceLabel({}), "unknown");
+});
+
+test("starting playbook: every content idea points at a real play", () => {
+  const { PLAYS, CONTENT } = require("../utils/hq/playbookSeed");
+  const keys = new Set(PLAYS.map((p) => p.seedKey));
+  assert.equal(keys.size, PLAYS.length);
+  for (const c of CONTENT) assert.ok(keys.has(c[5]), c[0]);
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  for (const p of PLAYS) assert.equal(new HqPlaybookPlay(p).validateSync(), undefined, p.seedKey);
+});

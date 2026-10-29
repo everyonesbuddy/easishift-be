@@ -376,7 +376,7 @@ exports.updateContact = async (req, res, next) => {
 // ── Activities (log a call, email, note) ───────────────────────────────────
 exports.createActivity = async (req, res, next) => {
   try {
-    const { facilityId, contactId, kind = "note", outcome = "", notes = "", at, nextDate, nextStep, stage, playKey } = req.body || {};
+    const { facilityId, contactId, kind = "note", outcome = "", notes = "", at, nextDate, nextStep, stage, playKey, playId } = req.body || {};
     if (!isId(facilityId) && !isId(contactId)) return res.status(400).json({ message: "facilityId or contactId is required" });
     let fid = isId(facilityId) ? facilityId : null;
     if (!fid && isId(contactId)) fid = (await HqContact.findById(contactId).select("facilityId").lean())?.facilityId || null;
@@ -389,6 +389,7 @@ exports.createActivity = async (req, res, next) => {
       at: at ? new Date(at) : new Date(),
       nextDate: nextDate ? new Date(nextDate) : null,
       playKey: typeof playKey === "string" && playKey ? playKey.slice(0, 200) : null,
+      playId: isId(playId) ? playId : null,
       by: by(req),
     });
     // Keep the facility's call-list columns current.
@@ -407,6 +408,101 @@ exports.createActivity = async (req, res, next) => {
       }
     }
     res.status(201).json({ activity });
+  } catch (err) {
+    next(err);
+  }
+};
+
+const ACTIVITY_KINDS = ["call", "email", "linkedin", "meeting", "note"];
+
+/** Fix a logged touch (HQ is the record, so history is editable). */
+exports.updateActivity = async (req, res, next) => {
+  try {
+    if (!isId(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const b = req.body || {};
+    const set = {};
+    if (b.kind !== undefined) set.kind = ACTIVITY_KINDS.includes(b.kind) ? b.kind : "note";
+    if (b.outcome !== undefined) set.outcome = String(b.outcome).slice(0, 200);
+    if (b.notes !== undefined) set.notes = String(b.notes).slice(0, 4000);
+    if (b.at) set.at = new Date(b.at);
+    if (b.nextDate !== undefined) set.nextDate = b.nextDate ? new Date(b.nextDate) : null;
+    if (b.contactId !== undefined) set.contactId = isId(b.contactId) ? b.contactId : null;
+    if (b.playId !== undefined) set.playId = isId(b.playId) ? b.playId : null;
+    const activity = await HqActivity.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
+    if (!activity) return res.status(404).json({ message: "Not found" });
+    res.json({ activity });
+  } catch (err) {
+    next(err);
+  }
+};
+
+exports.deleteActivity = async (req, res, next) => {
+  try {
+    if (!isId(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const r = await HqActivity.deleteOne({ _id: req.params.id });
+    if (!r.deletedCount) return res.status(404).json({ message: "Not found" });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Remove a person (their history stays on the facility, unlinked from them). */
+exports.deleteContact = async (req, res, next) => {
+  try {
+    if (!isId(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const r = await HqContact.deleteOne({ _id: req.params.id });
+    if (!r.deletedCount) return res.status(404).json({ message: "Not found" });
+    await HqActivity.updateMany({ contactId: req.params.id }, { $set: { contactId: null } });
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Remove a facility we no longer market to (its people and history go too). Customers can't be removed. */
+exports.deleteFacility = async (req, res, next) => {
+  try {
+    if (!isId(req.params.id)) return res.status(404).json({ message: "Not found" });
+    const f = await HqFacility.findById(req.params.id).select("tenantId").lean();
+    if (!f) return res.status(404).json({ message: "Not found" });
+    if (f.tenantId) return res.status(400).json({ message: "This facility has a WiserShifts workspace, so it stays." });
+    await Promise.all([
+      HqFacility.deleteOne({ _id: f._id }),
+      HqContact.deleteMany({ facilityId: f._id }),
+      HqActivity.deleteMany({ facilityId: f._id }),
+    ]);
+    res.json({ ok: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Everything in HQ as CSV (a backup, or to open in a spreadsheet). */
+exports.exportCsv = async (req, res, next) => {
+  try {
+    const { rowsToCsv } = importCsv;
+    const d = (v) => (v ? new Date(v).toISOString().slice(0, 10) : "");
+    let header;
+    let rows;
+    if (req.params.kind === "facilities") {
+      header = ["Call ID", "Building", "City", "State", "Group", "Buildings in Group", "Tier", "Score", "Stage", "Attempts", "Last Call Date", "Next Step", "Next Date", "Front Desk Phone", "Website", "Scheduler Name", "Scheduler Title", "Scheduler Email", "Scheduler Phone", "Current Tool", "Biggest Pain", "Customer", "Notes"];
+      rows = (await HqFacility.find({}).sort({ tier: 1, name: 1 }).lean()).map((f) => [
+        f.ref, f.name, f.city, f.state, f.group, f.buildingsInGroup ?? "", f.tier ?? "", f.score ?? "", f.stage, f.attempts, d(f.lastCallDate), f.nextStep, d(f.nextDate), f.frontDeskPhone, f.website,
+        f.scheduler?.name, f.scheduler?.title, f.scheduler?.email, f.scheduler?.phone, f.currentTool, f.biggestPain, f.tenantId ? "Yes" : "", f.notes,
+      ]);
+    } else if (req.params.kind === "contacts") {
+      header = ["Lead ID", "Contact Name", "Contact Title", "Role", "Contact Email", "Contact Phone", "Contact LinkedIn", "Ownership Group / Company", "Facility (Entry Point)", "Priority", "Assigned Sales Rep", "Notes"];
+      rows = (await HqContact.find({}).sort({ group: 1, name: 1 }).lean()).map((c) => [c.ref, c.name, c.title, LABELS[c.role] || c.role, c.email, c.phone, c.linkedin, c.group, c.facilityName, c.priority, c.rep, c.notes]);
+    } else if (req.params.kind === "activities") {
+      header = ["Date", "What", "Outcome", "Facility", "Person", "Notes", "Next Date", "By"];
+      rows = (await HqActivity.find({}).sort({ at: -1 }).populate("facilityId", "name").populate("contactId", "name").lean()).map((a) => [
+        d(a.at), a.kind, a.outcome, a.facilityId?.name || "", a.contactId?.name || "", a.notes, d(a.nextDate), a.by,
+      ]);
+    } else return res.status(404).json({ message: "Not found" });
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="wisershifts-hq-${req.params.kind}-${d(new Date())}.csv"`);
+    res.send(rowsToCsv([header, ...rows]));
   } catch (err) {
     next(err);
   }

@@ -146,6 +146,11 @@ async function webSummary({ days = 28 } = {}) {
   return { days, totals: totals[0] || {}, byDay, pages, sources, events };
 }
 
+/** Visitors per day for the last `days` days (for week-by-week numbers). */
+async function webDaily({ days = 84 } = {}) {
+  return ga4Report({ dimensions: ["date"], metrics: ["activeUsers", "sessions"], days, limit: 400, orderBy: { dimension: { dimensionName: "date" } } });
+}
+
 /** Search Console: totals, top queries and top pages. */
 async function searchSummary({ days = 28 } = {}) {
   const token = await accessToken(SCOPES.gsc);
@@ -181,6 +186,7 @@ module.exports = {
   sheetTabs,
   sheetRows,
   webSummary,
+  webDaily,
   searchSummary,
   signJwt,
   errText,

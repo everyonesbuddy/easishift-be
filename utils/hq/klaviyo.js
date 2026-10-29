@@ -11,6 +11,7 @@
  *   join when they opt in; e.g. "Email List" = WekZB2 in your account)
  */
 const axios = require("axios");
+const { weekKey } = require("./weeks");
 
 const BASE = "https://a.klaviyo.com/api";
 const REVISION = "2024-10-15";
@@ -169,10 +170,14 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
       if (!metricId) continue;
       const since = cursors[kind] ? new Date(cursors[kind]) : new Date(now - firstRunDays * DAY);
       const per = new Map();
+      const weekly = {};
       let latest = since;
       for await (const ev of eventsSince(metricId, since)) {
         if (!ev.email) continue;
         if (ev.at > latest) latest = ev.at;
+        const wk = weekKey(ev.at);
+        const field = kind === "received" ? "delivered" : kind === "clicked" ? (isBotClick(ev.props) ? "bot" : "human") : "unsub";
+        weekly[`data.weeks.${wk}.${field}`] = (weekly[`data.weeks.${wk}.${field}`] || 0) + 1;
         const p = per.get(ev.email) || { delivered: 0, human: 0, bot: 0, lastDelivered: null, lastHuman: null, campaigns: new Set(), unsub: false };
         if (kind === "received") {
           p.delivered += 1;
@@ -198,6 +203,8 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
         return { updateOne: { filter: { email }, update, upsert: true } };
       });
       if (ops.length) await HqEmailSignal.bulkWrite(ops, { ordered: false });
+      // Week-by-week totals for HQ's Numbers page.
+      if (Object.keys(weekly).length) await HqSync.updateOne({ key: "klaviyo-weekly" }, { $inc: weekly }, { upsert: true });
       // Step 1ms past the newest event so it isn't counted twice.
       cursors[kind] = new Date(latest.getTime() + 1).toISOString();
       counts[kind] = per.size;
@@ -218,4 +225,29 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
   }
 }
 
-module.exports = { isConfigured, upsertProfile, trackEvent, subscribe, sendLead, syncEmailSignals, isBotClick, metricIdByName };
+/**
+ * Rebuild the week-by-week email totals from Klaviyo (last `days` days).
+ * Runs once on its own when the weekly totals don't exist yet (they started
+ * being kept after the first per-person sync).
+ */
+async function rebuildEmailWeeks({ days = 91, now = new Date() } = {}) {
+  if (!isConfigured()) return { ok: false, error: "not_configured" };
+  const HqSync = require("../../models/hqSyncModel");
+  const since = new Date(now - days * DAY);
+  const weeks = {};
+  const bump = (wk, field) => {
+    weeks[wk] = weeks[wk] || { delivered: 0, human: 0, bot: 0, unsub: 0 };
+    weeks[wk][field] += 1;
+  };
+  for (const [kind, name] of [["received", "Received Email"], ["clicked", "Clicked Email"], ["unsub", "Unsubscribed from Email Marketing"], ["unsub", "Unsubscribed"]]) {
+    const metricId = await metricIdByName(name);
+    if (!metricId) continue;
+    for await (const ev of eventsSince(metricId, since, { maxPages: 300 })) {
+      bump(weekKey(ev.at), kind === "received" ? "delivered" : kind === "clicked" ? (isBotClick(ev.props) ? "bot" : "human") : "unsub");
+    }
+  }
+  await HqSync.updateOne({ key: "klaviyo-weekly" }, { $set: { "data.weeks": weeks, lastOkAt: now } }, { upsert: true });
+  return { ok: true, weeks: Object.keys(weeks).length };
+}
+
+module.exports = { rebuildEmailWeeks, isConfigured, upsertProfile, trackEvent, subscribe, sendLead, syncEmailSignals, isBotClick, metricIdByName };

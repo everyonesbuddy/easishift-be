@@ -92,7 +92,7 @@ const CONNECTIONS = () => [
   { key: "klaviyo", name: "Klaviyo", configured: klaviyo.isConfigured(), env: ["KLAVIYO_PRIVATE_KEY", "KLAVIYO_LIST_ID"], what: "Email clicks per person (real vs scanner), calculator sign-ups" },
   { key: "ga4", name: "Google Analytics", configured: google.gaConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON", "GA4_PROPERTY_ID"], what: "Website visitors, top pages, sources, sign-ups" },
   { key: "gsc", name: "Search Console", configured: google.gscConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON", "GSC_SITE_URL"], what: "Google searches that found us, clicks, positions" },
-  { key: "sheets", name: "Google Sheets", configured: google.sheetsConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON"], what: "Your CRM and call list, synced every 2 hours (set up below)" },
+  { key: "sheets", name: "Google Sheets", configured: google.sheetsConfigured(), env: ["GOOGLE_SERVICE_ACCOUNT_JSON"], what: "Bring in new rows from your CRM sheet (set up above)" },
   { key: "youtube", name: "YouTube", configured: youtube.isConfigured(), env: ["YOUTUBE_API_KEY", "YOUTUBE_CHANNEL_ID"], what: "Subscribers, views per video" },
   { key: "contentful", name: "Contentful", configured: contentful.isConfigured(), env: ["CONTENTFUL_SPACE_ID", "CONTENTFUL_DELIVERY_TOKEN", "CONTENTFUL_ENVIRONMENT"], what: "Blog posts" },
   { key: "linkedin", name: "LinkedIn", configured: true, env: [], what: "Upload your LinkedIn analytics export (no API for personal posts)" },

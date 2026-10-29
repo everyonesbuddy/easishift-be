@@ -9,6 +9,7 @@
  * Routes: /api/v1/staff
  */
 const mongoose = require("mongoose");
+const { escapeHtml } = require("../utils/notify");
 const { parse } = require("csv-parse/sync");
 const User = require("../models/userModel");
 const Schedule = require("../models/scheduleModel");
@@ -683,7 +684,7 @@ const sendLinkMessage = async (req, staff, url, rotated) => {
     sms: text,
     emailSubject: `Your ${facility} schedule link`,
     emailHtml: `
-      <p>Hi ${staff.name},</p>
+      <p>Hi ${escapeHtml(staff.name)},</p>
       <p>Use this link to see your schedule, swap or pick up shifts, and request time off. No app or password needed.</p>
       <p><a href="${url}">${url}</a></p>
       ${rotated ? "<p>Your old link no longer works.</p>" : ""}`,

@@ -1,4 +1,6 @@
 const jwt = require("jsonwebtoken");
+const { escapeHtml } = require("../utils/notify");
+const { checkSignup } = require("../utils/signupGuard");
 const { normalizeViewFilters } = require("../utils/viewFilters");
 const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
@@ -96,6 +98,11 @@ const parseBoolean = (value) => {
 exports.registerTenant = async (req, res, next) => {
   try {
     const body = req.body || {};
+    const guard = checkSignup(body);
+    if (!guard.ok) {
+      console.warn(`Signup blocked (${guard.reason}) from ${req.ip}`);
+      return res.status(400).json({ message: guard.message, errorCode: "SIGNUP_BLOCKED" });
+    }
     const isLegacyShape = !body.facilityName && body.adminName;
     const personName = String(
       (isLegacyShape ? body.adminName : body.name) || "",
@@ -197,8 +204,8 @@ exports.registerTenant = async (req, res, next) => {
         owner.email,
         "Welcome to WiserShifts",
         `
-          <p>Hi ${owner.name},</p>
-          <p>Your workspace for <strong>${tenant.name}</strong> is ready. Next: tell us what a normal week needs, add your staff, and publish your first schedule.</p>
+          <p>Hi ${escapeHtml(owner.name)},</p>
+          <p>Your workspace for <strong>${escapeHtml(tenant.name)}</strong> is ready. Next: tell us what a normal week needs, add your staff, and publish your first schedule.</p>
           ${appUrl ? `<p><a href="${appUrl}">Open WiserShifts</a></p>` : ""}
         `,
         null,
@@ -298,7 +305,7 @@ exports.changePassword = async (req, res, next) => {
       if (user.email) {
         const subject = "Your password was changed";
         const html = `
-          <p>Hi ${user.name || "there"},</p>
+          <p>Hi ${escapeHtml(user.name || "there")},</p>
           <p>Your password was just changed.</p>
           <p>If you did not make this change, please contact your admin immediately.</p>
         `;
@@ -352,7 +359,7 @@ exports.forgotPassword = async (req, res, next) => {
     const resetUrl = await issuePasswordLink(req, user, "reset");
     const subject = "Password reset request";
     const html = `
-      <p>Hi ${user.name || "there"},</p>
+      <p>Hi ${escapeHtml(user.name || "there")},</p>
       <p>We received a request to reset your password.</p>
       <p>Use the link below to reset it (${getPasswordResetValidityText()}):</p>
       <p><a href="${resetUrl}">${resetUrl}</a></p>
@@ -400,7 +407,7 @@ exports.sendPasswordReset = async (req, res, next) => {
     const setupUrl = await issuePasswordLink(req, user, "setup");
     const subject = "Password reset link";
     const html = `
-      <p>Hi ${user.name || "there"},</p>
+      <p>Hi ${escapeHtml(user.name || "there")},</p>
       <p>Your administrator requested a new password reset link for your account.</p>
       <p>Use the link below to set a new password (${getPasswordSetupValidityText()}):</p>
       <p><a href="${setupUrl}">${setupUrl}</a></p>
@@ -460,7 +467,7 @@ exports.resetPassword = async (req, res, next) => {
       if (user.email) {
         const subject = "Your password was reset";
         const html = `
-          <p>Hi ${user.name || "there"},</p>
+          <p>Hi ${escapeHtml(user.name || "there")},</p>
           <p>Your password has been reset successfully.</p>
           <p>If you did not make this change, please contact your admin immediately.</p>
         `;

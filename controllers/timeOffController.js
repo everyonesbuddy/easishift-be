@@ -165,7 +165,7 @@ exports.reviewTimeOff = async (req, res, next) => {
           sms: text,
           emailSubject: `Your time-off request was ${status}`,
           emailHtml: `
-            <p>Hi ${staff.name || "there"},</p>
+            <p>Hi ${escapeHtml(staff.name || "there")},</p>
             <p>Your time-off request has been <strong>${status}</strong>.</p>
             <ul><li><strong>When:</strong> ${timeOffWindow}</li></ul>`,
           refId: updated._id,

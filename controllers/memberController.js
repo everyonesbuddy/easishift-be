@@ -6,6 +6,7 @@
  * Routes: /api/v1/members
  */
 const mongoose = require("mongoose");
+const { escapeHtml } = require("../utils/notify");
 const User = require("../models/userModel");
 const { getUserRoles } = require("../config/authorization");
 const { assertLimit } = require("../utils/planLimits");
@@ -57,7 +58,7 @@ const sendInviteEmail = async (req, member) => {
   const inviter = req.user?.name || "Your team";
   const workspace = req.tenant?.name || "WiserShifts";
   const html = `
-    <p>Hi ${member.name || "there"},</p>
+    <p>Hi ${escapeHtml(member.name || "there")},</p>
     <p>${inviter} invited you to <strong>${workspace}</strong> on WiserShifts as a ${getMemberRole(member)}.</p>
     <p>Set your password to get started (${getPasswordSetupValidityText()}):</p>
     <p><a href="${setupUrl}">${setupUrl}</a></p>

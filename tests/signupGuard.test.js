@@ -5,13 +5,13 @@ const { checkSignup, looksLikeGibberish, containsLink } = require("../utils/sign
 const real = { name: "Joseph Adeyemo", facilityName: "Silver Comet Senior Living", email: "j@example.com", password: "longenough" };
 
 test("random mixed-case names from the bot signups are caught", () => {
-  for (const s of ["HuUdlfYLqgJilqaFoDcufSp", "TCocOwXprLsThDIiROkTmPCQ", "WVdnfJMTqIjVhXCDBoP"]) {
+  for (const s of ["HuUdlfYLqgJilqaFoDcufSp", "TCocOwXprLsThDIiROkTmPCQ", "WVdnfJMTqIjVhXCDBoP", "PAVYXKtqNrkonwnRSICGD"]) {
     assert.equal(looksLikeGibberish(s), true, s);
   }
 });
 
 test("real names and facility names pass", () => {
-  for (const s of ["Joseph Adeyemo", "McDonald", "DeShawn", "MacKenzie", "O'Brien", "Brookdale", "VanderMeer", "Sunrise of Plano", "LaToya", "JoAnn", "Mary-Kate", "Nguyen"]) {
+  for (const s of ["Joseph Adeyemo", "McDonald", "DeShawn", "MacKenzie", "O'Brien", "Brookdale", "VanderMeer", "Sunrise of Plano", "LaToya", "JoAnn", "Mary-Kate", "Nguyen", "SunriseSeniorLiving", "WiserShifts", "BROOKDALE", "MacKenzieRoss"]) {
     assert.equal(looksLikeGibberish(s), false, s);
   }
   assert.deepEqual(checkSignup(real), { ok: true });

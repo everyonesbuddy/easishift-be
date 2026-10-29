@@ -17,13 +17,20 @@
 
 const MIN_FILL_MS = 2000;
 
-/** One long word that flips from lower to upper case three or more times. */
+/**
+ * One long word of random mixed case: it flips from lower to upper case
+ * three or more times ("HuUdlfYLqgJilqaFoDcufSp"), or, at 12+ letters, has
+ * four or more capitals after the first letter ("PAVYXKtqNrkonwnRSICGD").
+ */
 function looksLikeGibberish(value) {
   const s = String(value || "").trim();
   if (s.length < 10 || /\s/.test(s)) return false;
   if (!/^[A-Za-z]+$/.test(s)) return false;
+  if (!/[a-z]/.test(s) || !/[A-Z]/.test(s)) return false;
   const flips = (s.match(/[a-z][A-Z]/g) || []).length;
-  return flips >= 3;
+  if (flips >= 3) return true;
+  const innerCaps = (s.slice(1).match(/[A-Z]/g) || []).length;
+  return s.length >= 12 && innerCaps >= 4;
 }
 
 const LINK_OR_MARKUP = /(https?:\/\/|www\.|[<>]|\b[a-z0-9-]+\.(com|net|org|io|co|info|biz|xyz|ru|cn|top|site|online|link|click|me|us|app|shop|store|live|win|vip)\b)/i;

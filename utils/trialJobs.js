@@ -3,6 +3,7 @@
  * day it ends. Each is sent once (tracked on the tenant).
  */
 const Tenant = require("../models/tenantModel");
+const { escapeHtml } = require("./notify");
 const User = require("../models/userModel");
 const { sendEmail } = require("./sendEmail");
 const {
@@ -66,8 +67,8 @@ async function sendTrialEmails(now = new Date()) {
       tenant,
       `Your WiserShifts Starter trial ends ${endDate}`,
       (owner) => `
-        <p>Hi ${owner.name || "there"},</p>
-        <p>Your Starter trial for <strong>${tenant.name}</strong> ends on ${endDate}. After that you'll be on Free.</p>
+        <p>Hi ${escapeHtml(owner.name || "there")},</p>
+        <p>Your Starter trial for <strong>${escapeHtml(tenant.name)}</strong> ends on ${endDate}. After that you'll be on Free.</p>
         <p>${impact}</p>
         <p><a href="${billingUrl}">Keep Starter</a></p>`,
     );
@@ -91,8 +92,8 @@ async function sendTrialEmails(now = new Date()) {
       tenant,
       "Your WiserShifts Starter trial has ended",
       (owner) => `
-        <p>Hi ${owner.name || "there"},</p>
-        <p><strong>${tenant.name}</strong> is now on Free. Your schedules, staff and staffing template are all still here.</p>
+        <p>Hi ${escapeHtml(owner.name || "there")},</p>
+        <p><strong>${escapeHtml(tenant.name)}</strong> is now on Free. Your schedules, staff and staffing template are all still here.</p>
         <p>${impact}</p>
         <p><a href="${billingUrl}">Choose a plan</a> or pick who to keep on Free.</p>`,
     );

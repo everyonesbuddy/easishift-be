@@ -2810,8 +2810,8 @@ exports.requestShiftSwap = async (req, res, next) => {
       users: recipients,
       emailSubject: "Shift swap request",
       emailHtml: (user) => `
-        <p>Hi ${user.name || "team member"},</p>
-        <p>${requester.name || "A staff member"} requested a shift swap.</p>
+        <p>Hi ${escapeHtml(user.name || "team member")},</p>
+        <p>${escapeHtml(requester.name || "A staff member")} requested a shift swap.</p>
         <ul>
           <li><strong>Role:</strong> ${schedule.role}</li>
           <li><strong>Current staff:</strong> ${requester.name || requester.email || requester._id}</li>
@@ -2964,7 +2964,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
         users: recipients,
         emailSubject: `Shift swap ${decisionWord}`,
         emailHtml: (user) => `
-          <p>Hi ${user.name || "team member"},</p>
+          <p>Hi ${escapeHtml(user.name || "team member")},</p>
           <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
           <ul>
             <li><strong>Role:</strong> ${swapRequest.role}</li>
@@ -3064,7 +3064,7 @@ exports.respondToShiftSwapRequest = async (req, res, next) => {
         users: recipients,
         emailSubject: `Shift swap ${decisionWord}`,
         emailHtml: (user) => `
-          <p>Hi ${user.name || "team member"},</p>
+          <p>Hi ${escapeHtml(user.name || "team member")},</p>
           <p>The shift swap request has been <strong>${decisionWord}</strong>.</p>
           <ul>
             <li><strong>Role:</strong> ${swapRequest.role}</li>

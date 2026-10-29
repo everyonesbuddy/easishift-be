@@ -8,6 +8,7 @@
  * ever goes to the contact already on file.
  */
 const User = require("../models/userModel");
+const { escapeHtml } = require("../utils/notify");
 const Tenant = require("../models/tenantModel");
 const { buildE164Number, digitsOnly } = require("../utils/phone");
 const { getStaffLinkUrl } = require("../utils/staffLinks");
@@ -51,7 +52,7 @@ exports.requestLink = async (req, res, next) => {
         kind: "link",
         sms: `${facility}: here's your WiserShifts link for your schedule, swaps and time off: ${url}`,
         emailSubject: `Your ${facility} schedule link`,
-        emailHtml: `<p>Hi ${String(staff.name || "").split(" ")[0]},</p><p>Here's your link to see your schedule, swap or pick up shifts, and request time off. Open it on your phone; if you have the WiserShifts app it opens there.</p><p><a href="${url}">${url}</a></p><p>If you didn't ask for this, you can ignore it.</p>`,
+        emailHtml: `<p>Hi ${escapeHtml(String(staff.name || "").split(" ")[0])},</p><p>Here's your link to see your schedule, swap or pick up shifts, and request time off. Open it on your phone; if you have the WiserShifts app it opens there.</p><p><a href="${url}">${url}</a></p><p>If you didn't ask for this, you can ignore it.</p>`,
       }).catch(() => null);
     }
     res.json(GENERIC);

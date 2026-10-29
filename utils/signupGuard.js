@@ -8,6 +8,8 @@
  *   four fields and a password in under 2 seconds.
  * - gibberish names: bots type random mixed-case strings
  *   ("HuUdlfYLqgJilqaFoDcufSp"). Real names have spaces or few case changes.
+ * - links in names: spammers put a link in the name so our welcome email
+ *   delivers it. No real person or facility name has one.
  *
  * The app's signup sends neither field, so those two checks only apply when
  * the fields are present. The rate limit (routes) covers everything.
@@ -22,6 +24,13 @@ function looksLikeGibberish(value) {
   if (!/^[A-Za-z]+$/.test(s)) return false;
   const flips = (s.match(/[a-z][A-Z]/g) || []).length;
   return flips >= 3;
+}
+
+const LINK_OR_MARKUP = /(https?:\/\/|www\.|[<>]|\b[a-z0-9-]+\.(com|net|org|io|co|info|biz|xyz|ru|cn|top|site|online|link|click|me|us|app|shop|store|live|win|vip)\b)/i;
+
+/** A web address, a domain, or HTML tags. */
+function containsLink(value) {
+  return LINK_OR_MARKUP.test(String(value || ""));
 }
 
 /**
@@ -40,6 +49,9 @@ function checkSignup(body = {}, now = Date.now()) {
     }
   }
   const names = [body.name, body.facilityName, body.adminName];
+  if (names.some(containsLink)) {
+    return { ok: false, reason: "link_in_name", message: "Names can't include links or web addresses." };
+  }
   if (names.some(looksLikeGibberish)) {
     return {
       ok: false,
@@ -50,4 +62,4 @@ function checkSignup(body = {}, now = Date.now()) {
   return { ok: true };
 }
 
-module.exports = { checkSignup, looksLikeGibberish, MIN_FILL_MS };
+module.exports = { checkSignup, looksLikeGibberish, containsLink, MIN_FILL_MS };

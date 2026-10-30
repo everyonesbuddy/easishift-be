@@ -196,7 +196,7 @@ const ROUTES = [
   ["get", "/hq/contacts", "HQ", "People (executives mostly) with email signals", { query: ["q", "role", "group", "engaged", "page", "limit"] }],
   ["post", "/hq/contacts", "HQ", "Add a person", { body: { name: "Dana Lee", title: "Director of Nursing", email: "dana@example.com", facilityId: "…" } }],
   ["patch", "/hq/contacts/{id}", "HQ", "Update a person"],
-  ["get", "/hq/activities", "HQ", "Recent calls, emails and notes", { query: ["facilityId", "contactId", "limit"] }],
+  ["get", "/hq/activities", "HQ", "Recent calls, emails and notes (filter by facility, person, plays, since a date)", { query: ["facilityId", "contactId", "playIds", "since", "limit"] }],
   ["post", "/hq/activities", "HQ", "Log a call, email, LinkedIn touch, meeting or note; also updates the facility's attempts, last call, next date and stage", { body: { facilityId: "…", kind: "call", outcome: "Voicemail", nextDate: "2026-11-03", nextStep: "Call back", stage: "Trying (no answer / voicemail)" } }],
   ["post", "/hq/import/{kind}", "HQ", "Import a CSV (multipart field 'file', or { csv }): facilities (call-list tiers), contacts (Lead Bank), activities (Outreach), linkedin (post analytics export). dryRun=1 previews.", { query: ["dryRun", "tier"] }],
   ["get", "/hq/sheets", "HQ", "Google Sheet sync: saved tabs, the service-account email to share sheets with, last results"],

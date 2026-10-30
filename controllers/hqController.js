@@ -403,7 +403,9 @@ exports.updateContact = async (req, res, next) => {
 exports.createActivity = async (req, res, next) => {
   try {
     const { facilityId, contactId, kind = "note", outcome = "", notes = "", at, nextDate, nextStep, stage, playKey, playId } = req.body || {};
-    if (!isId(facilityId) && !isId(contactId)) return res.status(400).json({ message: "facilityId or contactId is required" });
+    // A touch is about a facility or person, or is a batch logged against a play ("15 calls").
+    if (!isId(facilityId) && !isId(contactId) && !isId(playId)) return res.status(400).json({ message: "Pick a facility, a person or a play" });
+    const count = Math.min(500, Math.max(1, Math.round(Number(req.body?.count) || 1)));
     let fid = isId(facilityId) ? facilityId : null;
     if (!fid && isId(contactId)) fid = (await HqContact.findById(contactId).select("facilityId").lean())?.facilityId || null;
     const activity = await HqActivity.create({
@@ -416,6 +418,7 @@ exports.createActivity = async (req, res, next) => {
       nextDate: nextDate ? new Date(nextDate) : null,
       playKey: typeof playKey === "string" && playKey ? playKey.slice(0, 200) : null,
       playId: isId(playId) ? playId : null,
+      count,
       by: by(req),
     });
     // Keep the facility's call-list columns current.
@@ -454,6 +457,8 @@ exports.updateActivity = async (req, res, next) => {
     if (b.nextDate !== undefined) set.nextDate = b.nextDate ? new Date(b.nextDate) : null;
     if (b.contactId !== undefined) set.contactId = isId(b.contactId) ? b.contactId : null;
     if (b.playId !== undefined) set.playId = isId(b.playId) ? b.playId : null;
+    if (b.count !== undefined) set.count = Math.min(500, Math.max(1, Math.round(Number(b.count) || 1)));
+    if (b.facilityId !== undefined) set.facilityId = isId(b.facilityId) ? b.facilityId : null;
     const activity = await HqActivity.findByIdAndUpdate(req.params.id, { $set: set }, { new: true }).lean();
     if (!activity) return res.status(404).json({ message: "Not found" });
     res.json({ activity });
@@ -539,7 +544,13 @@ exports.listActivities = async (req, res, next) => {
     const filter = {};
     if (isId(req.query.facilityId)) filter.facilityId = req.query.facilityId;
     if (isId(req.query.contactId)) filter.contactId = req.query.contactId;
-    const limit = Math.min(200, Number(req.query.limit) || 50);
+    const playIds = String(req.query.playIds || "").split(",").filter(isId);
+    if (playIds.length) filter.playId = { $in: playIds };
+    if (req.query.since) {
+      const since = new Date(req.query.since);
+      if (!Number.isNaN(since.getTime())) filter.at = { $gte: since };
+    }
+    const limit = Math.min(500, Number(req.query.limit) || 50);
     const activities = await HqActivity.find(filter).sort({ at: -1 }).limit(limit).populate("facilityId", "name").populate("contactId", "name").lean();
     res.json({ activities });
   } catch (err) {

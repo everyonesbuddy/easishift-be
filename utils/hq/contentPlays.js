@@ -9,6 +9,9 @@ const DAY = 24 * 60 * 60 * 1000;
 // Content plan channel → playbook channel (for the channel tag and page).
 const CHANNEL = { youtube: "youtube", linkedin: "linkedin", blog: "blog", website: "blog", newsletter: "newsletter", email: "newsletter", facebook: "facebook", other: "other" };
 
+// What a logged touch is, for plays counted from logged touches.
+const LOG_KIND = { calls: "call", email: "email", linkedin: "linkedin" };
+
 const metricValue = (m) => (!m || m.pending ? null : m.views ?? m.impressions ?? null);
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -91,7 +94,11 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
         : null;
     const unit = p.targetUnit || "";
     add({
-      key: `cadence:${p._id}:${weekKey}:${done}`,
+      // One per play per week: "Skip this week" hides it until next Monday.
+      key: `cadence:${p._id}:${weekKey}`,
+      progress: { done, target: p.weeklyTarget, unit: p.targetUnit || "" },
+      countsFrom: p.countsFrom,
+      logKind: LOG_KIND[p.channel] || "note",
       kind: "cadence",
       channel: p.channel,
       priority: behind ? 1 : 2,

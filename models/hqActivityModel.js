@@ -6,6 +6,8 @@ const hqActivitySchema = new mongoose.Schema(
     facilityId: { type: mongoose.Schema.Types.ObjectId, ref: "HqFacility", default: null },
     contactId: { type: mongoose.Schema.Types.ObjectId, ref: "HqContact", default: null },
     kind: { type: String, enum: ["call", "email", "linkedin", "meeting", "note"], default: "note" },
+    // How many this entry stands for ("15 front-desk calls this morning"); 1 for a single touch.
+    count: { type: Number, default: 1, min: 1, max: 500 },
     outcome: { type: String, trim: true, default: "" },
     notes: { type: String, default: "" },
     at: { type: Date, default: Date.now },

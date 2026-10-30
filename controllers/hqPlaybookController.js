@@ -82,7 +82,7 @@ async function scoreboard(plays, weeks) {
   const to = weeks[weeks.length - 1].end;
   const ids = plays.map((p) => p._id);
   const [acts, content, leads, signups] = await Promise.all([
-    HqActivity.find({ playId: { $in: ids }, at: { $gte: from, $lt: to } }).select("playId at").lean(),
+    HqActivity.find({ playId: { $in: ids }, at: { $gte: from, $lt: to } }).select("playId at count").lean(),
     HqContentItem.find({ playId: { $in: ids }, status: "published", publishedAt: { $gte: from, $lt: to } }).select("playId publishedAt").lean(),
     HqLead.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
     Tenant.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
@@ -90,12 +90,12 @@ async function scoreboard(plays, weeks) {
   const weekOf = (d) => weeks.findIndex((w) => d >= w.start && d < w.end);
   return plays.map((p) => {
     const counts = weeks.map(() => 0);
-    const add = (d) => {
+    const add = (d, n = 1) => {
       const i = weekOf(new Date(d));
-      if (i >= 0) counts[i] += 1;
+      if (i >= 0) counts[i] += n;
     };
     const id = String(p._id);
-    if (p.countsFrom === "activities") acts.filter((a) => String(a.playId) === id).forEach((a) => add(a.at));
+    if (p.countsFrom === "activities") acts.filter((a) => String(a.playId) === id).forEach((a) => add(a.at, a.count || 1));
     else if (p.countsFrom === "content") content.filter((c) => String(c.playId) === id).forEach((c) => add(c.publishedAt));
     else if (p.countsFrom === "leads") leads.forEach((l) => add(l.createdAt));
     else if (p.countsFrom === "signups") signups.forEach((t) => add(t.createdAt));

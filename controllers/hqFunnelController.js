@@ -58,7 +58,7 @@ exports.getFunnel = async (req, res, next) => {
       loadWorkspaces({ now }),
       HqLead.find({ createdAt: { $gte: from } }).select("createdAt newsletter source").lean(),
       Tenant.find({ $or: [{ createdAt: { $gte: from } }, { setupCompletedAt: { $gte: from } }] }).select("createdAt setupCompletedAt").lean(),
-      HqActivity.find({ at: { $gte: from } }).select("at kind").lean(),
+      HqActivity.find({ at: { $gte: from } }).select("at kind count").lean(),
       HqSync.findOne({ key: "klaviyo-weekly" }).lean(),
       google.gaConfigured() ? cachedDaily() : null,
     ]);
@@ -81,7 +81,8 @@ exports.getFunnel = async (req, res, next) => {
       : null;
     const ew = emailWeekly?.data?.weeks || {};
     const email = (field) => (emailWeekly ? Object.fromEntries(weeks.map((w) => [w.key, ew[w.key]?.[field] || 0])) : null);
-    const byKind = (k) => bucket(weeks, acts.filter((a) => a.kind === k).map((a) => a.at));
+    // A batch entry ("15 calls") counts as 15.
+    const byKind = (k) => bucket(weeks, acts.filter((a) => a.kind === k).flatMap((a) => Array(Math.min(500, a.count || 1)).fill(a.at)));
 
     const rows = [
       { group: "In", key: "visitors", label: "Website visitors", values: visitors, note: visitors ? "" : "Connect Google Analytics" },

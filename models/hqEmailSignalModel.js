@@ -13,6 +13,10 @@ const hqEmailSignalSchema = new mongoose.Schema(
     lastDeliveredAt: { type: Date, default: null },
     lastHumanClickAt: { type: Date, default: null },
     campaignsClicked: { type: [String], default: [] },
+    // The most recent real click: which email (campaign or sequence) and which link.
+    lastClickCampaign: { type: String, default: "" },
+    lastClickUrl: { type: String, default: "" },
+    lastClickFromFlow: { type: Boolean, default: false },
     unsubscribed: { type: Boolean, default: false },
     // We stopped emailing them in Klaviyo (suppressed), and why.
     suppressed: { type: Boolean, default: false },

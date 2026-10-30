@@ -187,3 +187,4 @@ exports.updateMeta = async (req, res, next) => {
 };
 
 module.exports.ensureSeeded = ensureSeeded;
+module.exports.scoreboard = scoreboard;

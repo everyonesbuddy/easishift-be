@@ -50,17 +50,22 @@ function metricsFor(item, { videos = [], pages = [], linkedin = [] }) {
   return null;
 }
 
+/** Every content item, with numbers for published ones (also used by the to-do list). */
+async function loadItems() {
+  await ensureSeeded();
+  const [items, video, web, linkedin] = await Promise.all([
+    HqContentItem.find({}).sort({ dueDate: 1, createdAt: -1 }).lean(),
+    HqSync.findOne({ key: "video" }).select("data").lean(),
+    HqSync.findOne({ key: "web" }).select("data").lean(),
+    HqLinkedinPost.find({}).lean(),
+  ]);
+  const sources = { videos: video?.data?.videos || [], pages: web?.data?.pages || [], linkedin };
+  return items.map((i) => ({ ...i, metrics: i.status === "published" ? metricsFor(i, sources) : null }));
+}
+
 exports.listItems = async (req, res, next) => {
   try {
-    await ensureSeeded();
-    const [items, video, web, linkedin] = await Promise.all([
-      HqContentItem.find({}).sort({ dueDate: 1, createdAt: -1 }).lean(),
-      HqSync.findOne({ key: "video" }).select("data").lean(),
-      HqSync.findOne({ key: "web" }).select("data").lean(),
-      HqLinkedinPost.find({}).lean(),
-    ]);
-    const sources = { videos: video?.data?.videos || [], pages: web?.data?.pages || [], linkedin };
-    res.json({ items: items.map((i) => ({ ...i, metrics: i.status === "published" ? metricsFor(i, sources) : null })) });
+    res.json({ items: await loadItems() });
   } catch (err) {
     next(err);
   }
@@ -100,3 +105,4 @@ exports.deleteItem = async (req, res, next) => {
 
 module.exports.metricsFor = metricsFor;
 module.exports.youtubeId = youtubeId;
+module.exports.loadItems = loadItems;

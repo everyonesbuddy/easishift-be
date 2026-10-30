@@ -15,6 +15,8 @@ const HqSync = require("../models/hqSyncModel");
 const HqLinkedinPost = require("../models/hqLinkedinPostModel");
 const { loadWorkspaces } = require("../utils/hq/productSignals");
 const { buildPlays } = require("../utils/hq/plays");
+const { buildContentPlays } = require("../utils/hq/contentPlays");
+const { lastWeeks } = require("../utils/hq/weeks");
 const { linkSignups } = require("../utils/hq/linkSignups");
 const { LABELS, roleFromTitle } = require("../utils/hq/roles");
 const { domainOf } = require("../utils/hq/domain");
@@ -160,22 +162,46 @@ exports.getOverview = async (req, res, next) => {
 
 // ── Plays ──────────────────────────────────────────────────────────────────
 async function computePlays(now, workspaces) {
-  const [facilities, contacts, lastTouch, done] = await Promise.all([
+  // Required here: these controllers require this one's helpers indirectly.
+  const { loadItems } = require("./hqContentPlanController");
+  const { scoreboard, ensureSeeded } = require("./hqPlaybookController");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  await ensureSeeded();
+  const [facilities, contacts, lastTouch, done, leads, items, playbook] = await Promise.all([
     HqFacility.find({}).select("name group tenantId tier stage nextDate nextStep scheduler").lean(),
-    HqContact.find({}).select("name title role email group facilityId").lean(),
+    HqContact.find({}).select("name title role email group facilityId emailReply").lean(),
     lastTouchMap(),
     HqActivity.distinct("playKey", { playKey: { $type: "string" } }),
+    HqLead.find({ createdAt: { $gte: new Date(now - 10 * 24 * HOUR) } }).sort({ createdAt: -1 }).lean(),
+    loadItems(),
+    HqPlaybookPlay.find({ active: true }).lean(),
   ]);
-  const signals = await signalsFor(contacts.map((c) => c.email));
-  const plays = buildPlays({ workspaces, facilities, contacts, signals, lastTouch, doneKeys: new Set(done), now });
+  const doneKeys = new Set(done);
+  const signals = await signalsFor([...contacts.map((c) => c.email), ...leads.map((l) => l.email)]);
+  const people = buildPlays({ workspaces, facilities, contacts, signals, lastTouch, leads, doneKeys, now });
+
+  const week = lastWeeks(1, now)[0];
+  const counts = new Map((await scoreboard(playbook, [week])).map((x) => [x.playId, x.weeks[0]]));
+  const dayOfWeek = Math.min(6, Math.max(0, Math.floor((now - week.start) / (24 * HOUR))));
+  const content = buildContentPlays({
+    items,
+    plays: playbook.map((p) => ({ ...p, done: counts.get(String(p._id)) || 0 })),
+    now,
+    dayOfWeek,
+    weekKey: week.key,
+    doneKeys,
+  });
+
   const fName = new Map(facilities.map((f) => [String(f._id), f.name]));
   const cName = new Map(contacts.map((c) => [String(c._id), { name: c.name, title: c.title, email: c.email }]));
-  return plays.map((p) => ({
-    ...p,
-    roleLabel: LABELS[p.role] || "",
-    facilityName: p.facilityId ? fName.get(p.facilityId) || "" : "",
-    contact: p.contactId ? cName.get(p.contactId) || null : null,
-  }));
+  return [...people, ...content]
+    .sort((a, b) => a.priority - b.priority)
+    .map((p) => ({
+      ...p,
+      roleLabel: LABELS[p.role] || "",
+      facilityName: p.facilityId ? fName.get(p.facilityId) || "" : "",
+      contact: p.contactId ? cName.get(p.contactId) || null : null,
+    }));
 }
 
 exports.getPlays = async (req, res, next) => {

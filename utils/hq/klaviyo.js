@@ -203,8 +203,15 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
           if (isBotClick(ev.props)) p.bot += 1;
           else {
             p.human += 1;
-            if (!p.lastHuman || ev.at > p.lastHuman) p.lastHuman = ev.at;
-            if (ev.props["Campaign Name"]) p.campaigns.add(String(ev.props["Campaign Name"]).slice(0, 120));
+            const name = String(ev.props["Campaign Name"] || ev.props.Subject || ev.props["Message Name"] || "").slice(0, 120);
+            if (!p.lastHuman || ev.at > p.lastHuman) {
+              p.lastHuman = ev.at;
+              // What they clicked most recently: the email and the link.
+              p.lastCampaign = name;
+              p.lastUrl = String(ev.props.URL || ev.props.Url || "").slice(0, 300);
+              p.lastFlow = Boolean(ev.props.$flow);
+            }
+            if (name) p.campaigns.add(name);
           }
         } else p.unsub = true;
         per.set(ev.email, p);
@@ -219,6 +226,16 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
         if (p.unsub) update.$set = { unsubscribed: true };
         return { updateOne: { filter: { email }, update, upsert: true } };
       });
+      // Remember the latest real click's email and link (only if it's newer than what we have).
+      const lastOps = [...per.entries()]
+        .filter(([, p]) => p.lastHuman)
+        .map(([email, p]) => ({
+          updateOne: {
+            filter: { email, $or: [{ lastHumanClickAt: null }, { lastHumanClickAt: { $lte: p.lastHuman } }] },
+            update: { $set: { lastClickCampaign: p.lastCampaign || "", lastClickUrl: p.lastUrl || "", lastClickFromFlow: Boolean(p.lastFlow) } },
+          },
+        }));
+      if (lastOps.length) await HqEmailSignal.bulkWrite(lastOps, { ordered: false });
       if (ops.length) await HqEmailSignal.bulkWrite(ops, { ordered: false });
       // Week-by-week totals for HQ's Numbers page.
       if (Object.keys(weekly).length) await HqSync.updateOne({ key: "klaviyo-weekly" }, { $inc: weekly }, { upsert: true });

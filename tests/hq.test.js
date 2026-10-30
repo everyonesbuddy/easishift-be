@@ -335,3 +335,50 @@ test("playbook v2: written playbook, 15 LinkedIn posts with their text, and vali
     assert.equal(new HqContentItem(item).validateSync(), undefined, c.seedKey);
   }
 });
+
+test("to-do reasons say what they clicked, what they replied, which calculator they used", () => {
+  const { pageName } = require("../utils/hq/plays");
+  assert.equal(pageName("https://wisershifts.com/calculators/hours-per-resident-day-calculator?utm_source=klaviyo"), "the hours per resident day calculator");
+  assert.equal(pageName("https://wisershifts.com/for/directors"), "the page for directors");
+  assert.equal(pageName("not a url"), "");
+  const contacts = [
+    { _id: "c1", name: "Mia", email: "mia@kendal.org", role: "executive_director", emailReply: "" },
+    { _id: "c2", name: "Bo", email: "bo@x.org", role: "don", emailReply: "Send me the snapshot" },
+  ];
+  const signals = { "mia@kendal.org": { humanClicks: 2, botClicks: 4, lastHumanClickAt: ago(1), lastClickCampaign: "The Labor Math #3", lastClickUrl: "https://wisershifts.com/calculators/overtime-cost-calculator" } };
+  const leads = [{ email: "new@pines.org", company: "Pines", source: "calculator:hours-per-resident-day", summary: "3.41 hours per resident day", createdAt: ago(1), newsletter: true }];
+  const plays = buildPlays({ contacts, signals, leads, now: NOW });
+  const click = plays.find((p) => p.kind === "personal");
+  assert.match(click.why, /Clicked "The Labor Math #3" in our Klaviyo newsletter and opened the overtime cost calculator yesterday/);
+  assert.match(click.why, /4 scanner clicks we ignore/);
+  assert.deepEqual(click.audiences, ["director"]);
+  const reply = plays.find((p) => p.kind === "reply");
+  assert.match(reply.why, /Send me the snapshot/);
+  const lead = plays.find((p) => p.kind === "lead");
+  assert.match(lead.why, /hours per resident day calculator yesterday: 3.41/);
+  assert.deepEqual(lead.audiences, ["director"]);
+});
+
+test("content to-dos: overdue, behind pace with what's next, every-two-weeks due, did well", () => {
+  const { buildContentPlays } = require("../utils/hq/contentPlays");
+  const plays = [
+    { _id: "li", title: "LinkedIn posts", active: true, weeklyTarget: 3, targetUnit: "posts", countsFrom: "content", channel: "linkedin", audience: ["director"], done: 0 },
+    { _id: "nl", title: "The newsletter", active: true, weeklyTarget: 0.5, countsFrom: "content", channel: "newsletter", audience: ["director"], done: 0 },
+    { _id: "calls", title: "Front desk calls", active: true, weeklyTarget: 60, targetUnit: "calls", countsFrom: "activities", channel: "calls", audience: ["scheduler"], done: 10 },
+  ];
+  const items = [
+    { _id: "i1", title: "Post 2", status: "ready", playId: "li", channel: "linkedin", audience: ["scheduler"], dueDate: ago(2) },
+    { _id: "i2", title: "Post 3", status: "drafting", playId: "li", channel: "linkedin", audience: ["scheduler"] },
+    ...[100, 120, 900].map((v, k) => ({ _id: `p${k}`, title: `Pub ${k}`, status: "published", publishedAt: ago(5), channel: "linkedin", audience: ["director"], metrics: { source: "LinkedIn", impressions: v } })),
+  ];
+  const out = buildContentPlays({ items, plays, now: NOW, dayOfWeek: 3, weekKey: "2026-10-26" });
+  assert.ok(out.find((p) => p.kind === "overdue" && p.contentId === "i1"));
+  const li = out.find((p) => p.playId === "li");
+  assert.match(li.title, /0 of 3 posts this week/);
+  assert.match(li.action, /Publish next: "Post 2" \(ready\)/);
+  assert.ok(out.find((p) => p.playId === "nl" && /is due/.test(p.title)));
+  assert.match(out.find((p) => p.playId === "calls").action, /50 to go/);
+  const well = out.filter((p) => p.kind === "didwell");
+  assert.equal(well.length, 1);
+  assert.match(well[0].title, /Pub 2/);
+});

@@ -203,7 +203,7 @@ async function syncEmailSignals({ now = new Date(), firstRunDays = 180 } = {}) {
           if (isBotClick(ev.props)) p.bot += 1;
           else {
             p.human += 1;
-            const name = String(ev.props["Campaign Name"] || ev.props.Subject || ev.props["Message Name"] || "").slice(0, 120);
+            const name = String(ev.props.Subject || ev.props["Campaign Name"] || ev.props["Message Name"] || "").slice(0, 120);
             if (!p.lastHuman || ev.at > p.lastHuman) {
               p.lastHuman = ev.at;
               // What they clicked most recently: the email and the link.

@@ -80,7 +80,7 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
         item: next || null,
         title: `${p.title} is due`,
         why: last ? `The last one went out ${Math.floor((now - new Date(last.publishedAt)) / DAY)} days ago.` : "Nothing has gone out yet.",
-        action: next ? `Next up: "${next.title}".` : "Add the next one to the content plan.",
+        action: next ? `Next up: "${next.title}". Mark it published here once it's out.` : "Add the next one to the content plan.",
       });
       continue;
     }
@@ -119,8 +119,8 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
       action:
         p.countsFrom === "content"
           ? next
-            ? `Publish next: "${next.title}" (${next.status}).`
-            : "Add the next piece to the content plan."
+            ? `Publish next: "${next.title}" (${next.status}), then mark it published here. Nothing to log.`
+            : "Add the next piece to the content plan. It counts once it's marked published."
           : `${p.weeklyTarget - done} to go. Log each one with this play so it counts.`,
     });
   }

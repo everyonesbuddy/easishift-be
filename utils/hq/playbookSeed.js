@@ -247,7 +247,6 @@ const PLAYS = [
 ];
 
 const META = {
-  northStar: "Upgrades from accounts with the Monday email turned on. Check it every Friday.",
   tierRules: [
     { tier: "Tier 1 (Close First)", plays: "Everything: front-desk call, leadership email the same week, LinkedIn connection with the DON or administrator, Monday email turned on at setup, operator email if they belong to a group." },
     { tier: "Tier 2", plays: "Front-desk call and one leadership email." },

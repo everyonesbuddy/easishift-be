@@ -197,7 +197,6 @@ exports.updateMeta = async (req, res, next) => {
   try {
     const b = req.body || {};
     const clean = {
-      northStar: String(b.northStar || "").slice(0, 500),
       note: String(b.note || "").slice(0, 500),
       founders: (Array.isArray(b.founders) ? b.founders : []).slice(0, 4).map((x) => String(x).slice(0, 40)),
       week: (Array.isArray(b.week) ? b.week : []).slice(0, 7).map((r) => ({ day: String(r.day || "").slice(0, 20), a: String(r.a || "").slice(0, 300), b: String(r.b || "").slice(0, 300) })),

@@ -66,7 +66,9 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
       const every = Math.round(1 / p.weeklyTarget) * 7;
       const last = items.filter((i) => String(i.playId) === String(p._id) && i.status === "published" && i.publishedAt).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))[0];
       if (last && now - new Date(last.publishedAt) < every * DAY) continue;
-      const next = open.filter((i) => String(i.playId) === String(p._id)).sort((a, b) => new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15))[0];
+      const next = open
+        .filter((i) => String(i.playId) === String(p._id))
+        .sort((a, b) => new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15) || String(a.title).localeCompare(String(b.title), "en", { numeric: true }))[0];
       add({
         key: `cadence:${p._id}:${weekKey}`,
         kind: "cadence",
@@ -90,7 +92,13 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
       p.countsFrom === "content"
         ? open
             .filter((i) => String(i.playId) === String(p._id))
-            .sort((a, b) => ["ready", "scheduled", "drafting", "idea"].indexOf(a.status) - ["ready", "scheduled", "drafting", "idea"].indexOf(b.status) || new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15))[0]
+            .sort(
+              (a, b) =>
+                ["ready", "scheduled", "drafting", "idea"].indexOf(a.status) - ["ready", "scheduled", "drafting", "idea"].indexOf(b.status) ||
+                new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15) ||
+                // No dates: go in order ("Post 4" before "Post 15").
+                String(a.title).localeCompare(String(b.title), "en", { numeric: true }),
+            )[0]
         : null;
     const unit = p.targetUnit || "";
     add({

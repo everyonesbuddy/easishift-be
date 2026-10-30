@@ -382,3 +382,11 @@ test("content to-dos: overdue, behind pace with what's next, every-two-weeks due
   assert.equal(well.length, 1);
   assert.match(well[0].title, /Pub 2/);
 });
+
+test("content to-dos pick the next post in order when nothing has a date", () => {
+  const { buildContentPlays } = require("../utils/hq/contentPlays");
+  const plays = [{ _id: "li", title: "Posts", active: true, weeklyTarget: 3, targetUnit: "posts", countsFrom: "content", channel: "linkedin", audience: ["director"], done: 0 }];
+  const items = ["Post 15: x", "Post 4: y", "Post 10: z"].map((title, k) => ({ _id: `i${k}`, title, status: "ready", playId: "li", channel: "linkedin", audience: [] }));
+  const out = buildContentPlays({ items, plays, now: NOW, dayOfWeek: 3, weekKey: "w" });
+  assert.match(out[0].action, /Post 4/);
+});

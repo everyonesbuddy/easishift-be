@@ -87,7 +87,7 @@ exports.getFunnel = async (req, res, next) => {
     const rows = [
       { group: "In", key: "visitors", label: "Website visitors", values: visitors, note: visitors ? "" : "Connect Google Analytics" },
       { group: "In", key: "leads", label: "Calculator emails", values: bucket(weeks, leads.filter((l) => l.source !== "newsletter").map((l) => l.createdAt)) },
-      { group: "In", key: "newsletter", label: "Newsletter sign-ups", values: bucket(weeks, leads.filter((l) => l.newsletter).map((l) => l.createdAt)) },
+      { group: "In", key: "newsletter", label: "Weekly email sign-ups", values: bucket(weeks, leads.filter((l) => l.newsletter).map((l) => l.createdAt)) },
       { group: "In", key: "signups", label: "Workspace signups", values: bucket(weeks, tenants.map((t) => t.createdAt)) },
       { group: "Moving", key: "setup", label: "Finished setup", values: bucket(weeks, tenants.map((t) => t.setupCompletedAt)) },
       { group: "Moving", key: "realClicks", label: "Real clicks on Klaviyo emails", values: email("human"), note: emailWeekly ? "" : "Filling in from Klaviyo…" },

@@ -336,6 +336,25 @@ test("playbook v2: written playbook, 15 LinkedIn posts with their text, and vali
   }
 });
 
+test("playbook v4: a message for each buyer, and no Labor Math newsletter", () => {
+  const seed = require("../utils/hq/playbookSeed");
+  for (const b of seed.META_V2.buyers) {
+    const m = seed.MESSAGING[b.key];
+    for (const f of ["promise", "pains", "proof", "angles", "cta", "avoid"]) assert.ok(m?.[f], `${b.key}.${f}`);
+  }
+  assert.notEqual(seed.MESSAGING.scheduler.promise, seed.MESSAGING.director.promise);
+  const all = JSON.stringify([seed.PLAYS, seed.META, seed.CONTENT, seed.V4, seed.MESSAGING]);
+  assert.ok(!/Labor Math/.test(all), "no Labor Math left in what we seed");
+  const nl = seed.PLAYS.find((p) => p.seedKey === "newsletter");
+  assert.equal(nl.weeklyTarget, 1);
+  assert.deepEqual(nl.audience, ["scheduler", "director", "operator"]);
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  assert.equal(new HqPlaybookPlay(nl).validateSync(), undefined);
+  // Version 4 only replaces text nobody edited.
+  assert.equal(seed.PRE_V4.newsletterTitle, "\"The Labor Math\" newsletter");
+  assert.ok(seed.META.week.find((w) => w.day === "Tuesday").b.includes("Klaviyo"));
+});
+
 test("to-do reasons say what they clicked, what they replied, which calculator they used", () => {
   const { pageName } = require("../utils/hq/plays");
   assert.equal(pageName("https://wisershifts.com/calculators/hours-per-resident-day-calculator?utm_source=klaviyo"), "the hours per resident day calculator");
@@ -345,11 +364,11 @@ test("to-do reasons say what they clicked, what they replied, which calculator t
     { _id: "c1", name: "Mia", email: "mia@kendal.org", role: "executive_director", emailReply: "" },
     { _id: "c2", name: "Bo", email: "bo@x.org", role: "don", emailReply: "Send me the snapshot" },
   ];
-  const signals = { "mia@kendal.org": { humanClicks: 2, botClicks: 4, lastHumanClickAt: ago(1), lastClickCampaign: "The Labor Math #3", lastClickUrl: "https://wisershifts.com/calculators/overtime-cost-calculator" } };
+  const signals = { "mia@kendal.org": { humanClicks: 2, botClicks: 4, lastHumanClickAt: ago(1), lastClickCampaign: "What could 12 minutes per shift be costing your facility?", lastClickUrl: "https://wisershifts.com/calculators/overtime-cost-calculator" } };
   const leads = [{ email: "new@pines.org", company: "Pines", source: "calculator:hours-per-resident-day", summary: "3.41 hours per resident day", createdAt: ago(1), newsletter: true }];
   const plays = buildPlays({ contacts, signals, leads, now: NOW });
   const click = plays.find((p) => p.kind === "personal");
-  assert.match(click.why, /Clicked "The Labor Math #3" in our Klaviyo newsletter and opened the overtime cost calculator yesterday/);
+  assert.match(click.why, /Clicked "What could 12 minutes per shift be costing your facility\?" in our weekly Klaviyo email and opened the overtime cost calculator yesterday/);
   assert.match(click.why, /4 scanner clicks we ignore/);
   assert.deepEqual(click.audiences, ["director"]);
   const reply = plays.find((p) => p.kind === "reply");

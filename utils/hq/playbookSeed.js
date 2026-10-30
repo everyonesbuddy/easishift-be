@@ -6,6 +6,31 @@
 
 const NOT_AGENCY = "We're software for your own team, not an agency.";
 
+// Version 4: one Klaviyo content email a week, by buyer (replaces "The Labor Math" newsletter, which we never sent).
+const NEWSLETTER_V4 = {
+  title: "Klaviyo content email (one a week, by buyer)",
+  fields: {
+    audience: ["scheduler", "director", "operator"],
+    who: "Everyone on the Klaviyo list: leaders and schedulers who opted in or that we've emailed before.",
+    goal: "Real clicks and replies. Anyone who clicks or replies gets a personal follow-up (it shows up in To do now).",
+    when: "One email a week, Tuesday morning. Alternate: leaders one week, schedulers the next. Once role is tagged in Klaviyo, send each to its own segment.",
+    steps: [
+      "Leaders' week: one cost, worked out for a building their size (\"What could 12 minutes per shift be costing your facility?\"). Our best emails so far are this kind. Ask: reply 'snapshot', or try the calculator.",
+      "Schedulers' week: one task, fixed fast (cover a call-out, build next week, a fair weekend rotation). Show it with a screenshot or a short video. Ask: start free, and I'll build your first week with you.",
+      "One idea per email. No feature lists, no product updates, no \"simplify your scheduling\".",
+      "The subject line names the problem or the number, in their words.",
+      "Reuse the week's LinkedIn post or video: same idea, written for one buyer.",
+      "The Monday labor email is a product feature. Talk about it as something WiserShifts does for their building, never as something we send to the list.",
+    ],
+    volume: "1 email a week.",
+    weeklyTarget: 1,
+    targetUnit: "emails",
+    countsFrom: "content",
+    measure: "Real clicks (Klaviyo email page in HQ), replies, calculator visits, unsubscribes. Compare leader weeks with scheduler weeks.",
+  },
+};
+const NL1_TITLE = "Leaders' email: what 0.1 hours per resident day costs a 50-bed building";
+
 const PLAYS = [
   {
     seedKey: "calls-front-desk",
@@ -141,24 +166,9 @@ const PLAYS = [
   },
   {
     seedKey: "newsletter",
-    title: "\"The Labor Math\" newsletter",
+    title: NEWSLETTER_V4.title,
     channel: "newsletter",
-    audience: ["director", "operator"],
-    who: "Administrators, DONs and regional directors.",
-    goal: "Replies and calculator visits; anyone who replies gets a leadership call.",
-    when: "Every other Tuesday.",
-    steps: [
-      "One number: a labor figure and the math behind it.",
-      "One story: what a building did about it (anonymous unless they agree).",
-      "One tool: a calculator, a checklist, or the printable summary.",
-      "One line at the end: \"Want your building's numbers on one page? Reply 'snapshot'.\"",
-      "Reuse the LinkedIn posts: two weeks of posts make one issue.",
-    ],
-    volume: "1 issue every two weeks.",
-    weeklyTarget: 0.5,
-    targetUnit: "issues",
-    countsFrom: "content",
-    measure: "Open rate, replies, calculator clicks, \"snapshot\" replies.",
+    ...NEWSLETTER_V4.fields,
   },
   {
     seedKey: "calculator-followup",
@@ -241,11 +251,11 @@ const META = {
   tierRules: [
     { tier: "Tier 1 (Close First)", plays: "Everything: front-desk call, leadership email the same week, LinkedIn connection with the DON or administrator, Monday email turned on at setup, operator email if they belong to a group." },
     { tier: "Tier 2", plays: "Front-desk call and one leadership email." },
-    { tier: "Tiers 3 and 4", plays: "Front-desk call only, plus the newsletter if you have an email." },
+    { tier: "Tiers 3 and 4", plays: "Front-desk call only, plus the weekly Klaviyo content email if they're on the list." },
   ],
   week: [
     { day: "Monday", a: "15 front-desk calls", b: "Check who got their first Monday labor email; leadership follow-up calls to them" },
-    { day: "Tuesday", a: "15 front-desk calls", b: "LinkedIn post; newsletter (every other week)" },
+    { day: "Tuesday", a: "15 front-desk calls", b: "LinkedIn post; the week's Klaviyo content email (leaders one week, schedulers the next)" },
     { day: "Wednesday", a: "15 front-desk calls; setup calls", b: "30 to 40 leadership emails to buildings called this week" },
     { day: "Thursday", a: "15 front-desk calls; setup calls; record a scheduler video", b: "Operator emails (5 to 10); LinkedIn connections and messages" },
     { day: "Friday", a: "Snapshots and printed summaries out", b: "Follow-ups to replies and calculator emails; Facebook groups; check the scoreboard" },
@@ -262,7 +272,7 @@ const CONTENT = [
   ["li-quit-signs", "Three signs someone is about to quit: call-outs, overtime streaks, hours dropping off", "linkedin_post", "linkedin", ["director"], "linkedin-posts"],
   ["li-sunday", "What a scheduler's Sunday looks like before and after", "linkedin_post", "linkedin", ["director", "scheduler"], "linkedin-posts"],
   ["li-certs", "Certifications that expire quietly, and what a 30-day warning saves", "linkedin_post", "linkedin", ["director"], "linkedin-posts"],
-  ["nl-1", "The Labor Math #1: the cost of 0.1 hours per resident day", "newsletter", "newsletter", ["director", "operator"], "newsletter"],
+  ["nl-1", NL1_TITLE, "newsletter", "newsletter", ["director", "operator"], "newsletter"],
   ["yt-callout", "How to cover a call-out in 5 minutes (without calling everyone)", "video", "youtube", ["scheduler"], "youtube-howto"],
   ["yt-next-week", "Build next week's CNA schedule in 10 minutes", "video", "youtube", ["scheduler"], "youtube-howto"],
   ["yt-weekend", "A fair weekend rotation your staff won't fight over", "video", "youtube", ["scheduler"], "youtube-howto"],
@@ -369,3 +379,61 @@ const V2_CHANNEL_TEXT = {
 const V3_CHANNELS = Object.fromEntries(META_V2.channels.filter((c) => ["email", "newsletter"].includes(c.key)).map((c) => [c.key, c]));
 
 module.exports = { PLAYS, META, CONTENT, META_V2, CONTENT_V2, V2_CHANNEL_TEXT, V3_CHANNELS };
+
+// ── Version 4: messaging by buyer, and no "Labor Math" newsletter ──
+// What we say to each buyer. Every piece of content, email, call and post starts here.
+const MESSAGING = {
+  scheduler: {
+    promise: "Next week's schedule done in minutes. Call-outs covered without calling everyone.",
+    pains: "Sunday nights on the schedule, the 5 a.m. call-out, chasing replies, \"I didn't know I was on\", time off on sticky notes, swaps in the group chat.",
+    proof: "Show the task being done, on screen, in minutes. A real schedule, not a slide.",
+    angles: "One task fixed per piece: cover a call-out, build next week, a fair weekend rotation, swaps, time off. Before and after. Printable templates.",
+    cta: "Start free, and I'll build your first week with you.",
+    avoid: "Hours per resident day, budgets, ROI, \"workforce management\". That's not their job.",
+  },
+  director: {
+    promise: "See what staffing is costing you before payroll does.",
+    pains: "Overtime found two weeks late on payroll, hours per resident day against budget, call-outs by shift, certifications lapsing before survey, turnover, agency hours.",
+    proof: "The math: one number, worked out for a building their size. The calculators. A one-page snapshot of their own building.",
+    angles: "\"What is X really costing you?\" (minutes per shift, turnover, call-outs, overtime, the time clock). Three signs someone's about to quit. Hours staffed vs hours needed. Our best Klaviyo emails are this kind.",
+    cta: "Reply 'snapshot' for your building's numbers on one page, or try the calculator.",
+    avoid: "Feature lists, \"simplify your scheduling\", free-trial-first emails (our weakest).",
+  },
+  operator: {
+    promise: "The same labor numbers from every building, every Monday, without asking for them.",
+    pains: "Each building reports differently, labor cost found after the month closes, the one building that's quietly over budget, no time to chase administrators for numbers.",
+    proof: "A building already set up in their region; the same Monday numbers side by side.",
+    angles: "Comparing buildings. The cost of one building running 0.2 hours per resident day over. What a pilot looks like in week one.",
+    cta: "Try it in one building for a month.",
+    avoid: "Scheduler how-tos, anything that sounds like a staffing agency.",
+  },
+};
+
+const V4 = {
+  overview:
+    "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free because next week's schedule gets done in minutes and call-outs get covered fast. Top-down: the DON, administrator or regional director starts because they see what staffing is costing them (hours per resident day, overtime, call-outs) before payroll does. Inside the product, that shows up as the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A free account with the Monday labor email turned on is what converts to paid.",
+  connect:
+    "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators. Calculator emails get the follow-up sequence and, if they ticked the box, the weekly Klaviyo content email. Anyone who replies or really clicks gets a personal follow-up. Each buyer hears their own message (see the buyers above). We're software for their own team, never a staffing agency: say it once in every conversation.",
+  how: {
+    director: "Cold email from your own inbox, the follow-up call, LinkedIn posts and messages, the leaders' Klaviyo email.",
+    operator: "Cold email from your own inbox, LinkedIn, the leaders' Klaviyo email, and proof from a building already set up in their region.",
+  },
+  newsletterChannel: {
+    name: "Klaviyo: content emails and sequences",
+    why: "Content, not cold outreach. One email a week, alternating leaders (what it's costing you) and schedulers (fix it fast), plus the calculator follow-up. Never a product update. Klaviyo shows who really clicks; anyone who does gets a personal follow-up.",
+  },
+};
+
+// The text versions 1 to 3 seeded, so version 4 only changes what nobody has edited.
+const PRE_V4 = {
+  newsletterTitle: "\"The Labor Math\" newsletter",
+  nl1Title: "The Labor Math #1: the cost of 0.1 hours per resident day",
+  tuesday: "LinkedIn post; newsletter (every other week)",
+  tiers34: "Front-desk call only, plus the newsletter if you have an email.",
+};
+
+module.exports.MESSAGING = MESSAGING;
+module.exports.V4 = V4;
+module.exports.PRE_V4 = PRE_V4;
+module.exports.NEWSLETTER_V4 = NEWSLETTER_V4;
+module.exports.NL1_TITLE = NL1_TITLE;

@@ -146,7 +146,7 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
         item: i,
         title: `Do another like "${i.title}"`,
         why: `${v.toLocaleString("en-US")} ${unit}, against a usual ${Math.round(mid).toLocaleString("en-US")} for this channel.`,
-        action: "Add a follow-up on the same topic (or the same format) to the content plan, and reuse it in the newsletter.",
+        action: "Add a follow-up on the same topic (or the same format) to the content plan, and reuse it in the weekly Klaviyo email.",
       });
     }
   }

@@ -16,7 +16,9 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 3;
+const SEED_VERSION = 4;
+// What we say to each buyer (on each buyer in the playbook).
+const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
 /**
  * Load the starting playbook and content once, in versions: version 1 is the
@@ -58,7 +60,41 @@ async function ensureSeeded() {
     await HqPlaybookPlay.updateOne({ seedKey: "email-hprd", title: "\"Your hours per resident day\" email" }, { $set: { title: "\"Your hours per resident day\" cold email" } });
     await HqPlaybookPlay.updateOne({ seedKey: "email-operator", title: "One-building pilot email" }, { $set: { title: "One-building pilot cold email" } });
   }
+  if (version < 4) await migrateV4();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 4: messaging by buyer, and the "Labor Math" newsletter (never sent)
+ * becomes one Klaviyo content email a week. Only text nobody edited changes;
+ * messaging is added to buyers that don't have it yet.
+ */
+async function migrateV4() {
+  const { V4, PRE_V4, MESSAGING, META_V2, NEWSLETTER_V4, NL1_TITLE } = seed;
+  await HqPlaybookPlay.updateOne({ seedKey: "newsletter", title: PRE_V4.newsletterTitle }, { $set: { title: NEWSLETTER_V4.title, ...NEWSLETTER_V4.fields } });
+  await HqContentItem.updateOne({ seedKey: "nl-1", title: PRE_V4.nl1Title }, { $set: { title: NL1_TITLE } });
+
+  const meta = await HqSync.findOne({ key: "playbook" }).lean();
+  const d = meta?.data;
+  if (!d) return;
+  const set = {};
+  if (d.overview === META_V2.overview) set["data.overview"] = V4.overview;
+  if (d.connect === META_V2.connect) set["data.connect"] = V4.connect;
+  if (Array.isArray(d.week)) set["data.week"] = d.week.map((r) => (r.b === PRE_V4.tuesday ? { ...r, b: seed.META.week.find((w) => w.day === "Tuesday").b } : r));
+  if (Array.isArray(d.tierRules)) set["data.tierRules"] = d.tierRules.map((r) => (r.plays === PRE_V4.tiers34 ? { ...r, plays: seed.META.tierRules[2].plays } : r));
+  if (Array.isArray(d.buyers)) {
+    const oldHow = Object.fromEntries(META_V2.buyers.map((b) => [b.key, b.how]));
+    set["data.buyers"] = d.buyers.map((b) => ({
+      ...(MESSAGING[b.key] || {}),
+      ...b,
+      ...(V4.how[b.key] && b.how === oldHow[b.key] ? { how: V4.how[b.key] } : {}),
+    }));
+  }
+  if (Array.isArray(d.channels)) {
+    const old = META_V2.channels.find((c) => c.key === "newsletter");
+    set["data.channels"] = d.channels.map((c) => (c.key === "newsletter" && c.why === old.why ? { ...c, ...V4.newsletterChannel } : c));
+  }
+  await HqSync.updateOne({ key: "playbook" }, { $set: set });
 }
 
 async function seedV1() {
@@ -176,6 +212,7 @@ exports.updateMeta = async (req, res, next) => {
         where: String(x.where || "").slice(0, 600),
         offer: String(x.offer || "").slice(0, 600),
         how: String(x.how || "").slice(0, 600),
+        ...Object.fromEntries(MESSAGE_FIELDS.map((f) => [f, String(x[f] || "").slice(0, 800)])),
       })),
       channels: (Array.isArray(b.channels) ? b.channels : []).slice(0, 12).map((x) => ({ key: String(x.key || "").slice(0, 30), name: String(x.name || "").slice(0, 60), why: String(x.why || "").slice(0, 800) })),
     };

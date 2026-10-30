@@ -203,7 +203,7 @@ function buildPlays({ workspaces = [], facilities = [], contacts = [], signals =
     if (!(s.humanClicks >= 2 || hot)) continue;
     const email = s.lastClickCampaign || (s.campaignsClicked || []).slice(-1)[0] || "";
     const page = pageName(s.lastClickUrl);
-    const what = s.lastClickFromFlow ? "a Klaviyo follow-up email" : "our Klaviyo newsletter";
+    const what = s.lastClickFromFlow ? "a Klaviyo follow-up email" : "our weekly Klaviyo email";
     add({
       key: `clicked:${c._id}:${s.humanClicks}`,
       kind: "personal",
@@ -245,8 +245,8 @@ function buildPlays({ workspaces = [], facilities = [], contacts = [], signals =
       email: l.email,
       title: `Follow up with ${c?.name || l.email}${l.company ? ` (${l.company})` : ""}`,
       why: calc
-        ? `Used the ${calc} calculator ${agoText(l.createdAt, now)}${l.summary ? `: ${l.summary}` : ""}.${l.newsletter ? " Joined the newsletter." : ""}`
-        : `Signed up for the newsletter ${agoText(l.createdAt, now)}.`,
+        ? `Used the ${calc} calculator ${agoText(l.createdAt, now)}${l.summary ? `: ${l.summary}` : ""}.${l.newsletter ? " Opted in to our weekly email." : ""}`
+        : `Signed up for our weekly email ${agoText(l.createdAt, now)}.`,
       action: calc
         ? "Reply personally about their result and offer to work it out from their real schedule, free."
         : "Send a short welcome from your own inbox and ask what they'd like to read about.",

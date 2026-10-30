@@ -394,8 +394,13 @@ test("content to-dos: overdue, behind pace with what's next, every-two-weeks due
   assert.ok(out.find((p) => p.kind === "overdue" && p.contentId === "i1"));
   const li = out.find((p) => p.playId === "li");
   assert.match(li.title, /0 of 3 posts this week/);
-  assert.match(li.action, /Publish next: "Post 2" \(ready\)/);
-  assert.ok(out.find((p) => p.playId === "nl" && /is due/.test(p.title)));
+  assert.match(li.action, /3 to go/);
+  // The pieces to publish, one at a time: ready first, at most what's left.
+  assert.deepEqual(li.queue.map((i) => i.title), ["Post 2", "Post 3"]);
+  assert.deepEqual(li.published, []);
+  const nl = out.find((p) => p.playId === "nl" && /is due/.test(p.title));
+  assert.ok(nl);
+  assert.equal(nl.countsFrom, "content");
   assert.match(out.find((p) => p.playId === "calls").action, /50 to go/);
   const well = out.filter((p) => p.kind === "didwell");
   assert.equal(well.length, 1);
@@ -407,5 +412,19 @@ test("content to-dos pick the next post in order when nothing has a date", () =>
   const plays = [{ _id: "li", title: "Posts", active: true, weeklyTarget: 3, targetUnit: "posts", countsFrom: "content", channel: "linkedin", audience: ["director"], done: 0 }];
   const items = ["Post 15: x", "Post 4: y", "Post 10: z"].map((title, k) => ({ _id: `i${k}`, title, status: "ready", playId: "li", channel: "linkedin", audience: [] }));
   const out = buildContentPlays({ items, plays, now: NOW, dayOfWeek: 3, weekKey: "w" });
-  assert.match(out[0].action, /Post 4/);
+  assert.deepEqual(out[0].queue.map((i) => i.title), ["Post 4: y", "Post 10: z", "Post 15: x"]);
+});
+
+test("content target lists what went out this week, and asks only for what's left", () => {
+  const { buildContentPlays } = require("../utils/hq/contentPlays");
+  const plays = [{ _id: "li", title: "Posts", active: true, weeklyTarget: 3, targetUnit: "posts", countsFrom: "content", channel: "linkedin", audience: [], done: 1 }];
+  const items = [
+    { _id: "a", title: "Post 1", status: "published", publishedAt: "2026-10-27T15:00:00Z", playId: "li", channel: "linkedin" },
+    { _id: "old", title: "Post 0", status: "published", publishedAt: "2026-10-20T15:00:00Z", playId: "li", channel: "linkedin" },
+    ...["Post 2", "Post 3", "Post 4"].map((title, k) => ({ _id: `n${k}`, title, status: "ready", playId: "li", channel: "linkedin" })),
+  ];
+  const out = buildContentPlays({ items, plays, now: new Date("2026-10-29T15:00:00Z"), dayOfWeek: 3, weekKey: "2026-10-26", weekStart: new Date("2026-10-26T04:00:00Z") });
+  assert.deepEqual(out[0].published.map((i) => i.title), ["Post 1"]);
+  assert.deepEqual(out[0].queue.map((i) => i.title), ["Post 2", "Post 3"]);
+  assert.match(out[0].action, /2 to go/);
 });

@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 4;
+const SEED_VERSION = 5;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -61,6 +61,12 @@ async function ensureSeeded() {
     await HqPlaybookPlay.updateOne({ seedKey: "email-operator", title: "One-building pilot email" }, { $set: { title: "One-building pilot cold email" } });
   }
   if (version < 4) await migrateV4();
+  if (version < 5) {
+    // Only the one sentence changes; the rest of the text stays as edited.
+    const meta = await HqSync.findOne({ key: "playbook" }).lean();
+    const o = meta?.data?.overview;
+    if (o && o.includes(seed.V5_OVERVIEW.from)) await HqSync.updateOne({ key: "playbook" }, { $set: { "data.overview": o.replace(seed.V5_OVERVIEW.from, seed.V5_OVERVIEW.to) } });
+  }
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 

@@ -189,6 +189,7 @@ async function computePlays(now, workspaces) {
     now,
     dayOfWeek,
     weekKey: week.key,
+    weekStart: week.start,
     doneKeys,
   });
 

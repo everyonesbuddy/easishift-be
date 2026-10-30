@@ -12,6 +12,7 @@ const CHANNEL = { youtube: "youtube", linkedin: "linkedin", blog: "blog", websit
 // What a logged touch is, for plays counted from logged touches.
 const LOG_KIND = { calls: "call", email: "email", linkedin: "linkedin" };
 
+const STATUS_ORDER = ["ready", "scheduled", "drafting", "idea"];
 const metricValue = (m) => (!m || m.pending ? null : m.views ?? m.impressions ?? null);
 const median = (xs) => {
   const s = [...xs].sort((a, b) => a - b);
@@ -26,7 +27,7 @@ const dayName = (d) => new Date(d).toLocaleDateString("en-US", { weekday: "long"
  * @param {number} dayOfWeek 0 = Monday … 6 = Sunday (team time zone)
  * @param {string} weekKey this week's Monday, "2026-10-26"
  */
-function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek = 0, weekKey = "", doneKeys = new Set() }) {
+function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek = 0, weekKey = "", weekStart = null, doneKeys = new Set() }) {
   const out = [];
   const add = (p) => {
     if (!doneKeys.has(p.key)) out.push(p);
@@ -34,6 +35,23 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
   const today = new Date(now.toISOString().slice(0, 10) + "T00:00:00Z");
   const open = items.filter((i) => i.status !== "published");
   const playById = new Map(plays.map((p) => [String(p._id), p]));
+  const since = weekStart ? new Date(weekStart) : weekKey && /^\d{4}-\d{2}-\d{2}$/.test(weekKey) ? new Date(`${weekKey}T00:00:00Z`) : null;
+  // A play's open pieces, next first: ready before drafts before ideas, then by date, then in order ("Post 4" before "Post 15").
+  const queueFor = (p) =>
+    open
+      .filter((i) => String(i.playId) === String(p._id))
+      .sort(
+        (a, b) =>
+          STATUS_ORDER.indexOf(a.status) - STATUS_ORDER.indexOf(b.status) ||
+          new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15) ||
+          String(a.title).localeCompare(String(b.title), "en", { numeric: true }),
+      );
+  const publishedThisWeek = (p) =>
+    since
+      ? items
+          .filter((i) => String(i.playId) === String(p._id) && i.status === "published" && i.publishedAt && new Date(i.publishedAt) >= since)
+          .sort((a, b) => new Date(a.publishedAt) - new Date(b.publishedAt))
+      : [];
 
   // Overdue and due soon.
   for (const i of open) {
@@ -66,12 +84,13 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
       const every = Math.round(1 / p.weeklyTarget) * 7;
       const last = items.filter((i) => String(i.playId) === String(p._id) && i.status === "published" && i.publishedAt).sort((a, b) => new Date(b.publishedAt) - new Date(a.publishedAt))[0];
       if (last && now - new Date(last.publishedAt) < every * DAY) continue;
-      const next = open
-        .filter((i) => String(i.playId) === String(p._id))
-        .sort((a, b) => new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15) || String(a.title).localeCompare(String(b.title), "en", { numeric: true }))[0];
+      const next = queueFor(p)[0];
       add({
         key: `cadence:${p._id}:${weekKey}`,
         kind: "cadence",
+        countsFrom: p.countsFrom,
+        queue: p.countsFrom === "content" ? (next ? [next] : []) : undefined,
+        published: p.countsFrom === "content" ? [] : undefined,
         channel: p.channel,
         priority: 1,
         audiences: p.audience,
@@ -80,7 +99,7 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
         item: next || null,
         title: `${p.title} is due`,
         why: last ? `The last one went out ${Math.floor((now - new Date(last.publishedAt)) / DAY)} days ago.` : "Nothing has gone out yet.",
-        action: next ? `Next up: "${next.title}". Mark it published here once it's out.` : "Add the next one to the content plan.",
+        action: next ? "Publish the one below, then mark it published here." : "Add the next one to the content plan.",
       });
       continue;
     }
@@ -88,18 +107,10 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
     const expected = Math.floor((p.weeklyTarget * workdaysGone) / 5);
     const behind = done < expected;
     if (!behind && dayOfWeek < 2) continue; // early in the week and on pace: no nag
-    const next =
-      p.countsFrom === "content"
-        ? open
-            .filter((i) => String(i.playId) === String(p._id))
-            .sort(
-              (a, b) =>
-                ["ready", "scheduled", "drafting", "idea"].indexOf(a.status) - ["ready", "scheduled", "drafting", "idea"].indexOf(b.status) ||
-                new Date(a.dueDate || 8.64e15) - new Date(b.dueDate || 8.64e15) ||
-                // No dates: go in order ("Post 4" before "Post 15").
-                String(a.title).localeCompare(String(b.title), "en", { numeric: true }),
-            )[0]
-        : null;
+    const isContent = p.countsFrom === "content";
+    const left = Math.max(1, Math.ceil(p.weeklyTarget - done));
+    const queue = isContent ? queueFor(p).slice(0, left) : [];
+    const next = queue[0] || null;
     const unit = p.targetUnit || "";
     add({
       // One per play per week: "Skip this week" hides it until next Monday.
@@ -114,12 +125,14 @@ function buildContentPlays({ items = [], plays = [], now = new Date(), dayOfWeek
       playId: String(p._id),
       contentId: next ? String(next._id) : null,
       item: next || null,
+      queue: isContent ? queue : undefined,
+      published: isContent ? publishedThisWeek(p) : undefined,
       title: `${p.title}: ${done} of ${p.weeklyTarget} ${unit} this week`,
       why: behind ? `Behind pace: about ${expected} by today.` : "On pace, but not there yet.",
       action:
         p.countsFrom === "content"
           ? next
-            ? `Publish next: "${next.title}" (${next.status}), then mark it published here. Nothing to log.`
+            ? `${Math.ceil(p.weeklyTarget - done)} to go. Publish them one at a time and mark each one published below as it goes out.`
             : "Add the next piece to the content plan. It counts once it's marked published."
           : `${p.weeklyTarget - done} to go. Log each one with this play so it counts.`,
     });

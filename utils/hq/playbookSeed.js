@@ -410,7 +410,7 @@ const MESSAGING = {
 
 const V4 = {
   overview:
-    "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free because next week's schedule gets done in minutes and call-outs get covered fast. Top-down: the DON, administrator or regional director starts because they see what staffing is costing them (hours per resident day, overtime, call-outs) before payroll does. Inside the product, that shows up as the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A free account with the Monday labor email turned on is what converts to paid.",
+    "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free because next week's schedule gets done in minutes and call-outs get covered fast. Top-down: the DON, administrator or regional director starts because they see what staffing is costing them (hours per resident day, overtime, call-outs) before payroll does. Inside the product, that shows up as the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A facility that builds and sends its schedule in WiserShifts every week is what converts to paid.",
   connect:
     "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators. Calculator emails get the follow-up sequence and, if they ticked the box, the weekly Klaviyo content email. Anyone who replies or really clicks gets a personal follow-up. Each buyer hears their own message (see the buyers above). We're software for their own team, never a staffing agency: say it once in every conversation.",
   how: {
@@ -434,5 +434,7 @@ const PRE_V4 = {
 module.exports.MESSAGING = MESSAGING;
 module.exports.V4 = V4;
 module.exports.PRE_V4 = PRE_V4;
+// Version 5: what converts is weekly use, not one feature.
+module.exports.V5_OVERVIEW = { from: "A free account with the Monday labor email turned on is what converts to paid.", to: "A facility that builds and sends its schedule in WiserShifts every week is what converts to paid." };
 module.exports.NEWSLETTER_V4 = NEWSLETTER_V4;
 module.exports.NL1_TITLE = NL1_TITLE;

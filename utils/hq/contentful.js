@@ -28,7 +28,16 @@ const assetMap = (data) =>
   new Map(
     (data.includes?.Asset || []).map((a) => [
       a.sys.id,
-      { url: a.fields?.file?.url ? `https:${a.fields.file.url}` : "", title: a.fields?.title || "", width: a.fields?.file?.details?.image?.width || null, height: a.fields?.file?.details?.image?.height || null },
+      {
+        url: a.fields?.file?.url ? `https:${a.fields.file.url}` : "",
+        title: a.fields?.title || "",
+        width: a.fields?.file?.details?.image?.width || null,
+        height: a.fields?.file?.details?.image?.height || null,
+        // Files (a PDF or Excel template) are shown as downloads, not images.
+        contentType: a.fields?.file?.contentType || "",
+        fileName: a.fields?.file?.fileName || "",
+        size: a.fields?.file?.details?.size || null,
+      },
     ]),
   );
 

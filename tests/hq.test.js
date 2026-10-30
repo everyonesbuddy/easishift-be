@@ -318,3 +318,20 @@ test("starting playbook: every content idea points at a real play", () => {
   const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
   for (const p of PLAYS) assert.equal(new HqPlaybookPlay(p).validateSync(), undefined, p.seedKey);
 });
+
+test("playbook v2: written playbook, 15 LinkedIn posts with their text, and valid content items", () => {
+  const { META_V2, CONTENT_V2, PLAYS } = require("../utils/hq/playbookSeed");
+  const HqContentItem = require("../models/hqContentItemModel");
+  assert.equal(META_V2.buyers.length, 3);
+  const posts = CONTENT_V2.filter((c) => c.seedKey.startsWith("li-plan-"));
+  assert.equal(posts.length, 15);
+  assert.match(posts[0].notes, /^When: Week 1 · Tuesday 11:30 AM ET/);
+  assert.match(posts[0].notes, /I didn't know I was on/);
+  assert.ok(!posts[0].notes.includes("*"), "markdown stripped");
+  const keys = new Set(PLAYS.map((p) => p.seedKey));
+  for (const c of CONTENT_V2) {
+    assert.ok(keys.has(c.play), c.seedKey);
+    const { play, ...item } = c;
+    assert.equal(new HqContentItem(item).validateSync(), undefined, c.seedKey);
+  }
+});

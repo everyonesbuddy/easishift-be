@@ -16,8 +16,39 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-/** First visit: load the starting playbook and content ideas (only when empty). */
+const SEED_VERSION = 2;
+
+/**
+ * Load the starting playbook and content once, in versions: version 1 is the
+ * plays and first ideas; version 2 adds the written playbook (buyers,
+ * channels), the LinkedIn post plan and more video and Facebook ideas.
+ * Each version runs once, so anything you delete stays deleted.
+ */
 async function ensureSeeded() {
+  const state = await HqSync.findOne({ key: "playbook-seed" }).lean();
+  let version = state?.data?.version || 0;
+  if (version >= SEED_VERSION) return;
+  if (version < 1) {
+    await seedV1();
+    version = 1;
+  }
+  if (version < 2) {
+    const plays = new Map((await HqPlaybookPlay.find({ seedKey: { $ne: null } }).select("seedKey").lean()).map((p) => [p.seedKey, p._id]));
+    for (const c of seed.CONTENT_V2) {
+      const { play, ...item } = c;
+      await HqContentItem.updateOne({ seedKey: c.seedKey }, { $setOnInsert: { ...item, playId: plays.get(play) || null } }, { upsert: true });
+    }
+    const meta = await HqSync.findOne({ key: "playbook" }).lean();
+    const add = {};
+    for (const k of ["overview", "connect", "buyers", "channels"]) if (!meta?.data?.[k]) add[`data.${k}`] = seed.META_V2[k];
+    if (Object.keys(add).length) await HqSync.updateOne({ key: "playbook" }, { $set: add }, { upsert: true });
+    // The plan is three LinkedIn posts a week.
+    await HqPlaybookPlay.updateOne({ seedKey: "linkedin-posts", weeklyTarget: 2 }, { $set: { weeklyTarget: 3, volume: "3 posts a week: Tuesday 11:30 a.m., Wednesday 4 p.m., Thursday 1:30 p.m. ET." } });
+  }
+  await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+async function seedV1() {
   if (await HqPlaybookPlay.exists({})) return;
   const created = new Map();
   for (const [i, p] of seed.PLAYS.entries()) {
@@ -67,7 +98,7 @@ exports.getPlaybook = async (req, res, next) => {
     const scores = new Map((await scoreboard(plays, weeks)).map((s) => [s.playId, s.weeks]));
     res.json({
       weeks: weeks.map((w) => w.key),
-      meta: meta?.data || seed.META,
+      meta: { ...seed.META, ...seed.META_V2, ...(meta?.data || {}) },
       plays: plays.map((p) => ({ ...p, done: scores.get(String(p._id)) || [0, 0, 0, 0] })),
     });
   } catch (err) {
@@ -122,6 +153,18 @@ exports.updateMeta = async (req, res, next) => {
       founders: (Array.isArray(b.founders) ? b.founders : []).slice(0, 4).map((x) => String(x).slice(0, 40)),
       week: (Array.isArray(b.week) ? b.week : []).slice(0, 7).map((r) => ({ day: String(r.day || "").slice(0, 20), a: String(r.a || "").slice(0, 300), b: String(r.b || "").slice(0, 300) })),
       tierRules: (Array.isArray(b.tierRules) ? b.tierRules : []).slice(0, 8).map((r) => ({ tier: String(r.tier || "").slice(0, 60), plays: String(r.plays || "").slice(0, 400) })),
+      overview: String(b.overview || "").slice(0, 3000),
+      connect: String(b.connect || "").slice(0, 3000),
+      buyers: (Array.isArray(b.buyers) ? b.buyers : []).slice(0, 6).map((x) => ({
+        key: String(x.key || "").slice(0, 30),
+        name: String(x.name || "").slice(0, 80),
+        who: String(x.who || "").slice(0, 600),
+        cares: String(x.cares || "").slice(0, 600),
+        where: String(x.where || "").slice(0, 600),
+        offer: String(x.offer || "").slice(0, 600),
+        how: String(x.how || "").slice(0, 600),
+      })),
+      channels: (Array.isArray(b.channels) ? b.channels : []).slice(0, 12).map((x) => ({ key: String(x.key || "").slice(0, 30), name: String(x.name || "").slice(0, 60), why: String(x.why || "").slice(0, 800) })),
     };
     await HqSync.updateOne({ key: "playbook" }, { $set: { data: clean } }, { upsert: true });
     res.json({ meta: clean });

@@ -271,4 +271,94 @@ const CONTENT = [
   ["fb-callout-cost", "Share the call-out cost calculator in scheduler groups", "facebook_post", "facebook", ["scheduler"], "facebook-groups"],
 ];
 
-module.exports = { PLAYS, META, CONTENT };
+// ── Version 2: the written playbook (buyers, channels), the LinkedIn plan, more video and Facebook ideas ──
+
+const META_V2 = {
+  overview:
+    "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free and builds the schedule in WiserShifts. Top-down: the DON, administrator or regional director sees their labor numbers (hours per resident day, overtime, call-outs) in the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A free account with the Monday labor email turned on is what converts to paid.",
+  connect:
+    "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators. Calculator emails go to the newsletter and the follow-up sequence. Anyone who replies anywhere gets a call. We're software for their own team, never a staffing agency: say it once in every conversation.",
+  buyers: [
+    {
+      key: "scheduler",
+      name: "Schedulers",
+      who: "The scheduler or staffing coordinator (sometimes the DON in a small building). Builds the schedule, covers call-outs, chases replies.",
+      cares: "Sunday nights spent on the schedule, 5 a.m. call-outs, \"I didn't know I was on\", time off on sticky notes.",
+      where: "Google and YouTube when stuck, Facebook groups, the phone at the front desk. Rarely LinkedIn or cold email.",
+      offer: "Free account, and \"I'll build your first week with you\".",
+      how: "Content they find while solving a problem (videos, templates, search), front-desk calls, a few LinkedIn posts.",
+    },
+    {
+      key: "director",
+      name: "DONs, EDs and administrators",
+      who: "Director of nursing, executive director, administrator. Owns the labor budget and signs off.",
+      cares: "Hours per resident day against budget, overtime before payroll, call-outs by shift, certifications, who's about to quit.",
+      where: "Email and LinkedIn. They answer the phone after they've heard of you.",
+      offer: "A free one-page labor snapshot, then the Monday labor email.",
+      how: "Leadership email, the follow-up call, LinkedIn posts and messages, the newsletter.",
+    },
+    {
+      key: "operator",
+      name: "Regional operators and owners",
+      who: "Regional director of operations, VP, COO or owner of a group of buildings.",
+      cares: "The same numbers in every building, every Monday; labor cost across the group.",
+      where: "Email and LinkedIn.",
+      offer: "A one-building pilot for a month.",
+      how: "Operator email, LinkedIn, the newsletter, and proof from a building already set up in their region.",
+    },
+  ],
+  channels: [
+    { key: "calls", name: "Calls", why: "Reach the people who never answer email: the scheduler first, then the DON or administrator once there's something to show." },
+    { key: "email", name: "Email", why: "Reach DONs, administrators and regional directors you haven't called yet. Lead with their number, not our features. Send from your own inbox." },
+    { key: "linkedin", name: "LinkedIn", why: "Make your name familiar before the email or call lands. Leaders are on it; schedulers mostly aren't. Three posts a week from the founders." },
+    { key: "newsletter", name: "Newsletter", why: "Stay in front of leaders between calls. Useful and short, never a product update." },
+    { key: "youtube", name: "YouTube", why: "Schedulers search for how to do the job. One short how-to a week, each solving one problem on screen." },
+    { key: "blog", name: "Blog and search", why: "Templates and how-to posts that show up on Google for what schedulers and DONs search." },
+    { key: "facebook", name: "Facebook groups", why: "Where schedulers and CNAs talk shop. Be helpful; share a template or video when it answers the question." },
+  ],
+};
+
+const LINKEDIN_POSTS = require("./linkedinPosts.json");
+// Who each post speaks to most (posts 3, 8, 10, 13, 14 reach leaders too).
+const POST_AUDIENCE = (n) => ([3, 8, 10, 13, 14].includes(n) ? ["scheduler", "director"] : ["scheduler"]);
+
+const CONTENT_V2 = [
+  ...LINKEDIN_POSTS.map((p) => ({
+    seedKey: `li-plan-${p.num}`,
+    title: `Post ${p.num}: ${p.title}`,
+    format: "linkedin_post",
+    channel: "linkedin",
+    audience: POST_AUDIENCE(p.num),
+    status: "ready",
+    play: "linkedin-posts",
+    notes: `When: ${p.when}\n\n${p.body}${p.visual ? `\n\nVisual: ${p.visual}` : ""}`,
+  })),
+  ...[
+    ["yt-staff-link", "How your staff see their schedule without an app (staff link walkthrough)", "Turns Post 4 into a 2-minute screen recording."],
+    ["yt-publish-unit", "Send one unit's schedule while the rest is still in progress", "From Post 5. Show the Publish sheet with one area picked."],
+    ["yt-swaps", "Shift swaps without the group chat", "From Post 11. Holiday timing."],
+    ["yt-time-off", "Time-off requests in one place (no sticky notes)", "From Post 12."],
+    ["yt-first-week", "Your first week in WiserShifts, start to send, in 10 minutes", "The free-setup offer on video (Post 15)."],
+  ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "video", channel: "youtube", audience: ["scheduler"], status: "idea", play: "youtube-howto", notes })),
+  ...[
+    ["short-5am", "Short: the 5 a.m. call-out (30 seconds)", "Cut from the call-out video for YouTube Shorts and Facebook."],
+    ["short-sunday", "Short: the Sunday schedule, before and after", "From Post 1."],
+  ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "short_video", channel: "youtube", audience: ["scheduler"], status: "idea", play: "youtube-howto", notes })),
+  ...[
+    ["fb-poll-longest", "Ask the group: what takes the longest when you build the schedule?", "Same poll as Post 3; bring the answers back to Post 14."],
+    ["fb-template", "Share the printable weekly schedule template", "Answer a \"does anyone have a template\" question with it."],
+    ["fb-first-week", "Offer: I'll build your first week with you", "Post 15, in plain words, where the group allows offers."],
+  ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "facebook_post", channel: "facebook", audience: ["scheduler"], status: "idea", play: "facebook-groups", notes })),
+  {
+    seedKey: "tpl-callout-log",
+    title: "Call-out log template (printable)",
+    format: "template",
+    channel: "website",
+    audience: ["scheduler", "director"],
+    status: "idea",
+    play: "search-templates",
+    notes: "Pairs with the call-out cost calculator.",
+  },
+];
+
+module.exports = { PLAYS, META, CONTENT, META_V2, CONTENT_V2 };

@@ -62,7 +62,7 @@ const PLAYS = [
   },
   {
     seedKey: "email-hprd",
-    title: "\"Your hours per resident day\" email",
+    title: "\"Your hours per resident day\" cold email",
     channel: "email",
     audience: ["director"],
     who: "DONs and administrators at buildings you've called, or in tiers 1 and 2.",
@@ -82,7 +82,7 @@ const PLAYS = [
   },
   {
     seedKey: "email-operator",
-    title: "One-building pilot email",
+    title: "One-building pilot cold email",
     channel: "email",
     audience: ["operator"],
     who: "Management companies or owners with three or more buildings.",
@@ -163,7 +163,7 @@ const PLAYS = [
   {
     seedKey: "calculator-followup",
     title: "Calculator follow-up (three emails)",
-    channel: "email",
+    channel: "newsletter",
     audience: ["scheduler", "director"],
     who: "Anyone who leaves their email on a calculator.",
     goal: "Turn a visit into a snapshot or a trial.",
@@ -309,9 +309,9 @@ const META_V2 = {
   ],
   channels: [
     { key: "calls", name: "Calls", why: "Reach the people who never answer email: the scheduler first, then the DON or administrator once there's something to show." },
-    { key: "email", name: "Email", why: "Reach DONs, administrators and regional directors you haven't called yet. Lead with their number, not our features. Send from your own inbox." },
+    { key: "email", name: "Cold outreach email", why: "One-to-one emails from your own inbox (Gmail or Outlook), not Klaviyo, to DONs, administrators and regional directors you haven't called yet. Lead with their number, not our features. Log each one in HQ." },
     { key: "linkedin", name: "LinkedIn", why: "Make your name familiar before the email or call lands. Leaders are on it; schedulers mostly aren't. Three posts a week from the founders." },
-    { key: "newsletter", name: "Newsletter", why: "Stay in front of leaders between calls. Useful and short, never a product update." },
+    { key: "newsletter", name: "Klaviyo: newsletter and sequences", why: "Content, not cold outreach: the newsletter and the calculator follow-up, sent through Klaviyo. Useful and short, never a product update. Klaviyo shows who really clicks; anyone who does gets a personal follow-up." },
     { key: "youtube", name: "YouTube", why: "Schedulers search for how to do the job. One short how-to a week, each solving one problem on screen." },
     { key: "blog", name: "Blog and search", why: "Templates and how-to posts that show up on Google for what schedulers and DONs search." },
     { key: "facebook", name: "Facebook groups", why: "Where schedulers and CNAs talk shop. Be helpful; share a template or video when it answers the question." },
@@ -361,4 +361,11 @@ const CONTENT_V2 = [
   },
 ];
 
-module.exports = { PLAYS, META, CONTENT, META_V2, CONTENT_V2 };
+// Version 3: Klaviyo is the content channel; emails from your own inbox are cold outreach.
+const V2_CHANNEL_TEXT = {
+  email: "Reach DONs, administrators and regional directors you haven't called yet. Lead with their number, not our features. Send from your own inbox.",
+  newsletter: "Stay in front of leaders between calls. Useful and short, never a product update.",
+};
+const V3_CHANNELS = Object.fromEntries(META_V2.channels.filter((c) => ["email", "newsletter"].includes(c.key)).map((c) => [c.key, c]));
+
+module.exports = { PLAYS, META, CONTENT, META_V2, CONTENT_V2, V2_CHANNEL_TEXT, V3_CHANNELS };

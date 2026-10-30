@@ -14,6 +14,7 @@ const sheets = require("../controllers/hqSheetsController");
 const playbook = require("../controllers/hqPlaybookController");
 const contentPlan = require("../controllers/hqContentPlanController");
 const funnel = require("../controllers/hqFunnelController");
+const email = require("../controllers/hqEmailController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
@@ -79,7 +80,10 @@ router.get("/funnel", funnel.getFunnel);
 router.get("/signups", hq.getSignups);
 router.get("/content", hq.getContent);
 router.get("/web", hq.getWeb);
-router.get("/email", hq.getEmail);
+router.get("/email", email.getEmail);
+router.post("/email/suppress", email.suppress);
+router.post("/email/unsuppress", email.unsuppress);
+router.post("/email/add-to-crm", email.addToCrm);
 router.post("/sync/klaviyo", hq.syncKlaviyo);
 
 module.exports = router;

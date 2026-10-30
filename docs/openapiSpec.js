@@ -221,7 +221,10 @@ const ROUTES = [
   ["get", "/hq/signups", "HQ", "Every workspace with how it's doing (setup, active, leadership reached, plan, trial, signup answers) and recent calculator leads"],
   ["get", "/hq/content", "HQ", "Blog posts (Contentful, with GA4 views), YouTube channel and videos, LinkedIn posts", { query: ["refresh"] }],
   ["get", "/hq/web", "HQ", "Website (GA4) and Google search (Search Console), last 28 days", { query: ["refresh"] }],
-  ["get", "/hq/email", "HQ", "Klaviyo: delivered, real clicks vs scanner clicks, top clickers matched to people"],
+  ["get", "/hq/email", "HQ", "Klaviyo: totals, how Klaviyo's list lines up with the CRM, and people in one group (real clickers, scanner-only, no clicks, unsubscribed, stopped, only in Klaviyo, only in the CRM)", { query: ["view", "q", "page", "limit"] }],
+  ["post", "/hq/email/suppress", "HQ", "Stop emailing these addresses in Klaviyo (suppression, undoable), with a reason", { body: { emails: ["someone@example.com"], reason: "bad_reply" } }],
+  ["post", "/hq/email/unsuppress", "HQ", "Start emailing them again in Klaviyo", { body: { emails: ["someone@example.com"] } }],
+  ["post", "/hq/email/add-to-crm", "HQ", "Add Klaviyo-only addresses to the CRM as people", { body: { emails: ["someone@example.com"] } }],
   ["post", "/hq/sync/klaviyo", "HQ", "Pull new Klaviyo email events now (also runs hourly)"],
 ];
 

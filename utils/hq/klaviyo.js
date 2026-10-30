@@ -75,6 +75,23 @@ async function subscribe({ email, listId = process.env.KLAVIYO_LIST_ID, source =
 }
 
 /**
+ * Stop (or restart) marketing email to these addresses in Klaviyo. This is
+ * Klaviyo's suppression: the profile stays, nothing more is sent to it, and
+ * it can be undone. Up to 100 addresses per call.
+ */
+async function setSuppressed(emails, suppressed) {
+  const list = [...new Set(emails.map((e) => String(e).trim().toLowerCase()).filter(Boolean))];
+  for (let i = 0; i < list.length; i += 100) {
+    const chunk = list.slice(i, i + 100);
+    const type = suppressed ? "profile-suppression-bulk-create-job" : "profile-suppression-bulk-delete-job";
+    await client().post(suppressed ? "/profile-suppression-bulk-create-jobs" : "/profile-suppression-bulk-delete-jobs", {
+      data: { type, attributes: { profiles: { data: chunk.map((email) => ({ type: "profile", attributes: { email } })) } } },
+    });
+  }
+  return list.length;
+}
+
+/**
  * Everything for one calculator lead, best effort. Returns { synced, error }.
  */
 async function sendLead(lead) {
@@ -250,4 +267,4 @@ async function rebuildEmailWeeks({ days = 91, now = new Date() } = {}) {
   return { ok: true, weeks: Object.keys(weeks).length };
 }
 
-module.exports = { rebuildEmailWeeks, isConfigured, upsertProfile, trackEvent, subscribe, sendLead, syncEmailSignals, isBotClick, metricIdByName };
+module.exports = { setSuppressed, errText, rebuildEmailWeeks, isConfigured, upsertProfile, trackEvent, subscribe, sendLead, syncEmailSignals, isBotClick, metricIdByName };

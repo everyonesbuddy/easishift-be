@@ -598,26 +598,6 @@ exports.getWeb = async (req, res, next) => {
   }
 };
 
-exports.getEmail = async (req, res, next) => {
-  try {
-    const [top, totals, sync] = await Promise.all([
-      HqEmailSignal.find({ humanClicks: { $gt: 0 } }).sort({ humanClicks: -1, lastHumanClickAt: -1 }).limit(100).lean(),
-      HqEmailSignal.aggregate([{ $group: { _id: null, people: { $sum: 1 }, delivered: { $sum: "$delivered" }, human: { $sum: "$humanClicks" }, bot: { $sum: "$botClicks" } } }]),
-      HqSync.findOne({ key: "klaviyo" }).select("lastOkAt lastRunAt error").lean(),
-    ]);
-    const contacts = await HqContact.find({ email: { $in: top.map((t) => t.email) } }).select("name title role email group facilityId facilityName").lean();
-    const cBy = new Map(contacts.map((c) => [c.email, c]));
-    res.json({
-      configured: klaviyo.isConfigured(),
-      sync,
-      totals: totals[0] ? { ...totals[0], _id: undefined } : { people: 0, delivered: 0, human: 0, bot: 0 },
-      clickers: top.map((t) => ({ ...t, contact: cBy.get(t.email) || null })),
-    });
-  } catch (err) {
-    next(err);
-  }
-};
-
 exports.syncKlaviyo = async (req, res, next) => {
   try {
     if (!klaviyo.isConfigured()) return res.status(400).json({ message: "Klaviyo isn't connected yet (KLAVIYO_PRIVATE_KEY)." });

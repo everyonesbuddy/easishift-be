@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 2;
+const SEED_VERSION = 3;
 
 /**
  * Load the starting playbook and content once, in versions: version 1 is the
@@ -44,6 +44,19 @@ async function ensureSeeded() {
     if (Object.keys(add).length) await HqSync.updateOne({ key: "playbook" }, { $set: add }, { upsert: true });
     // The plan is three LinkedIn posts a week.
     await HqPlaybookPlay.updateOne({ seedKey: "linkedin-posts", weeklyTarget: 2 }, { $set: { weeklyTarget: 3, volume: "3 posts a week: Tuesday 11:30 a.m., Wednesday 4 p.m., Thursday 1:30 p.m. ET." } });
+  }
+  if (version < 3) {
+    // Klaviyo is content; emails from your own inbox are cold outreach. Only text nobody has edited is changed.
+    const meta = await HqSync.findOne({ key: "playbook" }).lean();
+    if (meta?.data?.channels) {
+      const channels = meta.data.channels.map((c) =>
+        seed.V3_CHANNELS[c.key] && (c.why === seed.V2_CHANNEL_TEXT[c.key] || !c.why) ? { ...c, name: seed.V3_CHANNELS[c.key].name, why: seed.V3_CHANNELS[c.key].why } : c,
+      );
+      await HqSync.updateOne({ key: "playbook" }, { $set: { "data.channels": channels } });
+    }
+    await HqPlaybookPlay.updateOne({ seedKey: "calculator-followup", channel: "email" }, { $set: { channel: "newsletter" } });
+    await HqPlaybookPlay.updateOne({ seedKey: "email-hprd", title: "\"Your hours per resident day\" email" }, { $set: { title: "\"Your hours per resident day\" cold email" } });
+    await HqPlaybookPlay.updateOne({ seedKey: "email-operator", title: "One-building pilot email" }, { $set: { title: "One-building pilot cold email" } });
   }
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }

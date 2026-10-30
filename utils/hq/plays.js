@@ -122,7 +122,7 @@ function buildPlays({ workspaces = [], facilities = [], contacts = [], signals =
   for (const c of contacts) {
     if (!c.email) continue;
     const s = get(signals, c.email);
-    if (!s || s.humanClicks < 1) continue;
+    if (!s || s.humanClicks < 1 || s.suppressed || s.unsubscribed) continue;
     const touched = Math.min(daysSince(get(lastTouch, String(c._id)), now), daysSince(c.facilityId && get(lastTouch, String(c.facilityId)), now));
     if (touched < 7) continue;
     const hot = s.humanClicks >= 3 || daysSince(s.lastHumanClickAt, now) <= 3;

@@ -14,10 +14,16 @@ const hqEmailSignalSchema = new mongoose.Schema(
     lastHumanClickAt: { type: Date, default: null },
     campaignsClicked: { type: [String], default: [] },
     unsubscribed: { type: Boolean, default: false },
+    // We stopped emailing them in Klaviyo (suppressed), and why.
+    suppressed: { type: Boolean, default: false },
+    suppressedAt: { type: Date, default: null },
+    suppressReason: { type: String, default: "" },
+    suppressedBy: { type: String, default: "" },
   },
   { timestamps: true },
 );
 
 hqEmailSignalSchema.index({ email: 1 }, { unique: true });
+hqEmailSignalSchema.index({ humanClicks: -1 });
 
 module.exports = mongoose.model("HqEmailSignal", hqEmailSignalSchema);

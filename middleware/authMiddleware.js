@@ -17,6 +17,8 @@ module.exports = async (req, res, next) => {
       : authHeader;
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    // HQ sessions are for WiserShifts' own team and never open a workspace.
+    if (decoded.typ === "hq") return res.status(401).json({ message: "Invalid authentication" });
 
     // Attach user + tenant to request
     req.user = await User.findById(decoded.id);

@@ -1,0 +1,107 @@
+[
+ {
+  "num": 1,
+  "title": "The Sunday schedule",
+  "body": "Every scheduler I talk to in assisted living and nursing tells me some version of the same story.\n\nSunday night. Kitchen table. Last week's Excel file open. Copying names across, fixing the three people who asked off, texting the two who still haven't answered.\n\nThen Monday morning someone says, \"I didn't know I was on.\"\n\nThe schedule isn't hard because scheduling is hard. It's hard because it lives in a spreadsheet, a group chat and someone's memory at the same time.\n\nThat's the problem we're solving with WiserShifts: build the week once, send it to everyone in one click, and let each person see just their shifts on their phone.\n\nSchedulers: what part of your week takes the longest?\n\n#SeniorLiving #Scheduling #NursingHomes",
+  "visual": "A laptop with a spreadsheet at night, or just the line \"I didn't know I was on.\"",
+  "when": "Week 1 · Tuesday 11:30 AM ET"
+ },
+ {
+  "num": 2,
+  "title": "Next week starts from this week",
+  "body": "Most weeks look a lot like last week.\n\nSame people. Same shifts. A few time-off requests, a new hire, someone who switched to nights.\n\nSo why does every new schedule start from a blank page?\n\nIn WiserShifts, you set your weekly needs once: how many CNAs, med techs and nurses each shift needs. Every new week starts from that.\n\nThen auto-fill keeps last week's people in the same spots and fills the gaps with whoever is free and qualified. You fix the few things that changed and send it.\n\nTen minutes instead of a Sunday.\n\n#SeniorLivingOperations #Scheduling #AssistedLiving",
+  "visual": "Real screenshot of the Auto-fill sheet with \"Keep last week's people\" switched on.",
+  "when": "Week 1 · Wednesday 4:00 PM ET"
+ },
+ {
+  "num": 3,
+  "title": "Poll: what takes the longest?",
+  "body": "Schedulers and DONs: what takes the longest when you build the schedule?\n\nBuilding the week\n\nWaiting on time-off answers\n\nGetting it to everyone\n\nFixing it after call-outs\n\nWe are building a scheduling tool for care facilities and I'd rather hear it from the people doing the work. Tell me in the comments what you'd change first.\n\n#SeniorLiving #NursingLeadership #Scheduling",
+  "visual": "None; the poll is the visual. Save the results for Post 14.",
+  "when": "Week 1 · Thursday 1:30 PM ET"
+ },
+ {
+  "num": 4,
+  "title": "Your staff don't need an app",
+  "body": "One decision we made early: staff don't download anything to see their schedule.\n\nWhen a care facility rolls out a new app, half the CNAs install it, a quarter forget the password, and the scheduler ends up texting the schedule anyway.\n\nSo in WiserShifts, each person gets their own link by text or email. Tap it, see your shifts. If you have the app, it opens there. If not, it opens in the browser. No account. No password.\n\nThe scheduler gets one place to build and send. Staff get one link that always shows the current week.\n\nSimple beats feature-rich when your team works 12-hour shifts.\n\n#SeniorLiving #CNA #EmployeeScheduling",
+  "visual": "Real screenshot of a staff link on a phone: one person's shifts for the week.",
+  "when": "Week 2 · Tuesday 11:30 AM ET"
+ },
+ {
+  "num": 5,
+  "title": "Publish one unit at a time",
+  "body": "Memory Care's schedule is done. Assisted Living is still waiting on two time-off answers.\n\nDo you hold everything until it's all perfect, or send what's ready?\n\nWe built WiserShifts so you can do either. Send the whole week, or send just one part of it: one unit, or one role like med techs or dining.\n\nThe people on the finished part get their shifts today. The rest go out when they're ready. Nobody waits on someone else's unit.\n\nSmall feature. Big difference on a Thursday afternoon.\n\n#SeniorLiving #MemoryCare #WorkforceScheduling",
+  "visual": "Real screenshot of the Publish sheet with \"A section\" selected and Memory Care picked.",
+  "when": "Week 2 · Wednesday 4:00 PM ET"
+ },
+ {
+  "num": 6,
+  "title": "Scheduling goes beyond nursing",
+  "body": "Scheduling a senior living community isn't just nursing.\n\nIt's CNAs and caregivers. Med techs. Dining and kitchen. Housekeeping. Maintenance. Activities. Front desk. Drivers.\n\nDifferent teams, different shifts, often different people building each part.\n\nIn WiserShifts, every role and every area lives on one week, and you can work on one part without touching the rest: fill just the kitchen, send just housekeeping, check just Memory Care.\n\nOne schedule for the whole building. Built one piece at a time.\n\n#SeniorLivingOperations #AssistedLiving #Scheduling",
+  "visual": "Real screenshot of the week grid filtered to one role or area.",
+  "when": "Week 2 · Thursday 1:30 PM ET"
+ },
+ {
+  "num": 7,
+  "title": "The 5 a.m. call-out",
+  "body": "5:04 a.m. \"Can't make it today.\"\n\nNow the scheduler is scrolling contacts, texting five people one by one, and hoping someone says yes before shift change.\n\nIn WiserShifts, the open shift goes out by text to the people who are qualified and free. Staff can pick it up right from their own link, and the schedule updates for everyone.\n\nNo phone tree. No group chat with 40 people. No guessing who already said no.\n\nCall-outs will always happen. Covering them shouldn't take an hour.\n\n#SeniorLiving #CNA #StaffingShortage",
+  "visual": "Real screenshot of the Open shifts tab on a staff link, or a phone showing the call-out text.",
+  "when": "Week 3 · Tuesday 11:30 AM ET"
+ },
+ {
+  "num": 8,
+  "title": "What a call-out really costs",
+  "body": "Quick math most facilities never do.\n\nOne call-out on a 12-hour shift can mean overtime at time-and-a-half, or an agency CNA at a premium rate, plus the time someone spends finding a replacement.\n\nNow multiply by how many call-outs you get in a month.\n\nWe built a free calculator so you can run it with your own numbers in two minutes.\n\nwisershifts.com/calculators/call-out-cost-calculator?utm_source=linkedin\n\nWhat number did you get? I'm curious how it compares across buildings.\n\n#SeniorLiving #LaborCosts #Staffing",
+  "visual": "Screenshot of the calculator with sample numbers filled in.",
+  "when": "Week 3 · Wednesday 4:00 PM ET"
+ },
+ {
+  "num": 9,
+  "title": "Poll: how do you cover a call-out?",
+  "body": "Schedulers: when someone calls out at 5 a.m., what's your first move?\n\nText people one by one\n\nGroup text the whole team\n\nCall the agency\n\nWork it yourself\n\nNo wrong answers. I'm collecting what actually happens on the floor.\n\n#SeniorLiving #NursingLeadership #CNA",
+  "visual": "None; the poll is the visual. Save the results for Post 14.",
+  "when": "Week 3 · Thursday 1:30 PM ET"
+ },
+ {
+  "num": 10,
+  "title": "A no-show isn't an open shift",
+  "body": "Something we just fixed, because a customer caught it.\n\nTwo people were scheduled. Neither clocked in. The shift ended, and the schedule showed two open spots for a shift that was already over.\n\nThat's wrong. You can't fill a shift that already happened.\n\nNow a spot that's over shows what actually happened: the no-shows in red, and how many people you were short. Open spots only show for shifts you can still fill.\n\nSmall detail. But a schedule should tell the truth about yesterday, not just plan tomorrow.\n\n#BuildInPublic #SeniorLiving #Scheduling",
+  "visual": "Real screenshot of a past day on the week grid: names in red with \"2 no-show\" and \"2 short\".",
+  "when": "Week 4 · Tuesday 11:30 AM ET"
+ },
+ {
+  "num": 11,
+  "title": "Swaps without the group chat",
+  "body": "\"Can anyone take my Saturday?\" posted to a group chat of 40 people.\n\nTwelve replies. Three people think they said yes. Nobody tells the scheduler.\n\nWith the holidays coming, this happens a lot.\n\nIn WiserShifts, staff ask a coworker to swap right from their own schedule link. When it goes through, the schedule updates for everyone, and the scheduler sees exactly who's working.\n\nLet people trade. Just keep the schedule true.\n\n#SeniorLiving #CNA #HolidayStaffing",
+  "visual": "Real screenshot of the swap request screen on a staff link.",
+  "when": "Week 4 · Wednesday 4:00 PM ET"
+ },
+ {
+  "num": 12,
+  "title": "Time off without the sticky note",
+  "body": "Where do time-off requests live at your building?\n\nA sticky note on the monitor. A text from last Tuesday. A form in a folder. Someone's memory.\n\nThen the schedule goes out and someone who asked off is on it.\n\nIn WiserShifts, staff request time off from their own link, and it shows up in one place for the scheduler to approve before the week is built.\n\nOne place to ask. One place to answer. No \"but I told you.\"\n\n#SeniorLivingOperations #Scheduling #NursingHomes",
+  "visual": "Real screenshot of the time-off request on a staff link next to the scheduler's approval list.",
+  "when": "Week 4 · Thursday 1:30 PM ET"
+ },
+ {
+  "num": 13,
+  "title": "Free should mean free",
+  "body": "Most scheduling software for care facilities starts the same way: book a demo, talk to sales, get a quote per employee.\n\nWe went the other way.\n\nWiserShifts is free for one scheduler and up to 15 staff. No credit card. No demo first. Sign up, add your team, build the week and send it, all on your own.\n\nWhen you want texting, auto-fill or the time clock, there's a 14-day free trial. And paid plans are a flat price per facility, never per employee, so growing your team doesn't grow your bill.\n\nTry it on next week's schedule: wisershifts.com/?utm_source=linkedin\n\n#SeniorLiving #SaaS #Scheduling",
+  "visual": "Simple branded card: \"Free for up to 15 staff. No card. No demo.\"",
+  "when": "Week 5 · Tuesday 11:30 AM ET"
+ },
+ {
+  "num": 14,
+  "title": "What schedulers told us",
+  "body": "Fill in the results from the polls in Posts 3 and 9 before posting.\n\nA few weeks ago I asked schedulers two questions. Here's what you said.\n\nWhat takes the longest? [top answer] won with [X]%, followed by [second answer].\n\nFirst move on a 5 a.m. call-out? [top answer], at [X]%.\n\nWhat stood out to me: [one honest observation from the comments].\n\nThat's what we're building around. Thanks to everyone who answered, and keep the comments coming.\n\n#SeniorLiving #Scheduling #NursingLeadership",
+  "visual": "Simple chart of the two poll results.",
+  "when": "Week 5 · Wednesday 4:00 PM ET"
+ },
+ {
+  "num": 15,
+  "title": "I'll build your first week with you",
+  "body": "Here's an offer for schedulers in assisted living, memory care, nursing and home care.\n\nSend me last week's schedule (a photo of the paper on the wall or your Excel file is fine) and I'll set it up in WiserShifts for you.\n\nYou check it. You click send. Every staff member gets their own link with just their shifts.\n\n15 minutes on a call, free, no strings. I'm doing a handful of these each week while we grow.\n\nComment \"schedule\" or message me, and I'll reach out.\n\n#SeniorLiving #Scheduling #NursingHomes",
+  "visual": "Before/after graphic: a messy spreadsheet on the left, a phone with one person's shifts on the right.",
+  "when": "Week 5 · Thursday 1:30 PM ET"
+ }
+]

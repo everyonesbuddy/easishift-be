@@ -428,3 +428,17 @@ test("content target lists what went out this week, and asks only for what's lef
   assert.deepEqual(out[0].queue.map((i) => i.title), ["Post 2", "Post 3"]);
   assert.match(out[0].action, /2 to go/);
 });
+
+test("LinkedIn page export: title row above the headers, posts read with their numbers", () => {
+  const csv = [
+    "Engagement metrics for individual posts. Created date indicates when your post was created. All dates and times are in UTC.",
+    "Post title,Post link,Post type,Campaign name,Posted by,Created date,Campaign start date,Campaign end date,Audience,Impressions,Views,Offsite Views,Clicks,Click through rate (CTR),Likes,Comments,Reposts,Follows,Engagement rate,Content Type",
+    '"Sunday nights shouldn\'t be spent fixing next week\'s schedule.",https://www.linkedin.com/feed/update/urn:li:activity:7520484666647379969,Organic,,Mannie Charles,10/26/2026,,,All followers,9,,,0,0,1,0,0,,0.11,',
+  ].join("\n");
+  const { rows } = normalize("linkedin", csv);
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].author, "Mannie Charles");
+  assert.equal(rows[0].impressions, 9);
+  assert.equal(rows[0].reactions, 1);
+  assert.match(rows[0].url, /activity:7520484666647379969/);
+});

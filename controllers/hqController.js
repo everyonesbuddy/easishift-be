@@ -564,6 +564,17 @@ exports.importCsv = async (req, res, next) => {
   try {
     const { kind } = req.params;
     if (!importCsv.KINDS.includes(kind)) return res.status(400).json({ message: `kind must be one of ${importCsv.KINDS.join(", ")}` });
+    // An Excel file sent as-is (an old .xls, as LinkedIn exports, or an .xlsx)
+    // isn't CSV; say so instead of a CSV parser error.
+    const sig = req.file?.buffer?.subarray(0, 4).toString("hex");
+    if (sig === "d0cf11e0" || sig === "504b0304") {
+      return res.status(400).json({
+        message:
+          sig === "d0cf11e0"
+            ? "That's an old-style Excel file (.xls), which is what LinkedIn exports. Open it in Excel or Google Sheets, save it as .xlsx, and upload that."
+            : "That's an Excel file. Pick it with the Excel option (choose the tab), or save the tab as CSV.",
+      });
+    }
     const text = req.file ? req.file.buffer.toString("utf8") : req.body?.csv;
     if (!text) return res.status(400).json({ message: "Attach a CSV file (field: file) or send { csv }" });
     const tier = Number(req.body?.tier || req.query.tier) || null;

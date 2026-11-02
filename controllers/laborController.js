@@ -73,7 +73,7 @@ async function loadLaborData({ tenantId, weekKeys, days, timezone }) {
     FacilityPreferences.findOne({ tenantId }).select("shiftTypeDefinitions weeklyOvertimeThresholdHours").lean(),
     LaborSettings.findOne({ tenantId }).lean(),
     Schedule.find({ tenantId, startTime: { $gte: lookback, $lt: to } })
-      .select("staffId role unitArea shiftType shiftTag startTime endTime status")
+      .select("staffId coverageId role unitArea shiftType shiftTag startTime endTime status state")
       .lean(),
     TimeEntry.find({ tenantId, clockInAt: { $gte: from, $lt: to } })
       .select("staffId scheduleId clockInAt clockOutAt totals")

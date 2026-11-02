@@ -193,7 +193,7 @@ exports.getToday = async (req, res, next) => {
     const FacilityPreferences = require("../models/facilityPreferencesModel");
     const { getWeekSettings, ensureWeek } = require("../utils/weekService");
     const { weekStartFor, dateKeyToCoverageDate, coverageDateToKey } = require("../utils/dateUtils");
-    const { countAssignmentsByCoverage } = require("../utils/scheduleUtils");
+    const { countAssignmentsByCoverage, COVERAGE_OCCUPYING_STATUSES } = require("../utils/scheduleUtils");
     const { hasPermission } = require("../config/authorization");
 
     const tenantId = req.tenantId;
@@ -246,6 +246,15 @@ exports.getToday = async (req, res, next) => {
     const shiftLabel = (type, tag) =>
       labels.get(`${String(type || "").toLowerCase()}:${String(tag || "").toLowerCase()}`) || (type ? String(type) : "Other");
 
+    // Drafted (not yet published) people per spot: they hold the spot on the
+    // plan, but staff can't see them and get no reminders until it's published.
+    const draftedBySlot = new Map();
+    for (const s of schedules) {
+      if (!s.coverageId || s.state !== "draft" || !COVERAGE_OCCUPYING_STATUSES.includes(s.status)) continue;
+      const key = String(s.coverageId);
+      draftedBySlot.set(key, (draftedBySlot.get(key) || 0) + 1);
+    }
+
     const peopleBySlot = new Map();
     const callOutsBySlot = new Map();
     for (const s of schedules) {
@@ -258,6 +267,7 @@ exports.getToday = async (req, res, next) => {
 
     const rows = coverage.map((c) => {
       const assignedCount = assigned.get(String(c._id)) || 0;
+      const draftedCount = Math.min(assignedCount, draftedBySlot.get(String(c._id)) || 0);
       const dateKey = coverageDateToKey(c.date);
       const weekStart = weekOfDay(dateKey);
       return {
@@ -267,6 +277,8 @@ exports.getToday = async (req, res, next) => {
         weekPublished: weekByKey.get(weekStart)?.status === "published",
         label: shiftLabel(c.shiftType, c.shiftTag),
         assignedCount,
+        draftedCount,
+        publishedCount: assignedCount - draftedCount,
         open: new Date(c.endTime) > now ? Math.max(0, c.requiredCount - assignedCount) : 0,
         isPast: new Date(c.endTime) <= now,
         people: peopleBySlot.get(String(c._id)) || [],
@@ -275,24 +287,34 @@ exports.getToday = async (req, res, next) => {
     });
 
     // Today's shifts: one line per shift time, all roles together.
+    // `assigned` = published and filled; `drafted` = placed in a draft that
+    // isn't published yet (staff can't see it); `weekPublished` says which.
     const todayShifts = new Map();
     for (const r of rows.filter((x) => x.dateKey === days[0])) {
       const key = `${r.shiftType || ""}:${r.shiftTag || ""}:${new Date(r.startTime).toISOString()}`;
       if (!todayShifts.has(key)) {
-        todayShifts.set(key, { key, label: r.label, startTime: r.startTime, endTime: r.endTime, required: 0, assigned: 0, open: 0, roles: new Map() });
+        todayShifts.set(key, { key, label: r.label, startTime: r.startTime, endTime: r.endTime, required: 0, assigned: 0, drafted: 0, open: 0, weekPublished: r.weekPublished, roles: new Map() });
       }
       const g = todayShifts.get(key);
+      const filled = Math.min(r.requiredCount, r.assignedCount);
+      const published = Math.min(filled, r.publishedCount);
       g.required += r.requiredCount;
-      g.assigned += Math.min(r.requiredCount, r.assignedCount);
+      g.assigned += published;
+      g.drafted += filled - published;
       g.open += r.open;
-      const role = g.roles.get(r.role) || { role: r.role, required: 0, assigned: 0 };
+      const role = g.roles.get(r.role) || { role: r.role, required: 0, assigned: 0, drafted: 0 };
       role.required += r.requiredCount;
-      role.assigned += Math.min(r.requiredCount, r.assignedCount);
+      role.assigned += published;
+      role.drafted += filled - published;
       g.roles.set(r.role, role);
     }
 
-    const working = schedules.filter((s) => !["call_out", "no_show", "cancelled"].includes(s.status));
-    const onNow = working.filter((s) => new Date(s.startTime) <= now && new Date(s.endTime) > now);
+    // Only published shifts are real yet; drafted ones are counted separately.
+    const active = schedules.filter((s) => !["call_out", "no_show", "cancelled"].includes(s.status));
+    const working = active.filter((s) => s.state !== "draft");
+    const drafts = active.filter((s) => s.state === "draft");
+    const isNow = (s) => new Date(s.startTime) <= now && new Date(s.endTime) > now;
+    const onNow = working.filter(isNow);
     const callOuts = schedules
       .filter((s) => s.status === "call_out" && new Date(s.endTime) > now)
       .map((s) => {
@@ -318,6 +340,7 @@ exports.getToday = async (req, res, next) => {
       todayShifts: [...todayShifts.values()].map((g) => ({ ...g, roles: [...g.roles.values()] })),
       onNow: {
         count: onNow.length,
+        drafted: drafts.filter(isNow).length,
         byRole: Object.entries(
           onNow.reduce((acc, s) => ({ ...acc, [s.role || "other"]: (acc[s.role || "other"] || 0) + 1 }), {}),
         ).map(([role, count]) => ({ role, count })),
@@ -342,6 +365,8 @@ exports.getToday = async (req, res, next) => {
         openToday: rows.filter((r) => r.dateKey === days[0]).reduce((n, r) => n + r.open, 0),
         openNextTwoDays: rows.filter((r) => r.dateKey !== days[0]).reduce((n, r) => n + r.open, 0),
         shiftsToday: working.filter((s) => DateTime.fromJSDate(new Date(s.startTime), { zone }).toISODate() === days[0]).length,
+        draftShiftsToday: drafts.filter((s) => DateTime.fromJSDate(new Date(s.startTime), { zone }).toISODate() === days[0]).length,
+        todayPublished: rows.filter((r) => r.dateKey === days[0]).every((r) => r.weekPublished),
       },
       can: { manage: canManage, reviewTimeOff: canReviewTimeOff },
     });

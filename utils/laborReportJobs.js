@@ -36,7 +36,7 @@ function buildLaborEmail({ facilityName, last, current }) {
     items.length ? `<ul style="margin:0;padding-left:18px">${items.map((i) => `<li style="margin:4px 0">${i}</li>`).join("")}</ul>` : `<p style="margin:0;color:#667085">None.</p>`;
 
   const lastRows = [
-    row("Hours staffed", hrs(last.hours.scheduled),
+    row("Hours scheduled", hrs(last.hours.scheduled),
       last.hours.needed ? `of ${hrs(last.hours.needed)} needed${last.hours.open ? `, ${hrs(last.hours.open)} unfilled` : ""}` : ""),
     last.hours.worked !== null ? row("Hours worked (time clock)", hrs(last.hours.worked)) : "",
     last.budget ? row("Hours per resident day", last.budget.scheduledPPD,
@@ -53,7 +53,7 @@ function buildLaborEmail({ facilityName, last, current }) {
   ].join("");
 
   const ot = current.overtime.people.slice(0, 8).map((p) =>
-    `<strong>${escapeHtml(p.name)}</strong> (${escapeHtml(roleName(p.role))}): ${p.projectedHours} h, ${p.alreadyOver ? "already over" : `goes over ${dayName(p.crossesOn)}`}`);
+    `<strong>${escapeHtml(p.name)}</strong> (${escapeHtml(roleName(p.role))}): ${p.projectedHours} h, ${p.alreadyOver ? "already over" : `goes over ${dayName(p.crossesOn)}`}${p.includesDraft ? " (counting shifts not yet published)" : ""}`);
   const creds = [...current.credentials.expired, ...current.credentials.expiringSoon].slice(0, 8).map((c) =>
     `<strong>${escapeHtml(c.name)}</strong>: ${escapeHtml(roleName(c.tag))} ${c.daysLeft <= 0 ? "expired" : `expires in ${c.daysLeft} day${c.daysLeft === 1 ? "" : "s"}`}`);
   const watch = current.turnoverWatch.slice(0, 6).map((w) =>

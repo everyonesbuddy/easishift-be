@@ -19,6 +19,9 @@
  * - turnover watch: people showing signs of burning out or drifting away
  *   over the last 4 weeks (call-outs, no-shows, repeated overtime, hours
  *   falling off)
+ * - draft: how much of the above comes from shifts in a draft (unpublished)
+ *   week. They still count, so overtime shows before you publish, but the
+ *   page says so.
  */
 const { DateTime } = require("luxon");
 
@@ -82,19 +85,28 @@ function buildLaborReport({
 
   // ---- hours ----
   const byRole = new Map();
-  const byDay = new Map(days.map((d) => [d, { date: d, scheduled: 0, worked: 0 }]));
+  const byDay = new Map(days.map((d) => [d, { date: d, scheduled: 0, worked: 0, drafted: 0 }]));
   const roleRow = (role) => {
     const key = role || "unassigned";
-    if (!byRole.has(key)) byRole.set(key, { role: key, scheduled: 0, worked: 0 });
+    if (!byRole.has(key)) byRole.set(key, { role: key, scheduled: 0, worked: 0, drafted: 0 });
     return byRole.get(key);
   };
+  const isDraft = (s) => s.state === "draft";
   let scheduledTotal = 0;
+  let draftedTotal = 0;
+  let draftedShifts = 0;
   for (const s of worked) {
     const h = shiftHours(s);
     scheduledTotal += h;
     roleRow(s.role).scheduled += h;
     const day = byDay.get(dayKeyIn(s.startTime, zone));
     if (day) day.scheduled += h;
+    if (isDraft(s)) {
+      draftedTotal += h;
+      draftedShifts += 1;
+      roleRow(s.role).drafted += h;
+      if (day) day.drafted += h;
+    }
   }
   const shiftById = new Map(weekShifts.map((s) => [idOf(s._id), s]));
   let workedTotal = 0;
@@ -170,12 +182,12 @@ function buildLaborReport({
     return perPerson.get(id);
   };
   const weekOf = (t) => payWeeks.find((w) => new Date(t) >= w.from && new Date(t) < w.to);
-  const addEvent = (staffId, at, hours, role) => {
+  const addEvent = (staffId, at, hours, role, draft = false) => {
     const w = weekOf(at);
     if (!w) return;
     const p = personRow(staffId);
     if (!p.weeks.has(w.key)) p.weeks.set(w.key, []);
-    p.weeks.get(w.key).push({ at: new Date(at), hours, role });
+    p.weeks.get(w.key).push({ at: new Date(at), hours, role, draft });
     if (role && daySet.has(dayKeyIn(at, zone))) p.roles.set(role, (p.roles.get(role) || 0) + hours);
   };
   for (const s of schedules) {
@@ -183,7 +195,7 @@ function buildLaborReport({
     const entry = entryBySchedule.get(idOf(s._id));
     let h = shiftHours(s);
     if (entry) h = entry.clockOutAt ? entryHours(entry, now) : Math.max(entryHours(entry, now), h);
-    addEvent(idOf(s.staffId), s.startTime, h, s.role);
+    addEvent(idOf(s.staffId), s.startTime, h, s.role, isDraft(s) && !entry);
   }
   for (const e of timeEntries) {
     if (e.scheduleId && allShiftIds.has(idOf(e.scheduleId))) continue;
@@ -195,6 +207,7 @@ function buildLaborReport({
     let weeksOver = 0;
     let most = 0;
     let firstCross = null;
+    let fromDraft = false;
     for (const events of p.weeks.values()) {
       events.sort((a, b) => a.at - b.at);
       let total = 0;
@@ -212,6 +225,8 @@ function buildLaborReport({
       if (crossedInPeriod) {
         weeksOver += 1;
         most = Math.max(most, total);
+        // Some of these hours are only in a draft: publishing makes it real.
+        if (events.some((ev) => ev.draft)) fromDraft = true;
       }
     }
     if (otInPeriod > 0.05) {
@@ -227,6 +242,7 @@ function buildLaborReport({
         weeksOver,
         crossesOn: dayKeyIn(firstCross, zone),
         alreadyOver: firstCross <= now,
+        includesDraft: fromDraft,
       });
     }
   }
@@ -298,11 +314,18 @@ function buildLaborReport({
   let filled = 0;
   let unfilledPast = 0;
   let openUpcoming = 0;
+  let draftedSpots = 0;
+  const draftedByCoverage = new Map();
+  for (const s of weekShifts) {
+    if (!isDraft(s) || !s.coverageId || NOT_WORKED.has(s.status) || s.status === "cancelled") continue;
+    draftedByCoverage.set(idOf(s.coverageId), (draftedByCoverage.get(idOf(s.coverageId)) || 0) + 1);
+  }
   for (const c of coverage) {
     const need = Number(c.requiredCount) || 0;
     const got = Math.min(need, Number(c.assignedCount) || 0);
     required += need;
     filled += got;
+    draftedSpots += Math.min(got, draftedByCoverage.get(idOf(c._id)) || 0);
     if (new Date(c.endTime) <= now) unfilledPast += need - got;
     else openUpcoming += need - got;
   }
@@ -385,11 +408,11 @@ function buildLaborReport({
       worked: weekEntries.length ? round1(workedTotal) : null,
       timeClockUsed: weekEntries.length > 0,
       byRole: [...byRole.values()]
-        .map((r) => ({ ...r, scheduled: round1(r.scheduled), worked: round1(r.worked) }))
+        .map((r) => ({ ...r, scheduled: round1(r.scheduled), worked: round1(r.worked), drafted: round1(r.drafted) }))
         .sort((a, b) => b.scheduled - a.scheduled),
       byDay: days.map((d) => {
         const r = byDay.get(d);
-        return { date: d, scheduled: round1(r.scheduled), worked: round1(r.worked), residents: r.residents };
+        return { date: d, scheduled: round1(r.scheduled), worked: round1(r.worked), drafted: round1(r.drafted), residents: r.residents };
       }),
     },
     budget,
@@ -406,7 +429,9 @@ function buildLaborReport({
       byRole: sortAtt(att.byRole),
       byDay: [...att.byDay.values()].sort((a, b) => a.key.localeCompare(b.key)),
     },
-    openShifts: { required, filled, unfilledPast, openUpcoming },
+    openShifts: { required, filled, drafted: draftedSpots, unfilledPast, openUpcoming },
+    // Part of the period that's still a draft (not published): counted above, but nobody's been told.
+    draft: { hours: round1(draftedTotal), shifts: draftedShifts, spots: draftedSpots, any: draftedShifts > 0 },
     credentials: { expired, expiringSoon },
     turnoverWatch: turnoverWatch.slice(0, 15),
   };

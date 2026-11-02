@@ -104,7 +104,8 @@ test("open shifts: filled, missed (ended unfilled) and still open", () => {
       { requiredCount: 1, assignedCount: 3, endTime: at(DAYS[1], 15) }, // over-filled counts as 1
     ],
   });
-  assert.deepEqual(r.openShifts, { required: 6, filled: 3, unfilledPast: 1, openUpcoming: 2 });
+  assert.deepEqual(r.openShifts, { required: 6, filled: 3, drafted: 0, unfilledPast: 1, openUpcoming: 2 });
+  assert.equal(r.draft.any, false);
 });
 
 test("credentials: expired and expiring in 30 days; dropped certifications ignored", () => {
@@ -168,7 +169,7 @@ test("Monday email reads well and escapes names", () => {
   const html = buildLaborEmail({ facilityName: "Palm & Grove", last, current });
   assert.match(html, /Palm &amp; Grove: labor for Oct 19 – Oct 25/);
   assert.match(html, /Hours per resident day/);
-  assert.match(html, /Hours staffed/);
+  assert.match(html, /Hours scheduled/);
   assert.match(html, /÷ 280 resident days/);
   assert.match(html, /\$1,400/); // 60h*20 + 20h OT*20*0.5
   assert.match(html, /&lt;Maria&gt;/);
@@ -420,4 +421,32 @@ test("GET /labor/overtime/:id/options: her upcoming shifts, latest first, with p
   } finally {
     restore();
   }
+});
+
+test("draft week: drafted hours, spots and overtime still count, and are marked as drafted", () => {
+  // Maria: Mon-Wed published (36h), Thu-Fri drafted (24h) -> 60h, overtime only because of the draft.
+  const published = DAYS.slice(0, 3).map((d) => shift("maria", d, 7, 12, { state: "published" }));
+  const drafted = DAYS.slice(3, 5).map((d, i) => shift("maria", d, 7, 12, { state: "draft", coverageId: `c${i}` }));
+  const kim = shift("kim", DAYS[0], 7, 8, { state: "published" });
+  const r = base({
+    schedules: [...published, ...drafted, kim],
+    coverage: [
+      { _id: "c0", requiredCount: 1, assignedCount: 1, endTime: at(DAYS[3], 19) },
+      { _id: "c1", requiredCount: 1, assignedCount: 1, endTime: at(DAYS[4], 19) },
+      { _id: "c2", requiredCount: 2, assignedCount: 1, endTime: at(DAYS[0], 15) },
+    ],
+  });
+  assert.equal(r.hours.scheduled, 68);
+  assert.deepEqual(r.draft, { hours: 24, shifts: 2, spots: 2, any: true });
+  assert.equal(r.openShifts.filled, 3);
+  assert.equal(r.openShifts.drafted, 2);
+  assert.equal(r.hours.byRole.find((x) => x.role === "cna").drafted, 24);
+  assert.equal(r.hours.byDay.find((x) => x.date === DAYS[3]).drafted, 12);
+  const o = r.overtime.people.find((p) => p.name === "Maria Lopez");
+  assert.equal(o.overtimeHours, 20);
+  assert.equal(o.includesDraft, true);
+  // all published: not marked
+  const pub = base({ schedules: DAYS.slice(0, 5).map((d) => shift("maria", d, 7, 12, { state: "published" })) });
+  assert.equal(pub.overtime.people[0].includesDraft, false);
+  assert.equal(pub.draft.any, false);
 });

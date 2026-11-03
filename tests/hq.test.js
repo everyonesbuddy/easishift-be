@@ -442,3 +442,54 @@ test("LinkedIn page export: title row above the headers, posts read with their n
   assert.equal(rows[0].reactions, 1);
   assert.match(rows[0].url, /activity:7520484666647379969/);
 });
+
+test("playbook v6: LinkedIn is content only (no connection play, no connections or messages in the plan)", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  assert.ok(!seed.PLAYS.some((p) => p.seedKey === "linkedin-connect"));
+  const fresh = JSON.stringify([seed.PLAYS, seed.META, seed.META_V2, seed.V4, seed.MESSAGING]);
+  assert.ok(!/connection request|LinkedIn connection|LinkedIn posts and messages|connections and messages/i.test(fresh.replace(/no connection requests/gi, "")), "nothing seeds LinkedIn outreach");
+
+  // Updating an existing playbook at version 5.
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const V6 = seed.V6_LINKEDIN;
+  const meta = {
+    connect: "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators.",
+    tierRules: [{ tier: "Tier 1 (Close First)", plays: "Everything: front-desk call, leadership email the same week, LinkedIn connection with the DON or administrator, Monday email turned on at setup." }],
+    week: [{ day: "Thursday", a: "15 front-desk calls", b: V6.oldThursday }],
+    buyers: [{ key: "director", how: "Cold email from your own inbox, the follow-up call, LinkedIn posts and messages, the leaders' Klaviyo email." }],
+    channels: [{ key: "linkedin", name: "LinkedIn", why: V6.oldWhy }, { key: "calls", name: "Calls", why: "keep" }],
+  };
+  const saved = {};
+  const orig = { syncFind: HqSync.findOne, syncUpd: HqSync.updateOne, playFind: HqPlaybookPlay.findOne, playDel: HqPlaybookPlay.deleteOne, playUpd: HqPlaybookPlay.updateOne, actUpd: HqActivity.updateMany, itemUpd: HqContentItem.updateMany };
+  const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
+  HqSync.findOne = (q) => lean(q.key === "playbook-seed" ? { data: { version: 5 } } : { data: meta });
+  HqSync.updateOne = async (q, u) => { if (q.key === "playbook") Object.assign(saved, u.$set); return {}; };
+  const deleted = [];
+  const unlinked = [];
+  let postsSteps = null;
+  HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "linkedin-connect" ? { _id: "c1" } : q.seedKey === "linkedin-posts" ? { _id: "p1", steps: V6.oldPostSteps } : null);
+  HqPlaybookPlay.deleteOne = async (q) => deleted.push(q._id);
+  HqPlaybookPlay.updateOne = async (q, u) => { if (q._id === "p1") postsSteps = u.$set.steps; };
+  HqActivity.updateMany = async (q) => unlinked.push(["activity", q.playId]);
+  HqContentItem.updateMany = async (q) => unlinked.push(["content", q.playId]);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
+    Object.assign(HqPlaybookPlay, { findOne: orig.playFind, deleteOne: orig.playDel, updateOne: orig.playUpd });
+    HqActivity.updateMany = orig.actUpd;
+    HqContentItem.updateMany = orig.itemUpd;
+  }
+  assert.deepEqual(deleted, ["c1"]);
+  assert.deepEqual(unlinked.sort(), [["activity", "c1"], ["content", "c1"]]);
+  assert.ok(postsSteps.some((s) => /no connection requests/.test(s)));
+  assert.equal(saved["data.connect"], "The channels feed each other. Calls collect leaders' names for email. Emails, posts and videos send people to the calculators.");
+  assert.ok(!saved["data.tierRules"][0].plays.includes("LinkedIn"));
+  assert.equal(saved["data.week"][0].b, V6.thursday);
+  assert.ok(saved["data.buyers"][0].how.includes("LinkedIn posts, the leaders'"));
+  assert.equal(saved["data.channels"][0].why, V6.why);
+  assert.equal(saved["data.channels"][1].why, "keep");
+});

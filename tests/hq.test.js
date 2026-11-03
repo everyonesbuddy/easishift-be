@@ -466,7 +466,11 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
   const orig = { syncFind: HqSync.findOne, syncUpd: HqSync.updateOne, playFind: HqPlaybookPlay.findOne, playDel: HqPlaybookPlay.deleteOne, playUpd: HqPlaybookPlay.updateOne, actUpd: HqActivity.updateMany, itemUpd: HqContentItem.updateMany };
   const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
   HqSync.findOne = (q) => lean(q.key === "playbook-seed" ? { data: { version: 5 } } : { data: meta });
-  HqSync.updateOne = async (q, u) => { if (q.key === "playbook") Object.assign(saved, u.$set); return {}; };
+  HqSync.updateOne = async (q, u) => {
+    if (q.key === "playbook") Object.assign(saved, u.$set);
+    if (u.$set?.["data.channels"]) meta.channels = u.$set["data.channels"]; // later versions read what earlier ones saved
+    return {};
+  };
   const deleted = [];
   const unlinked = [];
   let postsSteps = null;
@@ -475,6 +479,10 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
   HqPlaybookPlay.updateOne = async (q, u) => { if (q._id === "p1") postsSteps = u.$set.steps; };
   HqActivity.updateMany = async (q) => unlinked.push(["activity", q.playId]);
   HqContentItem.updateMany = async (q) => unlinked.push(["content", q.playId]);
+  const origFOU = HqPlaybookPlay.findOneAndUpdate;
+  const origItemOne = HqContentItem.updateOne;
+  HqPlaybookPlay.findOneAndUpdate = async () => ({ _id: "fp1" }); // v7 runs too
+  HqContentItem.updateOne = async () => ({});
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -482,6 +490,8 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
     Object.assign(HqPlaybookPlay, { findOne: orig.playFind, deleteOne: orig.playDel, updateOne: orig.playUpd });
     HqActivity.updateMany = orig.actUpd;
     HqContentItem.updateMany = orig.itemUpd;
+    HqPlaybookPlay.findOneAndUpdate = origFOU;
+    HqContentItem.updateOne = origItemOne;
   }
   assert.deepEqual(deleted, ["c1"]);
   assert.deepEqual(unlinked.sort(), [["activity", "c1"], ["content", "c1"]]);
@@ -491,5 +501,42 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
   assert.equal(saved["data.week"][0].b, V6.thursday);
   assert.ok(saved["data.buyers"][0].how.includes("LinkedIn posts, the leaders'"));
   assert.equal(saved["data.channels"][0].why, V6.why);
+  assert.equal(saved["data.channels"][1].why, "keep");
+});
+
+test("playbook v7: a WiserShifts Facebook Page play next to the groups one", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const def = seed.PLAYS.find((p) => p.seedKey === "facebook-page");
+  assert.ok(def && def.channel === "facebook" && def.countsFrom === "content" && def.weeklyTarget === 3);
+  assert.equal(seed.CONTENT_V2.filter((c) => c.play === "facebook-page").length, seed.FB_PAGE_IDEAS.length);
+
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const channels = [{ key: "facebook", name: seed.FB_CHANNEL.oldName, why: seed.FB_CHANNEL.oldWhy }, { key: "youtube", name: "YouTube", why: "keep" }];
+  const saved = {};
+  const upserts = [];
+  const items = [];
+  const orig = { syncFind: HqSync.findOne, syncUpd: HqSync.updateOne, playFind: HqPlaybookPlay.findOne, playFOU: HqPlaybookPlay.findOneAndUpdate, itemUpd: HqContentItem.updateOne };
+  const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
+  HqSync.findOne = (q) => lean(q.key === "playbook-seed" ? { data: { version: 6 } } : { data: { channels } });
+  HqSync.updateOne = async (q, u) => { if (q.key === "playbook") Object.assign(saved, u.$set); return {}; };
+  HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "facebook-groups" ? { _id: "g1", order: 9 } : null);
+  HqPlaybookPlay.findOneAndUpdate = async (q, u) => { upserts.push([q.seedKey, u.$setOnInsert]); return { _id: "fp1" }; };
+  HqContentItem.updateOne = async (q, u) => { items.push(u.$setOnInsert); return {}; };
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
+    Object.assign(HqPlaybookPlay, { findOne: orig.playFind, findOneAndUpdate: orig.playFOU });
+    HqContentItem.updateOne = orig.itemUpd;
+  }
+  assert.equal(upserts.length, 1);
+  assert.equal(upserts[0][0], "facebook-page");
+  assert.equal(upserts[0][1].order, 9.5);
+  assert.equal(items.length, seed.FB_PAGE_IDEAS.length);
+  assert.ok(items.every((i) => i.playId === "fp1" && i.channel === "facebook" && !("play" in i)));
+  assert.equal(saved["data.channels"][0].name, seed.FB_CHANNEL.name);
+  assert.equal(saved["data.channels"][0].why, seed.FB_CHANNEL.why);
   assert.equal(saved["data.channels"][1].why, "keep");
 });

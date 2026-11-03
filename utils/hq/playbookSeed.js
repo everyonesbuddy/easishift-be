@@ -31,6 +31,20 @@ const NEWSLETTER_V4 = {
 };
 const NL1_TITLE = "Leaders' email: what 0.1 hours per resident day costs a 50-bed building";
 
+/** The Facebook channel: your WiserShifts Page plus the groups (version 7). */
+const FB_CHANNEL = {
+  oldName: "Facebook groups",
+  oldWhy: "Where schedulers and CNAs talk shop. Be helpful; share a template or video when it answers the question.",
+  name: "Facebook: your Page and groups",
+  why: "Your WiserShifts Page is home base for posts and Reels; groups are where schedulers and CNAs talk shop. Be helpful, share a template or video when it answers the question, and bring people back to the Page.",
+};
+const FB_PAGE_IDEAS = [
+  ["fbp-pinned", "Pinned Page post: the free template and calculator", "Pin it; links in the first comment."],
+  ["fbp-reel-callout", "Reel: the 5 a.m. call-out", "Same cut as the YouTube Short."],
+  ["fbp-question", "Page question: what takes the longest when you build the schedule?", "Turn the best answers into a tip post."],
+  ["fbp-before-after", "Before and after: a messy spreadsheet vs. a published week", "Two screenshots side by side."],
+];
+
 const PLAYS = [
   {
     seedKey: "calls-front-desk",
@@ -226,6 +240,33 @@ const PLAYS = [
     countsFrom: "content",
     measure: "Clicks to templates, signups that say Facebook.",
   },
+  {
+    seedKey: "facebook-page",
+    title: "WiserShifts Facebook Page",
+    channel: "facebook",
+    audience: ["scheduler", "director"],
+    who: "Schedulers, staffing coordinators and DONs who follow the Page or find it from a group, a share or a search.",
+    goal: "A Page people trust: useful posts that bring schedulers to the free templates and calculators, then to a free account.",
+    steps: [
+      "Set it up once: logo, a cover that says what WiserShifts does in one line, the button set to Sign up, and a pinned post with the free templates and calculator.",
+      "Invite friends and colleagues who work in care to like it; the first 50 to 100 followers make every later post look credible.",
+      "Post 3 times a week: a template or tip, a short video or Reel, and a question schedulers want to answer.",
+      "Put the useful part in the post itself and the link in the first comment.",
+      "Join scheduler and CNA groups as the Page where groups allow it; the groups play is still where most people first see you.",
+      "Reply to every comment and message the same day, and ask commenters what they use today.",
+      "When a post does well, share it from your own profile and into groups that allow it. Boost only a post that already worked, with a small budget aimed at schedulers and DONs.",
+    ],
+    scripts: [
+      { label: "Pinned post", body: "Free for schedulers: the printable weekly schedule template and the call-out cost calculator, no signup needed. If you want the week built for you and sent to your staff by text, WiserShifts is free to start. Links in the comments." },
+      { label: "Question post", body: "Schedulers: what takes the longest when you build next week's schedule? Coverage, call-outs, requests off, or something else? I'll share what works from the answers." },
+      { label: "Invite your friends", body: "I started a Page for WiserShifts, the scheduling tool I'm building for care facilities. If you work in one or know a scheduler, a like or a share would really help. I'll post free templates and tips there." },
+    ],
+    volume: "3 Page posts a week.",
+    weeklyTarget: 3,
+    targetUnit: "posts",
+    countsFrom: "content",
+    measure: "Followers, comments and shares; clicks to the templates and calculators; signups that say Facebook.",
+  },
 ];
 
 // LinkedIn is content only: founder posts on free accounts, no connection requests or cold messages.
@@ -309,7 +350,7 @@ const META_V2 = {
     { key: "newsletter", name: "Klaviyo: newsletter and sequences", why: "Content, not cold outreach: the newsletter and the calculator follow-up, sent through Klaviyo. Useful and short, never a product update. Klaviyo shows who really clicks; anyone who does gets a personal follow-up." },
     { key: "youtube", name: "YouTube", why: "Schedulers search for how to do the job. One short how-to a week, each solving one problem on screen." },
     { key: "blog", name: "Blog and search", why: "Templates and how-to posts that show up on Google for what schedulers and DONs search." },
-    { key: "facebook", name: "Facebook groups", why: "Where schedulers and CNAs talk shop. Be helpful; share a template or video when it answers the question." },
+    { key: "facebook", name: FB_CHANNEL.name, why: FB_CHANNEL.why },
   ],
 };
 
@@ -344,6 +385,7 @@ const CONTENT_V2 = [
     ["fb-template", "Share the printable weekly schedule template", "Answer a \"does anyone have a template\" question with it."],
     ["fb-first-week", "Offer: I'll build your first week with you", "Post 15, in plain words, where the group allows offers."],
   ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "facebook_post", channel: "facebook", audience: ["scheduler"], status: "idea", play: "facebook-groups", notes })),
+  ...FB_PAGE_IDEAS.map(([seedKey, title, notes]) => ({ seedKey, title, format: "facebook_post", channel: "facebook", audience: ["scheduler", "director"], status: "idea", play: "facebook-page", notes })),
   {
     seedKey: "tpl-callout-log",
     title: "Call-out log template (printable)",
@@ -445,3 +487,6 @@ module.exports.V6_LINKEDIN = {
     ["LinkedIn posts and messages", "LinkedIn posts"],
   ],
 };
+
+module.exports.FB_CHANNEL = FB_CHANNEL;
+module.exports.FB_PAGE_IDEAS = FB_PAGE_IDEAS;

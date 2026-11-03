@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 6;
+const SEED_VERSION = 7;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -68,7 +68,29 @@ async function ensureSeeded() {
     if (o && o.includes(seed.V5_OVERVIEW.from)) await HqSync.updateOne({ key: "playbook" }, { $set: { "data.overview": o.replace(seed.V5_OVERVIEW.from, seed.V5_OVERVIEW.to) } });
   }
   if (version < 6) await migrateV6();
+  if (version < 7) await migrateV7();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 7: a "WiserShifts Facebook Page" play next to the groups one, with
+ * its content ideas, and the Facebook channel covers the Page too (only if
+ * you hadn't rewritten it).
+ */
+async function migrateV7() {
+  const def = seed.PLAYS.find((p) => p.seedKey === "facebook-page");
+  const groups = await HqPlaybookPlay.findOne({ seedKey: "facebook-groups" }).select("order").lean();
+  const page = await HqPlaybookPlay.findOneAndUpdate({ seedKey: "facebook-page" }, { $setOnInsert: { ...def, order: (groups?.order ?? 99) + 0.5 } }, { upsert: true, new: true });
+  for (const c of seed.CONTENT_V2.filter((x) => x.play === "facebook-page")) {
+    const { play, ...item } = c;
+    await HqContentItem.updateOne({ seedKey: c.seedKey }, { $setOnInsert: { ...item, playId: page?._id || null } }, { upsert: true });
+  }
+  const meta = await HqSync.findOne({ key: "playbook" }).lean();
+  const channels = meta?.data?.channels;
+  if (!Array.isArray(channels)) return;
+  const FB = seed.FB_CHANNEL;
+  const next = channels.map((ch) => (ch.key === "facebook" && (ch.why === FB.oldWhy || !ch.why) ? { ...ch, name: ch.name === FB.oldName || !ch.name ? FB.name : ch.name, why: FB.why } : ch));
+  await HqSync.updateOne({ key: "playbook" }, { $set: { "data.channels": next } });
 }
 
 /**

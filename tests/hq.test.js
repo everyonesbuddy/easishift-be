@@ -540,3 +540,143 @@ test("playbook v7: a WiserShifts Facebook Page play next to the groups one", asy
   assert.equal(saved["data.channels"][0].why, seed.FB_CHANNEL.why);
   assert.equal(saved["data.channels"][1].why, "keep");
 });
+
+test("week plan: calls go to specific facilities, best first, spread Monday to Friday", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const play = { _id: "p1", active: true, channel: "calls", audience: ["scheduler"], weeklyTarget: 10, countsFrom: "activities" };
+  const facilities = [
+    { _id: "f1", name: "Tier 2", tier: 2, frontDeskPhone: "555-1" },
+    { _id: "f2", name: "Tier 1", tier: 1, frontDeskPhone: "555-2" },
+    { _id: "f3", name: "No phone", tier: 1 },
+    { _id: "f4", name: "Customer", tier: 1, frontDeskPhone: "555-4", tenantId: "t1" },
+    { _id: "f5", name: "Called last week", tier: 1, frontDeskPhone: "555-5" },
+    { _id: "f6", name: "Call-back due", tier: 3, frontDeskPhone: "555-6", nextDate: new Date("2026-11-04") },
+    { _id: "f7", name: "Not interested", tier: 1, frontDeskPhone: "555-7", stage: "Not interested" },
+  ];
+  const lastTouch = new Map([["f5", new Date("2026-10-28")]]);
+  const out = plan.todosFor(play, { facilities, lastTouch, now, weekEnd: new Date("2026-11-09T05:00:00Z") });
+  assert.deepEqual(out.map((t) => t.title), ["Call-back due", "Tier 1", "Tier 2"]);
+  assert.equal(out[0].phone, "555-6");
+  assert.deepEqual(out.map((t) => t.day), [0, 0, 1]); // 10 a week = 2 a day
+  // A refill only adds what's missing, and never repeats someone.
+  const more = plan.todosFor(play, { facilities, lastTouch, now, have: out.map((t) => ({ refId: t.refId })) });
+  assert.equal(more.length, 0);
+  assert.equal(plan.dayFor(59, 60), 4);
+});
+
+test("week plan: leadership emails go to the leaders, content plays to the next pieces", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const email = { _id: "e1", active: true, channel: "email", audience: ["director"], weeklyTarget: 2, countsFrom: "activities" };
+  const contacts = [
+    { _id: "c1", name: "Pat", title: "DON", role: "don", email: "pat@x.org", facilityId: "f1" },
+    { _id: "c2", name: "Sam", role: "scheduler", email: "sam@x.org" },
+    { _id: "c3", name: "Lee", role: "administrator", email: "", facilityId: "f1" },
+    { _id: "c4", name: "Ana", role: "executive_director", email: "ana@y.org" },
+  ];
+  const out = plan.todosFor(email, { contacts, facilities: [{ _id: "f1", name: "Oak Manor", tier: 1 }], now });
+  assert.deepEqual(out.map((t) => t.refId), ["c1", "c4"]);
+  assert.equal(out[0].detail, "Oak Manor");
+  assert.equal(out[0].email, "pat@x.org");
+
+  const posts = { _id: "lp", active: true, channel: "facebook", audience: ["scheduler"], weeklyTarget: 3, countsFrom: "content" };
+  const weekStart = new Date("2026-11-02T05:00:00Z");
+  const items = [
+    { _id: "i1", playId: "lp", title: "Idea A", status: "idea" },
+    { _id: "i2", playId: "lp", title: "Ready B", status: "ready" },
+    { _id: "i3", playId: "lp", title: "Out Monday", status: "published", publishedAt: new Date("2026-11-02T17:00:00Z") },
+    { _id: "i4", playId: "lp", title: "Idea C", status: "idea" },
+    { _id: "i5", playId: "other", title: "Not this play", status: "ready" },
+  ];
+  const c = plan.todosFor(posts, { items, now, weekStart });
+  assert.deepEqual(c.map((t) => t.title), ["Out Monday", "Ready B", "Idea A"]);
+  assert.deepEqual(plan.moreFor(posts, { items, have: c }).map((t) => t.title), ["Idea C"]);
+
+  // Every two weeks: not on the list when one went out last week.
+  const blog = { _id: "b", active: true, channel: "blog", weeklyTarget: 0.5, countsFrom: "content" };
+  const blogItems = [
+    { _id: "b1", playId: "b", title: "Last", status: "published", publishedAt: new Date("2026-10-28T12:00:00Z") },
+    { _id: "b2", playId: "b", title: "Next", status: "idea" },
+  ];
+  assert.equal(plan.todosFor(blog, { items: blogItems, now, weekStart }).length, 0);
+  assert.equal(plan.todosFor(blog, { items: blogItems, now: new Date("2026-11-12T12:00:00Z"), weekStart: new Date("2026-11-09T05:00:00Z") }).length, 1);
+  // Plays without a list: leads, signups, nothing to count.
+  assert.equal(plan.listKind({ active: true, weeklyTarget: 1, countsFrom: "leads", channel: "newsletter" }), null);
+});
+
+test("a date picked in a form counts in the right week (Monday posts aren't last week's)", () => {
+  const { dayToDate, lastWeeks } = require("../utils/hq/weeks");
+  const now = new Date("2026-11-03T15:00:00Z"); // Tuesday, New York
+  const week = lastWeeks(1, now)[0];
+  const monday = dayToDate("2026-11-02", now);
+  assert.ok(monday >= week.start && monday < week.end, "Monday is this week");
+  assert.equal(dayToDate("2026-11-03", now).getTime(), now.getTime(), "today means now");
+  assert.equal(dayToDate("", now), null);
+});
+
+test("week checklist: ticking a call logs it with the play, unticking removes it", async () => {
+  const mongoose = require("mongoose");
+  const HqWeekPlan = require("../models/hqWeekPlanModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const HqFacility = require("../models/hqFacilityModel");
+  const HqContact = require("../models/hqContactModel");
+  const HqSync = require("../models/hqSyncModel");
+  const pb = require("../controllers/hqPlaybookController");
+  const hq = require("../controllers/hqController");
+  const playId = new mongoose.Types.ObjectId();
+  const fid = new mongoose.Types.ObjectId();
+  const play = { _id: playId, active: true, title: "Front desk calls", channel: "calls", audience: ["scheduler"], weeklyTarget: 5, targetUnit: "calls", countsFrom: "activities" };
+  const q = (v) => { const o = { sort: () => o, select: () => o, lean: async () => v, then: (r, j) => Promise.resolve(v).then(r, j) }; return o; };
+  let doc = null;
+  const activities = [];
+  const facilityUpdates = [];
+  const saved = { stubs: [] };
+  const stub = (obj, name, fn) => { saved.stubs.push([obj, name, obj[name]]); obj[name] = fn; };
+  stub(HqSync, "findOne", () => q({ data: { version: 99 } }));
+  stub(HqPlaybookPlay, "find", () => q([play]));
+  stub(HqPlaybookPlay, "findById", () => q(play));
+  stub(HqContentItem, "find", () => q([]));
+  stub(HqFacility, "find", () => q([{ _id: fid, name: "Oak Manor", tier: 1, frontDeskPhone: "555-0100" }]));
+  stub(HqFacility, "findById", () => q({ lastCallDate: null }));
+  stub(HqFacility, "updateOne", async (f, u) => facilityUpdates.push(u));
+  stub(HqContact, "find", () => q([]));
+  stub(HqActivity, "aggregate", async () => []);
+  stub(HqActivity, "find", (f) => q(f._id ? activities.filter((a) => f._id.$in.map(String).includes(String(a._id))) : activities.filter((a) => String(a.playId) === String(playId))));
+  stub(HqActivity, "create", async (a) => { const x = { ...a, _id: new mongoose.Types.ObjectId() }; activities.push(x); return x; });
+  stub(HqActivity, "findByIdAndDelete", (id) => q(activities.splice(activities.findIndex((a) => String(a._id) === String(id)), 1)[0]));
+  stub(HqWeekPlan, "findOne", async () => doc);
+  stub(HqWeekPlan.prototype, "save", async function save() { doc = this; return this; });
+  stub(pb, "scoreboard", async () => [{ playId: String(playId), weeks: [activities.length] }]);
+  const call = async (fn, req) => { let out; const res = { status: () => res, json: (b) => { out = b; return res; } }; await fn({ hqUser: { name: "Tolu" }, body: {}, params: {}, ...req }, res, (e) => { throw e; }); return out; };
+  try {
+    const week = await call(require("../controllers/hqWeekController").getWeek, {});
+    const p = week.plays[0];
+    assert.equal(p.todos.length, 1);
+    assert.equal(p.todos[0].title, "Oak Manor");
+    assert.equal(p.todos[0].done, false);
+    const ticked = await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: true } });
+    assert.equal(ticked.plays[0].todos[0].done, true);
+    assert.equal(ticked.plays[0].count, 1);
+    assert.equal(activities.length, 1);
+    assert.equal(activities[0].kind, "call");
+    assert.equal(String(activities[0].playId), String(playId));
+    assert.equal(String(activities[0].facilityId), String(fid));
+    assert.equal(facilityUpdates[0].$inc.attempts, 1);
+    const unticked = await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: false } });
+    assert.equal(unticked.plays[0].todos[0].done, false);
+    assert.equal(unticked.plays[0].count, 0);
+    assert.equal(activities.length, 0);
+    assert.equal(facilityUpdates[1].$inc.attempts, -1);
+    // Your own to-do.
+    const withTask = await call(require("../controllers/hqWeekController").addTask, { body: { title: "Ask Dana for a referral" } });
+    assert.equal(withTask.tasks[0].title, "Ask Dana for a referral");
+    const removed = await call(require("../controllers/hqWeekController").removeItem, { params: { itemId: withTask.tasks[0]._id } });
+    assert.equal(removed.tasks.length, 0);
+  } finally {
+    for (const [obj, name, orig] of saved.stubs.reverse()) obj[name] = orig;
+    void hq;
+  }
+});

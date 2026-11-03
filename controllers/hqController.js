@@ -16,7 +16,7 @@ const HqLinkedinPost = require("../models/hqLinkedinPostModel");
 const { loadWorkspaces } = require("../utils/hq/productSignals");
 const { buildPlays } = require("../utils/hq/plays");
 const { buildContentPlays } = require("../utils/hq/contentPlays");
-const { lastWeeks } = require("../utils/hq/weeks");
+const { lastWeeks, dayToDate } = require("../utils/hq/weeks");
 const { linkSignups } = require("../utils/hq/linkSignups");
 const { LABELS, roleFromTitle } = require("../utils/hq/roles");
 const { domainOf } = require("../utils/hq/domain");
@@ -195,7 +195,7 @@ async function computePlays(now, workspaces) {
 
   const fName = new Map(facilities.map((f) => [String(f._id), f.name]));
   const cName = new Map(contacts.map((c) => [String(c._id), { name: c.name, title: c.title, email: c.email }]));
-  return [...people, ...content]
+  return [...people, ...content.filter((p) => p.kind !== "cadence")]
     .sort((a, b) => a.priority - b.priority)
     .map((p) => ({
       ...p,
@@ -415,7 +415,7 @@ exports.createActivity = async (req, res, next) => {
       kind: ["call", "email", "linkedin", "meeting", "note"].includes(kind) ? kind : "note",
       outcome: String(outcome).slice(0, 200),
       notes: String(notes).slice(0, 4000),
-      at: at ? new Date(at) : new Date(),
+      at: at ? dayToDate(at) : new Date(),
       nextDate: nextDate ? new Date(nextDate) : null,
       playKey: typeof playKey === "string" && playKey ? playKey.slice(0, 200) : null,
       playId: isId(playId) ? playId : null,
@@ -657,3 +657,5 @@ exports.syncKlaviyo = async (req, res, next) => {
     next(err);
   }
 };
+
+exports.lastTouchMap = lastTouchMap;

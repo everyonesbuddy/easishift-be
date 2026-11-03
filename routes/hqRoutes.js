@@ -15,6 +15,7 @@ const playbook = require("../controllers/hqPlaybookController");
 const contentPlan = require("../controllers/hqContentPlanController");
 const funnel = require("../controllers/hqFunnelController");
 const email = require("../controllers/hqEmailController");
+const week = require("../controllers/hqWeekController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
@@ -69,6 +70,12 @@ router.put("/playbook/meta", playbook.updateMeta);
 router.post("/playbook/plays", playbook.createPlay);
 router.patch("/playbook/plays/:id", playbook.updatePlay);
 router.delete("/playbook/plays/:id", playbook.deletePlay);
+
+router.get("/week", week.getWeek);
+router.post("/week/refill", week.refill);
+router.post("/week/tasks", week.addTask);
+router.post("/week/items/:itemId/check", week.check);
+router.delete("/week/items/:itemId", week.removeItem);
 
 router.get("/content-plan", contentPlan.listItems);
 router.post("/content-plan", contentPlan.createItem);

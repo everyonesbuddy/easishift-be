@@ -30,4 +30,18 @@ function bucket(weeks, dates) {
   return counts;
 }
 
-module.exports = { zone, weekStartOf, weekKey, lastWeeks, bucket };
+/**
+ * A date picked in a form. "2026-11-02" means that day in the team's time
+ * zone: now if it's today, otherwise noon. (Read as UTC midnight it would be
+ * the evening before here, and a Monday post would count for last week.)
+ */
+function dayToDate(v, now = new Date()) {
+  if (v === null || v === undefined || v === "") return null;
+  if (typeof v === "string" && /^\d{4}-\d{2}-\d{2}$/.test(v)) {
+    const today = DateTime.fromJSDate(new Date(now), { zone: zone() }).toISODate();
+    return v === today ? new Date(now) : DateTime.fromISO(v, { zone: zone() }).set({ hour: 12 }).toJSDate();
+  }
+  return new Date(v);
+}
+
+module.exports = { zone, weekStartOf, weekKey, lastWeeks, bucket, dayToDate };

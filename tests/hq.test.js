@@ -523,12 +523,15 @@ test("playbook v7: a WiserShifts Facebook Page play next to the groups one", asy
   HqSync.updateOne = async (q, u) => { if (q.key === "playbook") Object.assign(saved, u.$set); return {}; };
   HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "facebook-groups" ? { _id: "g1", order: 9 } : null);
   HqPlaybookPlay.findOneAndUpdate = async (q, u) => { upserts.push([q.seedKey, u.$setOnInsert]); return { _id: "fp1" }; };
+  const origPlayUpd = HqPlaybookPlay.updateOne;
+  HqPlaybookPlay.updateOne = async () => ({}); // v8 runs too
   HqContentItem.updateOne = async (q, u) => { items.push(u.$setOnInsert); return {}; };
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
     Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
     Object.assign(HqPlaybookPlay, { findOne: orig.playFind, findOneAndUpdate: orig.playFOU });
+    HqPlaybookPlay.updateOne = origPlayUpd;
     HqContentItem.updateOne = orig.itemUpd;
   }
   assert.equal(upserts.length, 1);
@@ -539,4 +542,234 @@ test("playbook v7: a WiserShifts Facebook Page play next to the groups one", asy
   assert.equal(saved["data.channels"][0].name, seed.FB_CHANNEL.name);
   assert.equal(saved["data.channels"][0].why, seed.FB_CHANNEL.why);
   assert.equal(saved["data.channels"][1].why, "keep");
+});
+
+test("week plan: calls go to specific facilities, best first, spread Monday to Friday", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const play = { _id: "p1", active: true, channel: "calls", audience: ["scheduler"], weeklyTarget: 10, countsFrom: "activities" };
+  const facilities = [
+    { _id: "f1", name: "Tier 2", tier: 2, frontDeskPhone: "555-1" },
+    { _id: "f2", name: "Tier 1", tier: 1, frontDeskPhone: "555-2" },
+    { _id: "f3", name: "No phone", tier: 1 },
+    { _id: "f4", name: "Customer", tier: 1, frontDeskPhone: "555-4", tenantId: "t1" },
+    { _id: "f5", name: "Called last week", tier: 1, frontDeskPhone: "555-5" },
+    { _id: "f6", name: "Call-back due", tier: 3, frontDeskPhone: "555-6", nextDate: new Date("2026-11-04") },
+    { _id: "f7", name: "Not interested", tier: 1, frontDeskPhone: "555-7", stage: "Not interested" },
+  ];
+  const lastTouch = new Map([["f5", new Date("2026-10-28")]]);
+  const out = plan.todosFor(play, { facilities, lastTouch, now, weekEnd: new Date("2026-11-09T05:00:00Z") });
+  assert.deepEqual(out.map((t) => t.title), ["Call-back due", "Tier 1", "Tier 2"]);
+  assert.equal(out[0].phone, "555-6");
+  assert.deepEqual(out.map((t) => t.day), [0, 0, 1]); // 10 a week = 2 a day
+  // A refill only adds what's missing, and never repeats someone.
+  const more = plan.todosFor(play, { facilities, lastTouch, now, have: out.map((t) => ({ refId: t.refId })) });
+  assert.equal(more.length, 0);
+  assert.equal(plan.dayFor(59, 60), 4);
+});
+
+test("week plan: leadership emails go to the leaders, content plays to the next pieces", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const email = { _id: "e1", active: true, channel: "email", audience: ["director"], weeklyTarget: 2, countsFrom: "activities" };
+  const contacts = [
+    { _id: "c1", name: "Pat", title: "DON", role: "don", email: "pat@x.org", facilityId: "f1" },
+    { _id: "c2", name: "Sam", role: "scheduler", email: "sam@x.org" },
+    { _id: "c3", name: "Lee", role: "administrator", email: "", facilityId: "f1" },
+    { _id: "c4", name: "Ana", role: "executive_director", email: "ana@y.org" },
+  ];
+  const out = plan.todosFor(email, { contacts, facilities: [{ _id: "f1", name: "Oak Manor", tier: 1 }], now });
+  assert.deepEqual(out.map((t) => t.refId), ["c1", "c4"]);
+  assert.equal(out[0].detail, "Oak Manor");
+  assert.equal(out[0].email, "pat@x.org");
+
+  const posts = { _id: "lp", active: true, channel: "facebook", audience: ["scheduler"], weeklyTarget: 3, countsFrom: "content" };
+  const weekStart = new Date("2026-11-02T05:00:00Z");
+  const items = [
+    { _id: "i1", playId: "lp", title: "Idea A", status: "idea" },
+    { _id: "i2", playId: "lp", title: "Ready B", status: "ready" },
+    { _id: "i3", playId: "lp", title: "Out Monday", status: "published", publishedAt: new Date("2026-11-02T17:00:00Z") },
+    { _id: "i4", playId: "lp", title: "Idea C", status: "idea" },
+    { _id: "i5", playId: "other", title: "Not this play", status: "ready" },
+  ];
+  const c = plan.todosFor(posts, { items, now, weekStart });
+  assert.deepEqual(c.map((t) => t.title), ["Out Monday", "Ready B", "Idea A"]);
+  assert.deepEqual(plan.moreFor(posts, { items, have: c }).map((t) => t.title), ["Idea C"]);
+
+  // Every two weeks: not on the list when one went out last week.
+  const blog = { _id: "b", active: true, channel: "blog", weeklyTarget: 0.5, countsFrom: "content" };
+  const blogItems = [
+    { _id: "b1", playId: "b", title: "Last", status: "published", publishedAt: new Date("2026-10-28T12:00:00Z") },
+    { _id: "b2", playId: "b", title: "Next", status: "idea" },
+  ];
+  assert.equal(plan.todosFor(blog, { items: blogItems, now, weekStart }).length, 0);
+  assert.equal(plan.todosFor(blog, { items: blogItems, now: new Date("2026-11-12T12:00:00Z"), weekStart: new Date("2026-11-09T05:00:00Z") }).length, 1);
+  // Plays without a list: leads, signups, nothing to count.
+  assert.equal(plan.listKind({ active: true, weeklyTarget: 1, countsFrom: "leads", channel: "newsletter" }), null);
+});
+
+test("a date picked in a form counts in the right week (Monday posts aren't last week's)", () => {
+  const { dayToDate, lastWeeks } = require("../utils/hq/weeks");
+  const now = new Date("2026-11-03T15:00:00Z"); // Tuesday, New York
+  const week = lastWeeks(1, now)[0];
+  const monday = dayToDate("2026-11-02", now);
+  assert.ok(monday >= week.start && monday < week.end, "Monday is this week");
+  assert.equal(dayToDate("2026-11-03", now).getTime(), now.getTime(), "today means now");
+  assert.equal(dayToDate("", now), null);
+});
+
+test("week checklist: ticking a call logs it with the play, unticking removes it", async () => {
+  const mongoose = require("mongoose");
+  const HqWeekPlan = require("../models/hqWeekPlanModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const HqFacility = require("../models/hqFacilityModel");
+  const HqContact = require("../models/hqContactModel");
+  const HqSync = require("../models/hqSyncModel");
+  const pb = require("../controllers/hqPlaybookController");
+  const hq = require("../controllers/hqController");
+  const playId = new mongoose.Types.ObjectId();
+  const fid = new mongoose.Types.ObjectId();
+  const play = { _id: playId, active: true, title: "Front desk calls", channel: "calls", audience: ["scheduler"], weeklyTarget: 5, targetUnit: "calls", countsFrom: "activities" };
+  const q = (v) => { const o = { sort: () => o, select: () => o, lean: async () => v, then: (r, j) => Promise.resolve(v).then(r, j) }; return o; };
+  let doc = null;
+  const activities = [];
+  const facilityUpdates = [];
+  const saved = { stubs: [] };
+  const stub = (obj, name, fn) => { saved.stubs.push([obj, name, obj[name]]); obj[name] = fn; };
+  stub(HqSync, "findOne", () => q({ data: { version: 99 } }));
+  stub(HqPlaybookPlay, "find", () => q([play]));
+  stub(HqPlaybookPlay, "findById", () => q(play));
+  stub(HqContentItem, "find", () => q([]));
+  stub(HqFacility, "find", () => q([{ _id: fid, name: "Oak Manor", tier: 1, frontDeskPhone: "555-0100" }]));
+  stub(HqFacility, "findById", () => q({ lastCallDate: null }));
+  stub(HqFacility, "updateOne", async (f, u) => facilityUpdates.push(u));
+  stub(HqContact, "find", () => q([]));
+  stub(HqActivity, "aggregate", async () => []);
+  stub(require("../models/hqFbGroupModel"), "find", () => q([]));
+  stub(require("../models/hqFbPersonModel"), "find", () => q([]));
+  stub(HqActivity, "find", (f) => q(f._id ? activities.filter((a) => f._id.$in.map(String).includes(String(a._id))) : activities.filter((a) => String(a.playId) === String(playId))));
+  stub(HqActivity, "create", async (a) => { const x = { ...a, _id: new mongoose.Types.ObjectId() }; activities.push(x); return x; });
+  stub(HqActivity, "findByIdAndDelete", (id) => q(activities.splice(activities.findIndex((a) => String(a._id) === String(id)), 1)[0]));
+  stub(HqWeekPlan, "findOne", async () => doc);
+  stub(HqWeekPlan.prototype, "save", async function save() { doc = this; return this; });
+  stub(pb, "scoreboard", async () => [{ playId: String(playId), weeks: [activities.length] }]);
+  const call = async (fn, req) => { let out; const res = { status: () => res, json: (b) => { out = b; return res; } }; await fn({ hqUser: { name: "Tolu" }, body: {}, params: {}, ...req }, res, (e) => { throw e; }); return out; };
+  try {
+    const week = await call(require("../controllers/hqWeekController").getWeek, {});
+    const p = week.plays[0];
+    assert.equal(p.todos.length, 1);
+    assert.equal(p.todos[0].title, "Oak Manor");
+    assert.equal(p.todos[0].done, false);
+    const ticked = await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: true } });
+    assert.equal(ticked.plays[0].todos[0].done, true);
+    assert.equal(ticked.plays[0].count, 1);
+    assert.equal(activities.length, 1);
+    assert.equal(activities[0].kind, "call");
+    assert.equal(String(activities[0].playId), String(playId));
+    assert.equal(String(activities[0].facilityId), String(fid));
+    assert.equal(facilityUpdates[0].$inc.attempts, 1);
+    const unticked = await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: false } });
+    assert.equal(unticked.plays[0].todos[0].done, false);
+    assert.equal(unticked.plays[0].count, 0);
+    assert.equal(activities.length, 0);
+    assert.equal(facilityUpdates[1].$inc.attempts, -1);
+    // Your own to-do.
+    const withTask = await call(require("../controllers/hqWeekController").addTask, { body: { title: "Ask Dana for a referral" } });
+    assert.equal(withTask.tasks[0].title, "Ask Dana for a referral");
+    const removed = await call(require("../controllers/hqWeekController").removeItem, { params: { itemId: withTask.tasks[0]._id } });
+    assert.equal(removed.tasks.length, 0);
+  } finally {
+    for (const [obj, name, orig] of saved.stubs.reverse()) obj[name] = orig;
+    void hq;
+  }
+});
+
+test("facebook: each group moves one step at a time (join, admin, offer, then answers)", () => {
+  const fb = require("../utils/hq/facebook");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const g = { _id: "g1", name: "CNA Schedulers", status: "found", promo: "ask" };
+  assert.equal(fb.nextGroupStep(g, now).action, "join");
+  assert.equal(fb.nextGroupStep({ ...g, status: "requested" }, now).action, "joined");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined" }, now).action, "admin", "admin message before any offer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-11-01") }, now).action, "answer", "keep answering while waiting");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-10-27") }, now).action, "admin_followup", "one nudge after 5 days");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-10-27"), adminFollowedUpAt: new Date("2026-11-01") }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "approved" }, now).action, "offer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "approved", offerAt: now }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined", promo: "allowed" }, now).action, "offer", "no need to ask when promotion is allowed");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined", promo: "none" }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "left" }, now), null);
+  assert.deepEqual(fb.groupChange("admin", now), { status: "asked", askedAt: now });
+
+  const p = { _id: "p1", name: "Tina", status: "to_message", said: "WEEK" };
+  assert.equal(fb.nextPersonStep(p, now).action, "message");
+  assert.equal(fb.nextPersonStep({ ...p, status: "messaged", messagedAt: new Date("2026-11-02") }, now), null, "too soon to follow up");
+  assert.equal(fb.nextPersonStep({ ...p, status: "messaged", messagedAt: new Date("2026-10-30") }, now).action, "followup");
+  assert.equal(fb.nextPersonStep({ ...p, status: "replied" }, now).action, "call_booked");
+  assert.equal(fb.nextPersonStep({ ...p, status: "signed_up" }, now), null);
+});
+
+test("week plan: Facebook groups get their next step, everyone to message is added", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const play = { _id: "fbg", active: true, channel: "facebook", audience: ["scheduler"], weeklyTarget: 2, countsFrom: "activities" };
+  assert.equal(plan.listKind(play), "facebook");
+  const groups = [
+    { _id: "a", name: "Answers only", status: "joined", promo: "none", priority: 1, lastAnswerAt: new Date("2026-10-20") },
+    { _id: "b", name: "Needs admin", status: "joined", promo: "ask", priority: 2 },
+    { _id: "c", name: "To join", status: "found", priority: 1, members: 9000 },
+    { _id: "d", name: "Gone", status: "left" },
+  ];
+  const people = [
+    { _id: "p1", name: "Tina", status: "to_message", groupId: "b" },
+    { _id: "p2", name: "Rae", status: "to_message" },
+    { _id: "p3", name: "Done", status: "signed_up" },
+  ];
+  const out = plan.todosFor(play, { groups, people, now });
+  // Steps that move a group forward first (join, admin), capped at the target; people aren't capped.
+  assert.deepEqual(out.map((t) => [t.kind, t.refId, t.action]), [["fbgroup", "c", "join"], ["fbgroup", "b", "admin"], ["fbperson", "p1", "message"], ["fbperson", "p2", "message"]]);
+  assert.equal(out[2].title, "Message Tina (from Needs admin)");
+  // Once the admin was messaged (logged anywhere), refills don't repeat it; the group still counts against the cap.
+  const after = plan.todosFor(play, { groups: groups.map((g) => (g._id === "b" ? { ...g, status: "asked", askedAt: now } : g)), people, now, have: out });
+  assert.deepEqual(after, []);
+  // More: answers in other groups.
+  assert.deepEqual(plan.moreFor(play, { groups, now, have: out }).map((t) => t.refId), ["a"]);
+});
+
+test("facebook: logging an action moves the group forward and counts; undo puts it back", async () => {
+  const mongoose = require("mongoose");
+  const HqFbGroup = require("../models/hqFbGroupModel");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const fbc = require("../controllers/hqFacebookController");
+  const gid = new mongoose.Types.ObjectId();
+  const playId = new mongoose.Types.ObjectId();
+  let group = { _id: gid, name: "CNA Schedulers", status: "joined", askedAt: null };
+  const acts = [];
+  const orig = [HqFbGroup.findById, HqFbGroup.updateOne, HqActivity.create, HqActivity.findById, HqActivity.deleteOne, HqPlaybookPlay.findOne];
+  const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
+  HqFbGroup.findById = () => lean(group);
+  HqFbGroup.updateOne = async (q, u) => { group = { ...group, ...u.$set }; };
+  HqActivity.create = async (a) => { const x = { ...a, _id: new mongoose.Types.ObjectId() }; acts.push(x); return x; };
+  HqActivity.findById = (id) => lean(acts.find((a) => String(a._id) === String(id)));
+  HqActivity.deleteOne = async (q) => acts.splice(acts.findIndex((a) => String(a._id) === String(q._id)), 1);
+  HqPlaybookPlay.findOne = () => lean({ _id: playId });
+  try {
+    const r = await fbc.logAction("group", gid, "admin", { notes: "Asked Jen" });
+    assert.equal(group.status, "asked");
+    assert.ok(group.askedAt);
+    assert.equal(acts.length, 1);
+    assert.equal(acts[0].kind, "facebook");
+    assert.equal(acts[0].fbAction, "admin");
+    assert.equal(String(acts[0].playId), String(playId), "counts toward the Facebook groups play");
+    assert.equal((await fbc.logAction("group", gid, "nonsense")).error, "Which action?");
+    assert.ok(await fbc.undoAction(r.activity._id));
+    assert.equal(group.status, "joined");
+    assert.equal(group.askedAt, null);
+    assert.equal(acts.length, 0);
+  } finally {
+    [HqFbGroup.findById, HqFbGroup.updateOne, HqActivity.create, HqActivity.findById, HqActivity.deleteOne, HqPlaybookPlay.findOne] = orig;
+  }
 });

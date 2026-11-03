@@ -31,6 +31,48 @@ const NEWSLETTER_V4 = {
 };
 const NL1_TITLE = "Leaders' email: what 0.1 hours per resident day costs a 50-bed building";
 
+/** The Facebook groups play before version 8 (counted from content posts). */
+const FB_GROUPS_V7 = {
+  title: "Scheduler Facebook groups",
+  who: "Schedulers and staffing coordinators in CNA, nursing and senior living groups.",
+  goal: "Be the helpful person in the group; schedulers try the templates and start free.",
+  steps: ["Answer scheduling questions with real help, no pitch.", "Share a template or video when it answers the question.", "Mention WiserShifts only when someone asks what you use."],
+  volume: "3 helpful posts or answers a week.",
+  weeklyTarget: 3,
+  targetUnit: "posts",
+  countsFrom: "content",
+  measure: "Clicks to templates, signups that say Facebook.",
+};
+/** Version 8: groups are tracked one by one on HQ's Facebook page, as the Page. */
+const FB_GROUPS_PLAY = {
+  seedKey: "facebook-groups",
+  title: "Facebook groups (as the Page)",
+  channel: "facebook",
+  audience: ["scheduler"],
+  who: "Schedulers, staffing coordinators and nurse leaders in the groups listed on HQ's Facebook page.",
+  goal: "Be the helpful Page in every group. Admins say yes to the offer; everyone who comments gets a message and a setup call.",
+  steps: [
+    "Find groups and add them on HQ's Facebook page: size, rules, and whether Pages can join.",
+    "Join as the WiserShifts Page, never a personal profile.",
+    "Message the admin before any offer. Follow up once after 5 days, then let it go.",
+    "Once the admin says yes (or the group allows it), post the offer as plain text.",
+    "Every week: answer real questions with no pitch. Share a template when it answers the question.",
+    "Everyone who comments or reacts goes on People to message. Message them the same day.",
+  ],
+  scripts: [
+    { label: "Message to the admin", body: "Hi! We're WiserShifts, a scheduling tool for care facilities. Would it be okay to post a free offer to help a few schedulers set up their schedule? No sales pitch, and we're happy to follow whatever rules you have." },
+    { label: "Admin follow-up", body: "Hi again! Just checking whether a free offer to help a few schedulers would be okay in the group. Totally fine if not; we'll keep answering questions either way." },
+    { label: "The offer (plain text, as the Page)", body: "Schedulers, would it help if someone sat with you for 30 minutes and built next week's schedule with you? We're doing this free for a few facilities this month, mostly to learn what's hardest for you. Comment or message us if you're interested." },
+    { label: "Message to a commenter", body: "Hi [name], thanks for commenting! What days and times work for a 30-minute call this week? Send over your current schedule whenever (a photo is fine) and we'll have it ready to go." },
+    { label: "Commenter follow-up", body: "Hi [name], just following up on the free schedule setup. Still happy to build next week's schedule with you if it would help. Any time this week?" },
+  ],
+  volume: "5 group touches a week (joins, admin messages, the offer, answers), plus everyone who comments.",
+  weeklyTarget: 5,
+  targetUnit: "group touches",
+  countsFrom: "activities",
+  measure: "Groups joined and approved, people messaged and replied, setup calls booked, signups that say Facebook.",
+};
+
 /** The Facebook channel: your WiserShifts Page plus the groups (version 7). */
 const FB_CHANNEL = {
   oldName: "Facebook groups",
@@ -222,24 +264,7 @@ const PLAYS = [
     countsFrom: "content",
     measure: "Google clicks and positions, calculator emails, signups from search.",
   },
-  {
-    seedKey: "facebook-groups",
-    title: "Scheduler Facebook groups",
-    channel: "facebook",
-    audience: ["scheduler"],
-    who: "Schedulers and staffing coordinators in CNA, nursing and senior living groups.",
-    goal: "Be the helpful person in the group; schedulers try the templates and start free.",
-    steps: [
-      "Answer scheduling questions with real help, no pitch.",
-      "Share a template or video when it answers the question.",
-      "Mention WiserShifts only when someone asks what you use.",
-    ],
-    volume: "3 helpful posts or answers a week.",
-    weeklyTarget: 3,
-    targetUnit: "posts",
-    countsFrom: "content",
-    measure: "Clicks to templates, signups that say Facebook.",
-  },
+  FB_GROUPS_PLAY,
   {
     seedKey: "facebook-page",
     title: "WiserShifts Facebook Page",
@@ -490,3 +515,5 @@ module.exports.V6_LINKEDIN = {
 
 module.exports.FB_CHANNEL = FB_CHANNEL;
 module.exports.FB_PAGE_IDEAS = FB_PAGE_IDEAS;
+module.exports.FB_GROUPS_V7 = FB_GROUPS_V7;
+module.exports.FB_GROUPS_PLAY = FB_GROUPS_PLAY;

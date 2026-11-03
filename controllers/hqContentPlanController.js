@@ -8,6 +8,7 @@ const HqContentItem = require("../models/hqContentItemModel");
 const HqSync = require("../models/hqSyncModel");
 const HqLinkedinPost = require("../models/hqLinkedinPostModel");
 const { ensureSeeded } = require("./hqPlaybookController");
+const { dayToDate } = require("../utils/hq/weeks");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["title", "format", "channel", "audience", "status", "dueDate", "publishedAt", "url", "owner", "notes", "playId"];
@@ -15,7 +16,8 @@ const FIELDS = ["title", "format", "channel", "audience", "status", "dueDate", "
 function clean(b) {
   const out = Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
   if (out.playId !== undefined && !isId(out.playId)) out.playId = null;
-  for (const d of ["dueDate", "publishedAt"]) if (out[d] !== undefined) out[d] = out[d] ? new Date(out[d]) : null;
+  if (out.dueDate !== undefined) out.dueDate = out.dueDate ? new Date(out.dueDate) : null;
+  if (out.publishedAt !== undefined) out.publishedAt = dayToDate(out.publishedAt);
   if (out.status === "published" && out.publishedAt === undefined) out.publishedAt = new Date();
   return out;
 }

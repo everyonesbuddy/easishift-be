@@ -12,6 +12,8 @@ const HqActivity = require("../models/hqActivityModel");
 const HqContentItem = require("../models/hqContentItemModel");
 const HqFacility = require("../models/hqFacilityModel");
 const HqContact = require("../models/hqContactModel");
+const HqFbGroup = require("../models/hqFbGroupModel");
+const HqFbPerson = require("../models/hqFbPersonModel");
 const { lastWeeks } = require("../utils/hq/weeks");
 const plan = require("../utils/hq/weekPlan");
 
@@ -24,24 +26,27 @@ async function context(now) {
   const { lastTouchMap } = require("./hqController");
   await ensureSeeded();
   const week = lastWeeks(1, now)[0];
-  const [plays, items, facilities, contacts, lastTouch] = await Promise.all([
+  const [plays, items, facilities, contacts, lastTouch, groups, people] = await Promise.all([
     HqPlaybookPlay.find({ active: true }).sort({ order: 1, createdAt: 1 }).lean(),
     HqContentItem.find({}).select("title status playId publishedAt dueDate channel audience url").lean(),
     HqFacility.find({}).select("name city state tier stage nextDate nextStep lastCallDate frontDeskPhone scheduler tenantId").lean(),
     HqContact.find({}).select("name title role email phone linkedin facilityId facilityName group").lean(),
     lastTouchMap(),
+    HqFbGroup.find({}).lean(),
+    HqFbPerson.find({}).lean(),
   ]);
   const counts = new Map((await scoreboard(plays, [week])).map((s) => [s.playId, s.weeks[0]]));
-  return { week, plays, items, facilities, contacts, lastTouch, counts, now };
+  return { week, plays, items, facilities, contacts, lastTouch, groups, people, counts, now };
 }
 
 /** Add to-dos so every play's list reaches its target. Returns how many were added. */
-function fill(doc, ctx) {
+function fill(doc, ctx, only = null) {
   const removed = new Set(doc.removed || []);
   // Someone on one play's list this week isn't put on another's.
   const taken = new Set(doc.items.filter((t) => t.refId).map((t) => String(t.refId)));
   let added = 0;
   for (const p of ctx.plays) {
+    if (only && plan.listKind(p) !== only) continue;
     const have = doc.items.filter((t) => String(t.playId) === String(p._id) && t.kind !== "task");
     const todos = plan.todosFor(p, { ...ctx, weekStart: ctx.week.start, weekEnd: ctx.week.end, have, removed, taken });
     for (const t of todos) {
@@ -72,14 +77,16 @@ async function loadWeek(ctx) {
 async function view(doc, ctx) {
   const itemById = new Map(ctx.items.map((i) => [String(i._id), i]));
   const acts = await HqActivity.find({ playId: { $in: ctx.plays.map((p) => p._id) }, at: { $gte: ctx.week.start, $lt: ctx.week.end } })
-    .select("playId facilityId contactId at")
+    .select("playId facilityId contactId at fbGroupId fbPersonId fbAction")
     .lean();
   const actIds = new Set((await HqActivity.find({ _id: { $in: doc.items.filter((t) => t.activityId).map((t) => t.activityId) } }).select("_id").lean()).map((a) => String(a._id)));
   const loggedFor = (t) =>
-    acts.find((a) => String(a.playId) === String(t.playId) && (t.kind === "contact" ? String(a.contactId) === String(t.refId) : String(a.facilityId) === String(t.refId)));
+    t.kind === "fbgroup" || t.kind === "fbperson"
+      ? acts.find((a) => a.fbAction === t.action && String(t.kind === "fbgroup" ? a.fbGroupId : a.fbPersonId) === String(t.refId))
+      : acts.find((a) => String(a.playId) === String(t.playId) && (t.kind === "contact" ? String(a.contactId) === String(t.refId) : String(a.facilityId) === String(t.refId)));
 
   const todo = (t) => {
-    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added };
+    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", url: t.url || "" };
     if (t.kind === "content") {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted
@@ -131,6 +138,8 @@ exports.getWeek = async (req, res, next) => {
   try {
     const ctx = await context(new Date());
     const doc = await loadWeek(ctx);
+    // New Facebook groups and people to message join the week on their own.
+    if (fill(doc, ctx, "facebook")) await doc.save();
     res.json(await view(doc, ctx));
   } catch (err) {
     next(err);
@@ -176,6 +185,21 @@ async function setDone(t, done, req) {
     t.doneAt = done ? now : null;
     return null;
   }
+  if (t.kind === "fbgroup" || t.kind === "fbperson") {
+    const fbc = require("./hqFacebookController");
+    if (done && !t.activityId) {
+      const r = await fbc.logAction(t.kind === "fbgroup" ? "group" : "person", t.refId, t.action, { req, notes: req.body?.notes, playId: t.playId || null });
+      if (r.error) return r.error;
+      t.activityId = r.activity._id;
+      t.doneAt = new Date();
+    } else if (!done) {
+      if (!t.activityId) return "This was logged on the Facebook page. Undo it there.";
+      await fbc.undoAction(t.activityId);
+      t.activityId = null;
+      t.doneAt = null;
+    }
+    return null;
+  }
   const play = t.playId ? await HqPlaybookPlay.findById(t.playId).select("channel").lean() : null;
   const kind = plan.TOUCH[play?.channel] || "note";
   if (done && !t.activityId) {
@@ -208,14 +232,14 @@ exports.check = async (req, res, next) => {
     let t = isId(req.params.itemId) ? doc.items.id(req.params.itemId) : null;
     if (!t) {
       // Something from "more": add it to the list, then tick it.
-      const { playId, kind, refId } = req.body || {};
-      if (!isId(playId) || !isId(refId) || !["facility", "contact", "content"].includes(kind)) return fail(res, 404, "Not on this week's list");
+      const { playId, kind, refId, action } = req.body || {};
+      if (!isId(playId) || !isId(refId) || !["facility", "contact", "content", "fbgroup"].includes(kind)) return fail(res, 404, "Not on this week's list");
       const p = ctx.plays.find((x) => String(x._id) === String(playId));
       if (!p) return fail(res, 400, "That play isn't running");
       const have = doc.items.filter((x) => String(x.playId) === String(playId));
-      const found = plan.moreFor(p, { ...ctx, weekEnd: ctx.week.end, have, removed: new Set(), taken: new Set() }, 10000).find((m) => m.refId === String(refId) && m.kind === kind);
+      const found = plan.moreFor(p, { ...ctx, weekEnd: ctx.week.end, have, removed: new Set(), taken: new Set() }, 10000).find((m) => m.refId === String(refId) && m.kind === kind && (!action || m.action === action));
       if (!found) return fail(res, 400, "That one can't be added any more");
-      doc.items.push({ ...found, playId: p._id, day: kind === "content" ? null : ctx.now ? Math.min(6, Math.floor((ctx.now - ctx.week.start) / 86400000)) : null, added: true });
+      doc.items.push({ ...found, playId: p._id, day: kind === "content" || kind === "fbgroup" ? null : ctx.now ? Math.min(6, Math.floor((ctx.now - ctx.week.start) / 86400000)) : null, added: true });
       doc.removed = (doc.removed || []).filter((r) => r !== String(refId));
       t = doc.items[doc.items.length - 1];
     }
@@ -262,4 +286,11 @@ exports.removeItem = async (req, res, next) => {
   } catch (err) {
     next(err);
   }
+};
+
+/** Top this week's list up (used after adding Facebook groups or people). */
+module.exports.topUp = async () => {
+  const ctx = await context(new Date());
+  const doc = await loadWeek(ctx);
+  if (fill(doc, ctx, "facebook")) await doc.save();
 };

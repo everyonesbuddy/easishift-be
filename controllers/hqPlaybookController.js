@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 7;
+const SEED_VERSION = 8;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -69,7 +69,28 @@ async function ensureSeeded() {
   }
   if (version < 6) await migrateV6();
   if (version < 7) await migrateV7();
+  if (version < 8) await migrateV8();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 8: Facebook groups are tracked one by one on HQ's Facebook page,
+ * and the play counts group touches (joins, admin messages, the offer,
+ * answers) instead of content posts. Fields you edited are kept; scripts are
+ * added only if the play has none.
+ */
+async function migrateV8() {
+  const play = await HqPlaybookPlay.findOne({ seedKey: "facebook-groups" }).lean();
+  if (!play) return; // deleted: stays deleted
+  const old = seed.FB_GROUPS_V7;
+  const next = seed.FB_GROUPS_PLAY;
+  const set = {};
+  for (const k of Object.keys(old)) {
+    const same = JSON.stringify(play[k] ?? null) === JSON.stringify(old[k]);
+    if (same) set[k] = next[k];
+  }
+  if (!play.scripts?.length) set.scripts = next.scripts;
+  if (Object.keys(set).length) await HqPlaybookPlay.updateOne({ _id: play._id }, { $set: set });
 }
 
 /**

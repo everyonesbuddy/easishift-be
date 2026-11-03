@@ -6,8 +6,10 @@ const mongoose = require("mongoose");
  */
 const todoSchema = new mongoose.Schema({
   playId: { type: mongoose.Schema.Types.ObjectId, ref: "HqPlaybookPlay", default: null },
-  kind: { type: String, enum: ["facility", "contact", "content", "task"], required: true },
-  refId: { type: mongoose.Schema.Types.ObjectId, default: null }, // the facility, person or content piece
+  kind: { type: String, enum: ["facility", "contact", "content", "task", "fbgroup", "fbperson"], required: true },
+  action: { type: String, default: "" }, // Facebook: the step (join, admin, offer, answer, message…)
+  url: { type: String, default: "" },
+  refId: { type: mongoose.Schema.Types.ObjectId, default: null }, // the facility, person, content piece or Facebook group / person
   facilityId: { type: mongoose.Schema.Types.ObjectId, ref: "HqFacility", default: null },
   title: { type: String, default: "" },
   detail: { type: String, default: "" },

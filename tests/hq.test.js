@@ -523,12 +523,15 @@ test("playbook v7: a WiserShifts Facebook Page play next to the groups one", asy
   HqSync.updateOne = async (q, u) => { if (q.key === "playbook") Object.assign(saved, u.$set); return {}; };
   HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "facebook-groups" ? { _id: "g1", order: 9 } : null);
   HqPlaybookPlay.findOneAndUpdate = async (q, u) => { upserts.push([q.seedKey, u.$setOnInsert]); return { _id: "fp1" }; };
+  const origPlayUpd = HqPlaybookPlay.updateOne;
+  HqPlaybookPlay.updateOne = async () => ({}); // v8 runs too
   HqContentItem.updateOne = async (q, u) => { items.push(u.$setOnInsert); return {}; };
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
     Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
     Object.assign(HqPlaybookPlay, { findOne: orig.playFind, findOneAndUpdate: orig.playFOU });
+    HqPlaybookPlay.updateOne = origPlayUpd;
     HqContentItem.updateOne = orig.itemUpd;
   }
   assert.equal(upserts.length, 1);
@@ -644,6 +647,8 @@ test("week checklist: ticking a call logs it with the play, unticking removes it
   stub(HqFacility, "updateOne", async (f, u) => facilityUpdates.push(u));
   stub(HqContact, "find", () => q([]));
   stub(HqActivity, "aggregate", async () => []);
+  stub(require("../models/hqFbGroupModel"), "find", () => q([]));
+  stub(require("../models/hqFbPersonModel"), "find", () => q([]));
   stub(HqActivity, "find", (f) => q(f._id ? activities.filter((a) => f._id.$in.map(String).includes(String(a._id))) : activities.filter((a) => String(a.playId) === String(playId))));
   stub(HqActivity, "create", async (a) => { const x = { ...a, _id: new mongoose.Types.ObjectId() }; activities.push(x); return x; });
   stub(HqActivity, "findByIdAndDelete", (id) => q(activities.splice(activities.findIndex((a) => String(a._id) === String(id)), 1)[0]));
@@ -678,5 +683,93 @@ test("week checklist: ticking a call logs it with the play, unticking removes it
   } finally {
     for (const [obj, name, orig] of saved.stubs.reverse()) obj[name] = orig;
     void hq;
+  }
+});
+
+test("facebook: each group moves one step at a time (join, admin, offer, then answers)", () => {
+  const fb = require("../utils/hq/facebook");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const g = { _id: "g1", name: "CNA Schedulers", status: "found", promo: "ask" };
+  assert.equal(fb.nextGroupStep(g, now).action, "join");
+  assert.equal(fb.nextGroupStep({ ...g, status: "requested" }, now).action, "joined");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined" }, now).action, "admin", "admin message before any offer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-11-01") }, now).action, "answer", "keep answering while waiting");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-10-27") }, now).action, "admin_followup", "one nudge after 5 days");
+  assert.equal(fb.nextGroupStep({ ...g, status: "asked", askedAt: new Date("2026-10-27"), adminFollowedUpAt: new Date("2026-11-01") }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "approved" }, now).action, "offer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "approved", offerAt: now }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined", promo: "allowed" }, now).action, "offer", "no need to ask when promotion is allowed");
+  assert.equal(fb.nextGroupStep({ ...g, status: "joined", promo: "none" }, now).action, "answer");
+  assert.equal(fb.nextGroupStep({ ...g, status: "left" }, now), null);
+  assert.deepEqual(fb.groupChange("admin", now), { status: "asked", askedAt: now });
+
+  const p = { _id: "p1", name: "Tina", status: "to_message", said: "WEEK" };
+  assert.equal(fb.nextPersonStep(p, now).action, "message");
+  assert.equal(fb.nextPersonStep({ ...p, status: "messaged", messagedAt: new Date("2026-11-02") }, now), null, "too soon to follow up");
+  assert.equal(fb.nextPersonStep({ ...p, status: "messaged", messagedAt: new Date("2026-10-30") }, now).action, "followup");
+  assert.equal(fb.nextPersonStep({ ...p, status: "replied" }, now).action, "call_booked");
+  assert.equal(fb.nextPersonStep({ ...p, status: "signed_up" }, now), null);
+});
+
+test("week plan: Facebook groups get their next step, everyone to message is added", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-03T15:00:00Z");
+  const play = { _id: "fbg", active: true, channel: "facebook", audience: ["scheduler"], weeklyTarget: 2, countsFrom: "activities" };
+  assert.equal(plan.listKind(play), "facebook");
+  const groups = [
+    { _id: "a", name: "Answers only", status: "joined", promo: "none", priority: 1, lastAnswerAt: new Date("2026-10-20") },
+    { _id: "b", name: "Needs admin", status: "joined", promo: "ask", priority: 2 },
+    { _id: "c", name: "To join", status: "found", priority: 1, members: 9000 },
+    { _id: "d", name: "Gone", status: "left" },
+  ];
+  const people = [
+    { _id: "p1", name: "Tina", status: "to_message", groupId: "b" },
+    { _id: "p2", name: "Rae", status: "to_message" },
+    { _id: "p3", name: "Done", status: "signed_up" },
+  ];
+  const out = plan.todosFor(play, { groups, people, now });
+  // Steps that move a group forward first (join, admin), capped at the target; people aren't capped.
+  assert.deepEqual(out.map((t) => [t.kind, t.refId, t.action]), [["fbgroup", "c", "join"], ["fbgroup", "b", "admin"], ["fbperson", "p1", "message"], ["fbperson", "p2", "message"]]);
+  assert.equal(out[2].title, "Message Tina (from Needs admin)");
+  // Once the admin was messaged (logged anywhere), refills don't repeat it; the group still counts against the cap.
+  const after = plan.todosFor(play, { groups: groups.map((g) => (g._id === "b" ? { ...g, status: "asked", askedAt: now } : g)), people, now, have: out });
+  assert.deepEqual(after, []);
+  // More: answers in other groups.
+  assert.deepEqual(plan.moreFor(play, { groups, now, have: out }).map((t) => t.refId), ["a"]);
+});
+
+test("facebook: logging an action moves the group forward and counts; undo puts it back", async () => {
+  const mongoose = require("mongoose");
+  const HqFbGroup = require("../models/hqFbGroupModel");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const fbc = require("../controllers/hqFacebookController");
+  const gid = new mongoose.Types.ObjectId();
+  const playId = new mongoose.Types.ObjectId();
+  let group = { _id: gid, name: "CNA Schedulers", status: "joined", askedAt: null };
+  const acts = [];
+  const orig = [HqFbGroup.findById, HqFbGroup.updateOne, HqActivity.create, HqActivity.findById, HqActivity.deleteOne, HqPlaybookPlay.findOne];
+  const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
+  HqFbGroup.findById = () => lean(group);
+  HqFbGroup.updateOne = async (q, u) => { group = { ...group, ...u.$set }; };
+  HqActivity.create = async (a) => { const x = { ...a, _id: new mongoose.Types.ObjectId() }; acts.push(x); return x; };
+  HqActivity.findById = (id) => lean(acts.find((a) => String(a._id) === String(id)));
+  HqActivity.deleteOne = async (q) => acts.splice(acts.findIndex((a) => String(a._id) === String(q._id)), 1);
+  HqPlaybookPlay.findOne = () => lean({ _id: playId });
+  try {
+    const r = await fbc.logAction("group", gid, "admin", { notes: "Asked Jen" });
+    assert.equal(group.status, "asked");
+    assert.ok(group.askedAt);
+    assert.equal(acts.length, 1);
+    assert.equal(acts[0].kind, "facebook");
+    assert.equal(acts[0].fbAction, "admin");
+    assert.equal(String(acts[0].playId), String(playId), "counts toward the Facebook groups play");
+    assert.equal((await fbc.logAction("group", gid, "nonsense")).error, "Which action?");
+    assert.ok(await fbc.undoAction(r.activity._id));
+    assert.equal(group.status, "joined");
+    assert.equal(group.askedAt, null);
+    assert.equal(acts.length, 0);
+  } finally {
+    [HqFbGroup.findById, HqFbGroup.updateOne, HqActivity.create, HqActivity.findById, HqActivity.deleteOne, HqPlaybookPlay.findOne] = orig;
   }
 });

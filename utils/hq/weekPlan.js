@@ -5,6 +5,7 @@
  * Pure: the controller loads the data and stores the list for the week.
  */
 const DAY = 24 * 60 * 60 * 1000;
+const fbRules = require("./facebook");
 
 // What a play's touches are, by channel.
 const TOUCH = { calls: "call", email: "email", linkedin: "linkedin" };
@@ -23,6 +24,7 @@ const weeklyCount = (p) => (p.weeklyTarget >= 1 ? Math.ceil(p.weeklyTarget) : p.
 function listKind(p) {
   if (!p.active || !p.weeklyTarget) return null;
   if (p.countsFrom === "content") return "content";
+  if (p.countsFrom === "activities" && p.channel === "facebook") return "facebook";
   if (p.countsFrom === "activities" && TOUCH[p.channel]) return "people";
   return null;
 }
@@ -103,12 +105,14 @@ const contentTodo = (i) => ({ kind: "content", refId: String(i._id), title: i.ti
  * The to-dos to add for one play so its list reaches the weekly target.
  * `have` = to-dos already on this week's list for the play (refills only add).
  */
-function todosFor(play, { items = [], facilities = [], contacts = [], lastTouch, now = new Date(), weekStart = null, weekEnd = null, have = [], removed = new Set(), taken = new Set() }) {
+function todosFor(play, { items = [], facilities = [], contacts = [], groups = [], people = [], lastTouch, now = new Date(), weekStart = null, weekEnd = null, have = [], removed = new Set(), taken = new Set() }) {
   const kind = listKind(play);
   if (!kind) return [];
   const n = weeklyCount(play);
   const onList = new Set(have.map((t) => String(t.refId)));
   const skip = new Set([...onList, ...removed, ...taken]);
+
+  if (kind === "facebook") return facebookTodos(play, { groups, people, now, have, removed, cap: n });
 
   if (kind === "content") {
     const mine = items.filter((i) => String(i.playId) === String(play._id));
@@ -133,13 +137,40 @@ function todosFor(play, { items = [], facilities = [], contacts = [], lastTouch,
     .map((t, i) => ({ ...t, day: dayFor(have.length + i, n) }));
 }
 
+/**
+ * Facebook groups: each group's next step (join, admin, offer, then
+ * answers) up to the target, plus everyone waiting on a message, which
+ * isn't capped. A group can get its next step the same week once the
+ * first is done (keyed by group and step).
+ */
+function facebookTodos(play, { groups = [], people = [], now = new Date(), have = [], removed = new Set(), cap = 0 }) {
+  const onList = new Set(have.map((t) => `${t.refId}:${t.action}`));
+  const open = (t) => !onList.has(`${t.refId}:${t.action}`) && !removed.has(String(t.refId));
+  const byId = new Map(groups.map((x) => [String(x._id), x]));
+  const pById = new Map(people.map((x) => [String(x._id), x]));
+  // A to-do is still open while its step is still the group's or person's next step; until then it doesn't get another.
+  const stillNext = (t) => {
+    const step = t.kind === "fbgroup" ? (byId.get(String(t.refId)) ? fbRules.nextGroupStep(byId.get(String(t.refId)), now) : null) : pById.get(String(t.refId)) ? fbRules.nextPersonStep(pById.get(String(t.refId)), now) : null;
+    return step?.action === t.action;
+  };
+  const pending = new Set(have.filter(stillNext).map((t) => String(t.refId)));
+  const groupSlots = cap - have.filter((t) => t.kind === "fbgroup").length;
+  const g = fbRules.groupTodos(groups, { n: 1000, now }).filter((t) => open(t) && !pending.has(t.refId)).slice(0, Math.max(0, groupSlots));
+  const p = fbRules.personTodos(people, byId, { now }).filter((t) => open(t) && !pending.has(t.refId));
+  return [...g, ...p].map((t) => ({ ...t, day: null }));
+}
+
 /** What else you could do for a play beyond the list: the next people, or later content. */
 function moreFor(play, ctx, limit = 8) {
   const kind = listKind(play);
   if (!kind) return [];
   const skip = new Set([...(ctx.have || []).map((t) => String(t.refId)), ...(ctx.removed || []), ...(ctx.taken || [])]);
   if (kind === "content") return queueFor(play, ctx.items || []).filter((i) => !skip.has(String(i._id))).slice(0, limit).map(contentTodo);
+  if (kind === "facebook") {
+    const keys = new Set((ctx.have || []).map((t) => `${t.refId}:${t.action}`));
+    return fbRules.groupTodos(ctx.groups || [], { n: 1000, now: ctx.now }).filter((t) => !keys.has(`${t.refId}:${t.action}`) && !(ctx.removed || new Set()).has(t.refId)).slice(0, limit);
+  }
   return peopleFor(play, { ...ctx, skip }).slice(0, limit);
 }
 
-module.exports = { listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, TOUCH };
+module.exports = { listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, facebookTodos, TOUCH };

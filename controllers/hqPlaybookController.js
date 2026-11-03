@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 5;
+const SEED_VERSION = 6;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -67,7 +67,44 @@ async function ensureSeeded() {
     const o = meta?.data?.overview;
     if (o && o.includes(seed.V5_OVERVIEW.from)) await HqSync.updateOne({ key: "playbook" }, { $set: { "data.overview": o.replace(seed.V5_OVERVIEW.from, seed.V5_OVERVIEW.to) } });
   }
+  if (version < 6) await migrateV6();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 6: LinkedIn is content only (free accounts, no connection requests
+ * or cold messages). Removes the "Connect, then a useful message" play
+ * (its logged messages and content stay, unlinked, as when you delete a
+ * play), takes connections and messages out of the tiers, the week and the
+ * buyers, and says so on the LinkedIn channel and posts play. Text you
+ * rewrote yourself is left alone; the phrases are swapped wherever they appear.
+ */
+async function migrateV6() {
+  const V6 = seed.V6_LINKEDIN;
+  const connect = await HqPlaybookPlay.findOne({ seedKey: "linkedin-connect" }).select("_id").lean();
+  if (connect) {
+    await HqPlaybookPlay.deleteOne({ _id: connect._id });
+    await Promise.all([
+      HqActivity.updateMany({ playId: connect._id }, { $set: { playId: null } }),
+      HqContentItem.updateMany({ playId: connect._id }, { $set: { playId: null } }),
+    ]);
+  }
+  const posts = await HqPlaybookPlay.findOne({ seedKey: "linkedin-posts" }).lean();
+  if (posts && JSON.stringify(posts.steps || []) === JSON.stringify(V6.oldPostSteps)) {
+    await HqPlaybookPlay.updateOne({ _id: posts._id }, { $set: { steps: V6.postSteps } });
+  }
+
+  const meta = await HqSync.findOne({ key: "playbook" }).lean();
+  const d = meta?.data;
+  if (!d) return;
+  const swap = (text) => (typeof text === "string" ? V6.replace.reduce((t, [from, to]) => t.split(from).join(to), text) : text);
+  const set = {};
+  if (typeof d.connect === "string") set["data.connect"] = swap(d.connect);
+  if (Array.isArray(d.tierRules)) set["data.tierRules"] = d.tierRules.map((r) => ({ ...r, plays: swap(r.plays) }));
+  if (Array.isArray(d.week)) set["data.week"] = d.week.map((r) => ({ ...r, a: swap(r.a), b: r.b === V6.oldThursday ? V6.thursday : swap(r.b) }));
+  if (Array.isArray(d.buyers)) set["data.buyers"] = d.buyers.map((b) => ({ ...b, how: swap(b.how) }));
+  if (Array.isArray(d.channels)) set["data.channels"] = d.channels.map((c) => (c.key === "linkedin" && (c.why === V6.oldWhy || !c.why) ? { ...c, why: V6.why } : c));
+  if (Object.keys(set).length) await HqSync.updateOne({ key: "playbook" }, { $set: set });
 }
 
 /**

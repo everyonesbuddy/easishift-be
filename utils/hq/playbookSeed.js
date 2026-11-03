@@ -133,36 +133,18 @@ const PLAYS = [
     who: "DONs, administrators and regional directors.",
     goal: "Profile visits and calculator clicks from senior living leaders.",
     when: "Tuesday or Wednesday morning, from your personal profile.",
-    steps: ["One number, the math in three lines, one thing to do about it.", "The calculator link goes in the first comment, not the post.", "Plan posts in the Content plan and link them to this play."],
+    steps: [
+      "One number, the math in three lines, one thing to do about it.",
+      "The calculator link goes in the first comment, not the post.",
+      "Reply to every comment the same day.",
+      "Content only: no connection requests or cold messages (free accounts).",
+      "Plan posts in the Content plan and link them to this play.",
+    ],
     volume: "1 post a week, each founder.",
     weeklyTarget: 2,
     targetUnit: "posts",
     countsFrom: "content",
     measure: "Profile views from the right titles, calculator visits from LinkedIn, inbound messages.",
-  },
-  {
-    seedKey: "linkedin-connect",
-    title: "Connect, then a useful message",
-    channel: "linkedin",
-    audience: ["director", "operator"],
-    who: "Administrators, EDs, DONs and regional directors at buildings in tiers 1 and 2.",
-    goal: "A conversation, then a snapshot.",
-    steps: [
-      "Each week, find 25 people by title at buildings in tiers 1 and 2.",
-      "Connect with no note, or a short one.",
-      "Wait until they accept and, ideally, react to one of your posts.",
-      "Send the message below.",
-      "Yes → get the schedule or set up the scheduler (Front desk play), send the snapshot.",
-    ],
-    scripts: [
-      { label: "Connection note", body: "I work with senior living teams on scheduling and labor. Would like to connect." },
-      { label: "Message", body: "Thanks for connecting. I put together a one-page labor snapshot for a few buildings near you: hours per resident day vs budget, overtime coming, call-outs by shift. Want me to do one for {Building}? It's free and takes me 20 minutes." },
-    ],
-    volume: "25 connection requests and 10 messages a week.",
-    weeklyTarget: 10,
-    targetUnit: "messages",
-    countsFrom: "activities",
-    measure: "Acceptances, replies, snapshots, trials.",
   },
   {
     seedKey: "newsletter",
@@ -246,9 +228,13 @@ const PLAYS = [
   },
 ];
 
+// LinkedIn is content only: founder posts on free accounts, no connection requests or cold messages.
+const LINKEDIN_WHY =
+  "Content only, from the founders' free accounts: posts make your name familiar before the email or call lands. No connection requests or cold messages. Leaders are on it; schedulers mostly aren't. Three posts a week from the founders.";
+
 const META = {
   tierRules: [
-    { tier: "Tier 1 (Close First)", plays: "Everything: front-desk call, leadership email the same week, LinkedIn connection with the DON or administrator, Monday email turned on at setup, operator email if they belong to a group." },
+    { tier: "Tier 1 (Close First)", plays: "Everything: front-desk call, leadership email the same week, Monday email turned on at setup, operator email if they belong to a group." },
     { tier: "Tier 2", plays: "Front-desk call and one leadership email." },
     { tier: "Tiers 3 and 4", plays: "Front-desk call only, plus the weekly Klaviyo content email if they're on the list." },
   ],
@@ -256,7 +242,7 @@ const META = {
     { day: "Monday", a: "15 front-desk calls", b: "Check who got their first Monday labor email; leadership follow-up calls to them" },
     { day: "Tuesday", a: "15 front-desk calls", b: "LinkedIn post; the week's Klaviyo content email (leaders one week, schedulers the next)" },
     { day: "Wednesday", a: "15 front-desk calls; setup calls", b: "30 to 40 leadership emails to buildings called this week" },
-    { day: "Thursday", a: "15 front-desk calls; setup calls; record a scheduler video", b: "Operator emails (5 to 10); LinkedIn connections and messages" },
+    { day: "Thursday", a: "15 front-desk calls; setup calls; record a scheduler video", b: "Operator emails (5 to 10); reply to LinkedIn comments" },
     { day: "Friday", a: "Snapshots and printed summaries out", b: "Follow-ups to replies and calculator emails; Facebook groups; check the scoreboard" },
   ],
   founders: ["Founder A", "Founder B"],
@@ -286,7 +272,7 @@ const META_V2 = {
   overview:
     "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free and builds the schedule in WiserShifts. Top-down: the DON, administrator or regional director sees their labor numbers (hours per resident day, overtime, call-outs) in the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A free account with the Monday labor email turned on is what converts to paid.",
   connect:
-    "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators. Calculator emails go to the newsletter and the follow-up sequence. Anyone who replies anywhere gets a call. We're software for their own team, never a staffing agency: say it once in every conversation.",
+    "The channels feed each other. Calls collect leaders' names for email. Emails, posts and videos send people to the calculators. Calculator emails go to the newsletter and the follow-up sequence. Anyone who replies anywhere gets a call. We're software for their own team, never a staffing agency: say it once in every conversation.",
   buyers: [
     {
       key: "scheduler",
@@ -304,7 +290,7 @@ const META_V2 = {
       cares: "Hours per resident day against budget, overtime before payroll, call-outs by shift, certifications, who's about to quit.",
       where: "Email and LinkedIn. They answer the phone after they've heard of you.",
       offer: "A free one-page labor snapshot, then the Monday labor email.",
-      how: "Leadership email, the follow-up call, LinkedIn posts and messages, the newsletter.",
+      how: "Leadership email, the follow-up call, LinkedIn posts, the newsletter.",
     },
     {
       key: "operator",
@@ -319,7 +305,7 @@ const META_V2 = {
   channels: [
     { key: "calls", name: "Calls", why: "Reach the people who never answer email: the scheduler first, then the DON or administrator once there's something to show." },
     { key: "email", name: "Cold outreach email", why: "One-to-one emails from your own inbox (Gmail or Outlook), not Klaviyo, to DONs, administrators and regional directors you haven't called yet. Lead with their number, not our features. Log each one in HQ." },
-    { key: "linkedin", name: "LinkedIn", why: "Make your name familiar before the email or call lands. Leaders are on it; schedulers mostly aren't. Three posts a week from the founders." },
+    { key: "linkedin", name: "LinkedIn", why: LINKEDIN_WHY },
     { key: "newsletter", name: "Klaviyo: newsletter and sequences", why: "Content, not cold outreach: the newsletter and the calculator follow-up, sent through Klaviyo. Useful and short, never a product update. Klaviyo shows who really clicks; anyone who does gets a personal follow-up." },
     { key: "youtube", name: "YouTube", why: "Schedulers search for how to do the job. One short how-to a week, each solving one problem on screen." },
     { key: "blog", name: "Blog and search", why: "Templates and how-to posts that show up on Google for what schedulers and DONs search." },
@@ -412,9 +398,9 @@ const V4 = {
   overview:
     "WiserShifts sells two ways at once. Bottom-up: the scheduler starts free because next week's schedule gets done in minutes and call-outs get covered fast. Top-down: the DON, administrator or regional director starts because they see what staffing is costing them (hours per resident day, overtime, call-outs) before payroll does. Inside the product, that shows up as the Monday labor email. Every play aims at one of three free offers: a free setup of next week's schedule, a free one-page labor snapshot, or the free calculators. A facility that builds and sends its schedule in WiserShifts every week is what converts to paid.",
   connect:
-    "The channels feed each other. Calls collect leaders' names for email and LinkedIn. Emails, posts and videos send people to the calculators. Calculator emails get the follow-up sequence and, if they ticked the box, the weekly Klaviyo content email. Anyone who replies or really clicks gets a personal follow-up. Each buyer hears their own message (see the buyers above). We're software for their own team, never a staffing agency: say it once in every conversation.",
+    "The channels feed each other. Calls collect leaders' names for email. Emails, posts and videos send people to the calculators. Calculator emails get the follow-up sequence and, if they ticked the box, the weekly Klaviyo content email. Anyone who replies or really clicks gets a personal follow-up. Each buyer hears their own message (see the buyers above). We're software for their own team, never a staffing agency: say it once in every conversation.",
   how: {
-    director: "Cold email from your own inbox, the follow-up call, LinkedIn posts and messages, the leaders' Klaviyo email.",
+    director: "Cold email from your own inbox, the follow-up call, LinkedIn posts, the leaders' Klaviyo email.",
     operator: "Cold email from your own inbox, LinkedIn, the leaders' Klaviyo email, and proof from a building already set up in their region.",
   },
   newsletterChannel: {
@@ -438,3 +424,24 @@ module.exports.PRE_V4 = PRE_V4;
 module.exports.V5_OVERVIEW = { from: "A free account with the Monday labor email turned on is what converts to paid.", to: "A facility that builds and sends its schedule in WiserShifts every week is what converts to paid." };
 module.exports.NEWSLETTER_V4 = NEWSLETTER_V4;
 module.exports.NL1_TITLE = NL1_TITLE;
+// Version 6: LinkedIn is content only (free accounts). What the earlier text said, and what it says now.
+module.exports.V6_LINKEDIN = {
+  oldWhy: "Make your name familiar before the email or call lands. Leaders are on it; schedulers mostly aren't. Three posts a week from the founders.",
+  why: LINKEDIN_WHY,
+  oldThursday: "Operator emails (5 to 10); LinkedIn connections and messages",
+  thursday: "Operator emails (5 to 10); reply to LinkedIn comments",
+  oldPostSteps: ["One number, the math in three lines, one thing to do about it.", "The calculator link goes in the first comment, not the post.", "Plan posts in the Content plan and link them to this play."],
+  postSteps: [
+    "One number, the math in three lines, one thing to do about it.",
+    "The calculator link goes in the first comment, not the post.",
+    "Reply to every comment the same day.",
+    "Content only: no connection requests or cold messages (free accounts).",
+    "Plan posts in the Content plan and link them to this play.",
+  ],
+  // Phrases taken out wherever they appear.
+  replace: [
+    ["LinkedIn connection with the DON or administrator, ", ""],
+    ["Calls collect leaders' names for email and LinkedIn.", "Calls collect leaders' names for email."],
+    ["LinkedIn posts and messages", "LinkedIn posts"],
+  ],
+};

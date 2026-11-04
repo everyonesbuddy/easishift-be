@@ -773,3 +773,29 @@ test("facebook: logging an action moves the group forward and counts; undo puts 
     [HqFbGroup.findById, HqFbGroup.updateOne, HqActivity.create, HqActivity.findById, HqActivity.deleteOne, HqPlaybookPlay.findOne] = orig;
   }
 });
+
+test("week plan: a short list says why, and content is spread over the weekdays", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const now = new Date("2026-11-04T15:00:00Z");
+  const calls = { _id: "p", active: true, channel: "calls", audience: ["scheduler"], weeklyTarget: 60, countsFrom: "activities" };
+  const facilities = [
+    { _id: "a", name: "No phone" },
+    { _id: "b", name: "No phone 2" },
+    { _id: "c", name: "Customer", frontDeskPhone: "1", tenantId: "t" },
+    { _id: "d", name: "Called Monday", frontDeskPhone: "1" },
+  ];
+  const why = plan.whyShort(calls, { facilities, lastTouch: new Map([["d", new Date("2026-11-02")]]), now });
+  assert.equal(why.total, 4);
+  assert.deepEqual(why.reasons, [[1, "are customers or closed"], [2, "have no front-desk phone"], [1, "were called in the last 14 days"]]);
+  assert.equal(why.page, "facilities");
+
+  const emails = { _id: "e", active: true, channel: "email", audience: ["director"], weeklyTarget: 35, countsFrom: "activities" };
+  const w2 = plan.whyShort(emails, { contacts: [{ _id: "x", role: "don" }, { _id: "y", role: "don", email: "y@z.org" }, { _id: "s", role: "scheduler" }], now });
+  assert.equal(w2.total, 2, "only the leaders the play is for");
+  assert.deepEqual(w2.reasons, [[1, "have no email"]]);
+  assert.match(w2.fix, /DONs, EDs and administrators/);
+
+  assert.deepEqual([0, 1, 2].map((i) => plan.contentDay(i, 3)), [0, 2, 4]);
+  assert.equal(plan.contentDay(0, 1), 1);
+  assert.equal(plan.contentDay(6, 7), 1);
+});

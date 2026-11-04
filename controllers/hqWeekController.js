@@ -28,7 +28,7 @@ async function context(now) {
   const week = lastWeeks(1, now)[0];
   const [plays, items, facilities, contacts, lastTouch, groups, people] = await Promise.all([
     HqPlaybookPlay.find({ active: true }).sort({ order: 1, createdAt: 1 }).lean(),
-    HqContentItem.find({}).select("title status playId publishedAt dueDate channel audience url").lean(),
+    HqContentItem.find({}).select("title status playId publishedAt dueDate channel format audience url notes owner").lean(),
     HqFacility.find({}).select("name city state tier stage nextDate nextStep lastCallDate frontDeskPhone scheduler tenantId").lean(),
     HqContact.find({}).select("name title role email phone linkedin facilityId facilityName group").lean(),
     lastTouchMap(),
@@ -76,6 +76,15 @@ async function loadWeek(ctx) {
 /** The week as the page shows it: each play with its target, progress, list and "more". */
 async function view(doc, ctx) {
   const itemById = new Map(ctx.items.map((i) => [String(i._id), i]));
+  const contactById = new Map(ctx.contacts.map((c) => [String(c._id), c]));
+  const weekEnd = new Date(ctx.week.end);
+  // A piece's day: its due date if that's this week, otherwise spread over the week.
+  const dueDay = (d) => {
+    if (!d) return null;
+    const t = new Date(d);
+    if (t < new Date(ctx.week.start) || t >= weekEnd) return null;
+    return Math.min(6, Math.floor((t - new Date(ctx.week.start)) / 86400000));
+  };
   const acts = await HqActivity.find({ playId: { $in: ctx.plays.map((p) => p._id) }, at: { $gte: ctx.week.start, $lt: ctx.week.end } })
     .select("playId facilityId contactId at fbGroupId fbPersonId fbAction")
     .lean();
@@ -91,9 +100,30 @@ async function view(doc, ctx) {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted
       const done = i.status === "published";
-      return { ...base, title: i.title, status: i.status, url: i.url || "", done, doneAt: done ? i.publishedAt : null, canUndo: done && Boolean(t.prevStatus) };
+      return {
+        ...base,
+        title: i.title,
+        status: i.status,
+        url: i.url || "",
+        channel: i.channel,
+        format: i.format,
+        dueDate: i.dueDate || null,
+        notes: i.notes || "",
+        owner: i.owner || "",
+        audience: i.audience || [],
+        itemPlayId: i.playId ? String(i.playId) : null,
+        day: t.day ?? dueDay(i.dueDate),
+        done,
+        doneAt: done ? i.publishedAt : null,
+        canUndo: done && Boolean(t.prevStatus),
+      };
     }
     if (t.kind === "task") return { ...base, done: t.done, doneAt: t.doneAt, canUndo: true };
+    if (t.kind === "contact") {
+      const c = contactById.get(String(t.refId));
+      base.firstName = c?.firstName || String(c?.name || "").trim().split(/\s+/)[0] || "";
+      base.who = c ? [c.name, c.title].filter(Boolean).join(", ") : "";
+    }
     const mine = t.activityId && actIds.has(String(t.activityId));
     const other = !mine && loggedFor(t);
     return { ...base, done: Boolean(mine || other), doneAt: mine ? t.doneAt : other ? other.at : null, canUndo: Boolean(mine) };
@@ -105,6 +135,14 @@ async function view(doc, ctx) {
     .filter((p) => plan.listKind(p))
     .map((p) => {
       const have = doc.items.filter((t) => String(t.playId) === String(p._id));
+      const todos = have.map(todo).filter(Boolean);
+      // Content without a day this week gets one, spread over Monday to Friday.
+      if (plan.listKind(p) === "content") {
+        const free = todos.filter((t) => t.day === null || t.day === undefined);
+        free.forEach((t, i) => (t.day = plan.contentDay(i, free.length)));
+      }
+      const target = plan.weeklyCount(p);
+      const short = plan.listKind(p) === "people" && todos.length < target ? plan.whyShort(p, ctx) : null;
       return {
         _id: String(p._id),
         title: p.title,
@@ -117,7 +155,8 @@ async function view(doc, ctx) {
         steps: p.steps || [],
         scripts: p.scripts || [],
         count: ctx.counts.get(String(p._id)) || 0,
-        todos: have.map(todo).filter(Boolean),
+        todos,
+        short: short ? { ...short, onList: todos.length, target } : null,
         more: plan.moreFor(p, { ...ctx, weekEnd: ctx.week.end, have, removed, taken }).map((m) => ({ ...m, playId: String(p._id) })),
       };
     });

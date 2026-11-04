@@ -24,7 +24,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 11;
+const SEED_VERSION = 12;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -34,10 +34,26 @@ const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
  * channels), the LinkedIn post plan and more video and Facebook ideas.
  * Each version runs once, so anything you delete stays deleted.
  */
+let seeding = null;
 async function ensureSeeded() {
+  // One update at a time in this server: two requests at once used to both add the same scripts.
+  if (!seeding) seeding = runSeed().finally(() => (seeding = null));
+  return seeding;
+}
+
+async function runSeed() {
   const state = await HqSync.findOne({ key: "playbook-seed" }).lean();
   let version = state?.data?.version || 0;
   if (version >= SEED_VERSION) return;
+  // …and one server at a time: whoever claims the update runs it; the others carry on with what's there.
+  if (state) {
+    const now = new Date();
+    const claim = await HqSync.updateOne(
+      { key: "playbook-seed", "data.version": state.data?.version ?? 0, $or: [{ "data.lockUntil": null }, { "data.lockUntil": { $lt: now } }] },
+      { $set: { "data.lockUntil": new Date(now.getTime() + 2 * 60 * 1000) } },
+    );
+    if (claim && claim.matchedCount === 0) return;
+  }
   if (version < 1) {
     await seedV1();
     version = 1;
@@ -81,7 +97,27 @@ async function ensureSeeded() {
   if (version < 9) await migrateV9();
   if (version < 10) await migrateV10();
   if (version < 11) await migrateV11();
+  if (version < 12) await migrateV12();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 12: remove scripts added twice (two updates ran at the same
+ * moment). Only exact copies go: same name, subject and text.
+ */
+async function migrateV12() {
+  const plays = await HqPlaybookPlay.find({ "scripts.1": { $exists: true } }).select("scripts").lean();
+  for (const p of plays) {
+    const seen = new Set();
+    const keep = [];
+    for (const x of p.scripts || []) {
+      const k = JSON.stringify([x.label || "", x.subject || "", x.body || ""]);
+      if (seen.has(k)) continue;
+      seen.add(k);
+      keep.push(x);
+    }
+    if (keep.length < (p.scripts || []).length) await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: { scripts: keep } });
+  }
 }
 
 /**

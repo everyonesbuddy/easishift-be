@@ -15,6 +15,19 @@ const DAY = 86400000;
 const NOW = new Date("2026-10-29T15:00:00Z");
 const ago = (d) => new Date(NOW - d * DAY);
 
+/** Later playbook versions run after the one under test; this keeps v10 off the database. */
+function stubV10() {
+  const HqContentItem = require("../models/hqContentItemModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const orig = [HqContentItem.find, HqPlaybookPlay.find];
+  const none = () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] });
+  HqContentItem.find = none;
+  HqPlaybookPlay.find = none;
+  return () => {
+    [HqContentItem.find, HqPlaybookPlay.find] = orig;
+  };
+}
+
 test("job titles sort into buyer roles", () => {
   assert.equal(roleFromTitle("Director of Nursing"), "don");
   assert.equal(roleFromTitle("DON"), "don");
@@ -444,6 +457,7 @@ test("LinkedIn page export: title row above the headers, posts read with their n
 });
 
 test("playbook v6: LinkedIn is content only (no connection play, no connections or messages in the plan)", async () => {
+  const unV10 = stubV10();
   const seed = require("../utils/hq/playbookSeed");
   assert.ok(!seed.PLAYS.some((p) => p.seedKey === "linkedin-connect"));
   const fresh = JSON.stringify([seed.PLAYS, seed.META, seed.META_V2, seed.V4, seed.MESSAGING]);
@@ -486,6 +500,7 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
+    unV10();
     Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
     Object.assign(HqPlaybookPlay, { findOne: orig.playFind, deleteOne: orig.playDel, updateOne: orig.playUpd });
     HqActivity.updateMany = orig.actUpd;
@@ -505,6 +520,7 @@ test("playbook v6: LinkedIn is content only (no connection play, no connections 
 });
 
 test("playbook v7: a WiserShifts Facebook Page play next to the groups one", async () => {
+  const unV10 = stubV10();
   const seed = require("../utils/hq/playbookSeed");
   const def = seed.PLAYS.find((p) => p.seedKey === "facebook-page");
   assert.ok(def && def.channel === "facebook" && def.countsFrom === "content" && def.weeklyTarget === 3);
@@ -529,6 +545,7 @@ test("playbook v7: a WiserShifts Facebook Page play next to the groups one", asy
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
+    unV10();
     Object.assign(HqSync, { findOne: orig.syncFind, updateOne: orig.syncUpd });
     Object.assign(HqPlaybookPlay, { findOne: orig.playFind, findOneAndUpdate: orig.playFOU });
     HqPlaybookPlay.updateOne = origPlayUpd;
@@ -812,6 +829,7 @@ test("facebook: links typed without https:// still open Facebook; 'asked today' 
 });
 
 test("playbook v9: the cold email gets the overtime and one-building versions, once", async () => {
+  const unV10 = stubV10();
   const seed = require("../utils/hq/playbookSeed");
   const HqSync = require("../models/hqSyncModel");
   const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
@@ -825,8 +843,49 @@ test("playbook v9: the cold email gets the overtime and one-building versions, o
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
+    unV10();
     [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.findOne, HqPlaybookPlay.updateOne] = orig;
   }
   assert.deepEqual(pushes, [seed.EMAIL_HPRD_V9.slice(1).map((x) => x.label)], "only the ones it doesn't have");
   assert.ok(seed.PLAYS.find((p) => p.seedKey === "email-hprd").scripts.length >= 6, "new installs get them too");
+});
+
+test("playbook v10: drafts fill only untouched notes; scripts and newsletters are added once", async () => {
+  const v10 = require("../utils/hq/playbookDraftsV10");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const notesSet = {};
+  const upserts = [];
+  const pushes = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne, HqContentItem.find, HqContentItem.updateOne];
+  const q = (v) => ({ select: () => ({ lean: async () => v }), lean: async () => v });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 9 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqContentItem.find = () =>
+    q([
+      { _id: "a", seedKey: "yt-callout", notes: "" },
+      { _id: "b", seedKey: "yt-staff-link", notes: "Turns Post 4 into a 2-minute screen recording." },
+      { _id: "c", seedKey: "li-tenth", notes: "My own draft" },
+    ]);
+  HqContentItem.updateOne = async (f, u) => {
+    if (u.$set) notesSet[f._id] = u.$set.notes;
+    if (u.$setOnInsert) upserts.push(f.seedKey);
+  };
+  HqPlaybookPlay.find = () => q([{ _id: "n", seedKey: "newsletter", scripts: [] }, { _id: "c1", seedKey: "calls-front-desk", scripts: [{ label: "Voicemail (scheduler)" }] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (pushes[f._id] = u.$push.scripts.$each.map((x) => x.label));
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne, HqContentItem.find, HqContentItem.updateOne] = orig;
+  }
+  assert.equal(notesSet.a, v10.DRAFTS["yt-callout"], "empty notes get the draft");
+  assert.equal(notesSet.b, v10.DRAFTS["yt-staff-link"], "the original one-liner counts as untouched");
+  assert.equal(notesSet.c, undefined, "your own notes stay");
+  assert.match(notesSet.a, /https:\/\/wisershifts\.com\/calculators\/call-out-cost-calculator/, "real links in content");
+  assert.deepEqual(upserts, ["nl-sched-callout", "nl-leaders-overtime"]);
+  assert.deepEqual(pushes.n, v10.SCRIPTS.newsletter.map((x) => x.label));
+  assert.ok(!pushes.c1.includes("Voicemail (scheduler)"), "a script you already have isn't added twice");
+  assert.ok(pushes.c1.length === v10.SCRIPTS["calls-front-desk"].length - 1);
+  assert.match(v10.NEW_ITEMS[0].notes, /\{\{ first_name\|default:"there" \}\}/, "newsletters use Klaviyo's first-name tag");
 });

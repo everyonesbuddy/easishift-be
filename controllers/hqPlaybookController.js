@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 9;
+const SEED_VERSION = 10;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -71,7 +71,39 @@ async function ensureSeeded() {
   if (version < 7) await migrateV7();
   if (version < 8) await migrateV8();
   if (version < 9) await migrateV9();
+  if (version < 10) await migrateV10();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 10: reference drafts for every play. Seeded content pieces that
+ * only had a title get a working draft in their notes (only if you never
+ * edited the notes), two more newsletters are added, and plays get
+ * scripts: post and video templates, the calculator follow-ups,
+ * voicemails, push-back answers and reply emails.
+ */
+async function migrateV10() {
+  const v10 = require("../utils/hq/playbookDraftsV10");
+  const original = new Map(seed.CONTENT_V2.map((c) => [c.seedKey, c.notes || ""]));
+  const items = await HqContentItem.find({ seedKey: { $in: Object.keys(v10.DRAFTS) } }).select("seedKey notes").lean();
+  for (const i of items) {
+    const untouched = !i.notes || i.notes === original.get(i.seedKey);
+    if (untouched) await HqContentItem.updateOne({ _id: i._id }, { $set: { notes: v10.DRAFTS[i.seedKey] } });
+  }
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: [...Object.keys(v10.SCRIPTS), "newsletter"] } }).select("seedKey scripts").lean();
+  const playBy = new Map(plays.map((p) => [p.seedKey, p]));
+  for (const it of v10.NEW_ITEMS) {
+    const { play, ...item } = it;
+    if (!playBy.get(play)) continue; // its play was deleted
+    await HqContentItem.updateOne({ seedKey: it.seedKey }, { $setOnInsert: { ...item, playId: playBy.get(play)?._id || null } }, { upsert: true });
+  }
+  for (const [key, scripts] of Object.entries(v10.SCRIPTS)) {
+    const p = playBy.get(key);
+    if (!p) continue; // deleted plays stay deleted
+    const have = new Set((p.scripts || []).map((x) => x.label));
+    const add = scripts.filter((x) => !have.has(x.label));
+    if (add.length) await HqPlaybookPlay.updateOne({ _id: p._id }, { $push: { scripts: { $each: add } } });
+  }
 }
 
 /**

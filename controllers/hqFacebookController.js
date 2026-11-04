@@ -25,12 +25,14 @@ function cleanGroup(b) {
   if (out.priority !== undefined) out.priority = [1, 2, 3].includes(Number(out.priority)) ? Number(out.priority) : 2;
   if (out.audience !== undefined) out.audience = (Array.isArray(out.audience) ? out.audience : []).filter((a) => ["scheduler", "director", "operator"].includes(a));
   for (const k of ["name", "url", "region", "admin", "rules", "notes"]) if (out[k] !== undefined) out[k] = String(out[k] || "").slice(0, k === "notes" || k === "rules" ? 4000 : 400);
+  if (out.url !== undefined) out.url = fb.fullUrl(out.url);
   return out;
 }
 function cleanPerson(b) {
   const out = pick(b, PERSON_FIELDS);
   if (out.groupId !== undefined) out.groupId = isId(out.groupId) ? out.groupId : null;
   for (const k of ["name", "profileUrl", "postUrl", "said", "role", "facility", "notes"]) if (out[k] !== undefined) out[k] = String(out[k] || "").slice(0, k === "notes" || k === "said" ? 4000 : 400);
+  for (const k of ["profileUrl", "postUrl"]) if (out[k] !== undefined) out[k] = fb.fullUrl(out[k]);
   return out;
 }
 
@@ -100,8 +102,8 @@ exports.getAll = async (req, res, next) => {
     ]);
     const t = new Map(touches.map((x) => [String(x._id), x]));
     const gName = new Map(groups.map((g) => [String(g._id), g.name]));
-    const outGroups = groups.map((g) => ({ ...g, next: fb.nextGroupStep(g, now), touches: t.get(String(g._id))?.n || 0, lastTouchAt: t.get(String(g._id))?.last || g.lastTouchAt || null }));
-    const outPeople = people.map((p) => ({ ...p, groupName: gName.get(String(p.groupId)) || "", next: fb.nextPersonStep({ ...p, groupName: gName.get(String(p.groupId)) || "" }, now) }));
+    const outGroups = groups.map((g) => ({ ...g, url: fb.fullUrl(g.url), next: fb.nextGroupStep(g, now), touches: t.get(String(g._id))?.n || 0, lastTouchAt: t.get(String(g._id))?.last || g.lastTouchAt || null }));
+    const outPeople = people.map((p) => ({ ...p, profileUrl: fb.fullUrl(p.profileUrl), postUrl: fb.fullUrl(p.postUrl), groupName: gName.get(String(p.groupId)) || "", next: fb.nextPersonStep({ ...p, groupName: gName.get(String(p.groupId)) || "" }, now) }));
     const count = (list, k, v) => list.filter((x) => x[k] === v).length;
     res.json({
       groups: outGroups,

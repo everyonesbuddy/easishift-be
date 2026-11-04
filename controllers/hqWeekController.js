@@ -95,7 +95,7 @@ async function view(doc, ctx) {
       : acts.find((a) => String(a.playId) === String(t.playId) && (t.kind === "contact" ? String(a.contactId) === String(t.refId) : String(a.facilityId) === String(t.refId)));
 
   const todo = (t) => {
-    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", url: t.url || "" };
+    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", url: t.kind === "fbgroup" || t.kind === "fbperson" ? require("../utils/hq/facebook").fullUrl(t.url) : t.url || "" };
     if (t.kind === "content") {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted

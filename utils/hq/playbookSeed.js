@@ -87,6 +87,29 @@ const FB_PAGE_IDEAS = [
   ["fbp-before-after", "Before and after: a messy spreadsheet vs. a published week", "Two screenshots side by side."],
 ];
 
+/**
+ * Version 9: hours per resident day is a nursing home number, so the play
+ * gets an overtime version for assisted and senior living, and a
+ * one-building pilot for companies that run several buildings.
+ */
+const EMAIL_HPRD_V9 = [
+  {
+    label: "Assisted / senior living: Email 1 (overtime)",
+    subject: "Overtime at {Building} last month",
+    body: "Hi {First name},\n\nQuick question: how much overtime did {Building} pay last month, and how much of it came from call-outs?\n\nMost EDs I talk to only see it when payroll closes. Send me one week of your schedule and I'll send back one page, free: where the overtime is coming from and which shifts are most likely to go uncovered next.\n\nOr see what call-outs cost you in 2 minutes: {call-out calculator}\n\n{Your name}, WiserShifts (scheduling software for your own team, not an agency)",
+  },
+  {
+    label: "Assisted / senior living: Email 2 (day 4)",
+    subject: "Re: Overtime at {Building} last month",
+    body: "One call-out covered with overtime on a 12-hour shift at $18/hr is about $108 extra. Want me to look at yours?",
+  },
+  {
+    label: "Company with several buildings: one-building pilot",
+    subject: "One building, one month",
+    body: "Hi {First name},\n\nWould you be open to trying a different way of scheduling in just one of your buildings for a month? It's free. We set it up with that building's scheduler, and you'd see its overtime and coverage every week. Then you decide.\n\nWorth a 15-minute call?\n\n{Your name}, WiserShifts",
+  },
+];
+
 const PLAYS = [
   {
     seedKey: "calls-front-desk",
@@ -154,6 +177,7 @@ const PLAYS = [
       { label: "Email 1", subject: "Hours per resident day at {Building}", body: "Hi {First name},\n\nQuick question: do you know {Building}'s hours per resident day last week, and how it compared to budget?\n\nMost administrators I talk to find out a month later, from payroll. I'll work it out from your schedule and send it back on one page, free, with any overtime that's coming.\n\nOr try it yourself in two minutes: {calculator link}\n\n{Your name}, WiserShifts (scheduling and labor software for your own team, not an agency)" },
       { label: "Email 2 (day 4)", subject: "Re: Hours per resident day at {Building}", body: "At 50 residents, every 0.1 hours per resident day is about $36,500 a year in wages. Want me to send you yours?" },
       { label: "Email 3 (day 9)", subject: "Re: Hours per resident day at {Building}", body: "Last note from me. If someone else owns the schedule there, who should I send this to?" },
+      ...EMAIL_HPRD_V9,
     ],
     volume: "30 to 40 new a week.",
     weeklyTarget: 35,
@@ -517,3 +541,4 @@ module.exports.FB_CHANNEL = FB_CHANNEL;
 module.exports.FB_PAGE_IDEAS = FB_PAGE_IDEAS;
 module.exports.FB_GROUPS_V7 = FB_GROUPS_V7;
 module.exports.FB_GROUPS_PLAY = FB_GROUPS_PLAY;
+module.exports.EMAIL_HPRD_V9 = EMAIL_HPRD_V9;

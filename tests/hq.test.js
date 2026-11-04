@@ -810,3 +810,23 @@ test("facebook: links typed without https:// still open Facebook; 'asked today' 
   assert.match(fb.nextGroupStep({ name: "G", status: "requested", requestedAt: new Date("2026-11-04T15:00:00Z") }, now).why, /^Asked today\./);
   assert.equal(fb.groupTodos([{ _id: "g", name: "G", status: "found", url: "facebook.com/groups/g" }], { n: 1, now })[0].url, "https://facebook.com/groups/g");
 });
+
+test("playbook v9: the cold email gets the overtime and one-building versions, once", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const pushes = [];
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.findOne, HqPlaybookPlay.updateOne];
+  const lean = (v) => ({ lean: async () => v, select: () => ({ lean: async () => v }) });
+  HqSync.findOne = (q) => lean(q.key === "playbook-seed" ? { data: { version: 8 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "email-hprd" ? { _id: "e1", scripts: [{ label: "Email 1" }, { label: seed.EMAIL_HPRD_V9[0].label }] } : null);
+  HqPlaybookPlay.updateOne = async (q, u) => pushes.push(u.$push.scripts.$each.map((x) => x.label));
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.findOne, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.deepEqual(pushes, [seed.EMAIL_HPRD_V9.slice(1).map((x) => x.label)], "only the ones it doesn't have");
+  assert.ok(seed.PLAYS.find((p) => p.seedKey === "email-hprd").scripts.length >= 6, "new installs get them too");
+});

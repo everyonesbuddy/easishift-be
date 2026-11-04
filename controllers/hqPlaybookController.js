@@ -16,7 +16,7 @@ const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
 const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
 const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
 
-const SEED_VERSION = 8;
+const SEED_VERSION = 9;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -70,7 +70,21 @@ async function ensureSeeded() {
   if (version < 6) await migrateV6();
   if (version < 7) await migrateV7();
   if (version < 8) await migrateV8();
+  if (version < 9) await migrateV9();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 9: the hours per resident day email gets an overtime version for
+ * assisted and senior living and a one-building pilot. Added after your
+ * scripts, skipping any you already have with the same name.
+ */
+async function migrateV9() {
+  const play = await HqPlaybookPlay.findOne({ seedKey: "email-hprd" }).lean();
+  if (!play) return;
+  const have = new Set((play.scripts || []).map((x) => x.label));
+  const add = seed.EMAIL_HPRD_V9.filter((x) => !have.has(x.label));
+  if (add.length) await HqPlaybookPlay.updateOne({ _id: play._id }, { $push: { scripts: { $each: add } } });
 }
 
 /**

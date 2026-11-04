@@ -27,6 +27,8 @@ const hqPlaybookPlaySchema = new mongoose.Schema(
     when: { type: String, default: "" },
     steps: { type: [String], default: [] },
     scripts: { type: [scriptSchema], default: [] },
+    // Cold email: days after the first email to send each follow-up ([4, 9] = email 2 on day 4, email 3 on day 9).
+    followUps: { type: [Number], default: [] },
     volume: { type: String, default: "" },
     weeklyTarget: { type: Number, default: null },
     targetUnit: { type: String, default: "" },

@@ -35,6 +35,31 @@ const dayFor = (i, n) => Math.min(4, Math.floor(i / Math.max(1, Math.ceil(n / 5)
 const phoneOf = (f) => f.frontDeskPhone || f.scheduler?.phone || "";
 const place = (f) => [f?.city, f?.state].filter(Boolean).join(", ");
 
+/** A facility as a calls / email row (scheduler plays). */
+const facilityTodo = (f, touch) => ({
+  kind: "facility",
+  refId: String(f._id),
+  facilityId: String(f._id),
+  title: f.name,
+  detail: [place(f), f.nextStep ? `Next: ${f.nextStep}` : "", f.tier ? `Tier ${f.tier}` : ""].filter(Boolean).join(" · "),
+  phone: touch === "call" ? phoneOf(f) : "",
+  email: touch === "email" ? f.scheduler?.email || "" : "",
+});
+
+/** A leader as a calls / email / LinkedIn row. */
+function contactTodo(c, fById, touch) {
+  const f = fById.get(String(c.facilityId));
+  return {
+    kind: "contact",
+    refId: String(c._id),
+    facilityId: c.facilityId ? String(c.facilityId) : null,
+    title: [c.name || c.email, c.title].filter(Boolean).join(", "),
+    detail: [f?.name || c.facilityName || c.group, place(f)].filter(Boolean).join(" · "),
+    phone: touch === "call" ? c.phone || phoneOf(f || {}) : "",
+    email: touch === "email" ? c.email : "",
+  };
+}
+
 /**
  * Who a calls / email / LinkedIn play should reach next, best first.
  * Plays for schedulers go to facilities (the front desk or the scheduler);
@@ -57,15 +82,7 @@ function peopleFor(play, { facilities = [], contacts = [], lastTouch = new Map()
     return facilities
       .filter((f) => open(f) && reach(f) && !skip.has(String(f._id)) && fresh(f._id))
       .sort((a, b) => due(a) - due(b) || tierOf(a) - tierOf(b) || new Date(a.lastCallDate || 0) - new Date(b.lastCallDate || 0) || String(a.name).localeCompare(String(b.name)))
-      .map((f) => ({
-        kind: "facility",
-        refId: String(f._id),
-        facilityId: String(f._id),
-        title: f.name,
-        detail: [place(f), f.nextStep ? `Next: ${f.nextStep}` : "", f.tier ? `Tier ${f.tier}` : ""].filter(Boolean).join(" · "),
-        phone: touch === "call" ? phoneOf(f) : "",
-        email: touch === "email" ? f.scheduler?.email || "" : "",
-      }));
+      .map((f) => facilityTodo(f, touch));
   }
 
   const roles = new Set((play.audience || []).flatMap((a) => ROLES[a] || []));
@@ -73,18 +90,7 @@ function peopleFor(play, { facilities = [], contacts = [], lastTouch = new Map()
   return contacts
     .filter((c) => roles.has(c.role) && reach(c) && !skip.has(String(c._id)) && fresh(c._id) && (!c.facilityId || open(fById.get(String(c.facilityId))) || !fById.has(String(c.facilityId))))
     .sort((a, b) => tierOf(fById.get(String(a.facilityId))) - tierOf(fById.get(String(b.facilityId))) || String(a.name).localeCompare(String(b.name)))
-    .map((c) => {
-      const f = fById.get(String(c.facilityId));
-      return {
-        kind: "contact",
-        refId: String(c._id),
-        facilityId: c.facilityId ? String(c.facilityId) : null,
-        title: [c.name || c.email, c.title].filter(Boolean).join(", "),
-        detail: [f?.name || c.facilityName || c.group, place(f)].filter(Boolean).join(" · "),
-        phone: touch === "call" ? reach(c) : "",
-        email: touch === "email" ? c.email : "",
-      };
-    });
+    .map((c) => ({ ...contactTodo(c, fById, touch), phone: touch === "call" ? reach(c) : "" }));
 }
 
 /**
@@ -213,6 +219,109 @@ function facebookTodos(play, { groups = [], people = [], now = new Date(), have 
   return [...g, ...p].map((t) => ({ ...t, day: null }));
 }
 
+// ── Follow-ups: what happened on a call or email decides what comes next ──
+/** Call and email outcomes you can log. */
+const OUTCOMES = {
+  booked: "Booked the setup",
+  callback: "Call back",
+  reached: "Talked",
+  voicemail: "Left a voicemail",
+  no_answer: "No answer",
+  not_interested: "Not interested",
+  wrong_number: "Wrong number",
+  replied: "They replied",
+};
+// Any of these, on any play, takes the person off cold lists and ends their sequences.
+const STOP = new Set(["booked", "not_interested", "wrong_number", "replied"]);
+const RETRY = new Set(["voicemail", "no_answer"]);
+const MAX_TRIES = 3; // a voicemail or no answer gets tried up to 3 times, two days apart
+const RETRY_DAYS = 2;
+const STOP_DAYS = 180;
+
+/** A Saturday or Sunday moves to Monday. */
+function weekday(d) {
+  const x = new Date(d);
+  const wd = x.getUTCDay();
+  if (wd === 6) x.setTime(x.getTime() + 2 * DAY);
+  if (wd === 0) x.setTime(x.getTime() + DAY);
+  return x;
+}
+
+/** People (facility or contact ids) with a stopping outcome in the last six months. */
+function stoppedIds(acts, now = new Date()) {
+  const out = new Set();
+  for (const a of acts) {
+    if (!STOP.has(a.outcome) || now - new Date(a.at) > STOP_DAYS * DAY) continue;
+    if (a.contactId) out.add(String(a.contactId));
+    if (a.facilityId && !a.contactId) out.add(String(a.facilityId));
+  }
+  return out;
+}
+
+/**
+ * What a calls or email play owes this week because of what already
+ * happened: email 2 and 3 on their days after email 1, a call-back on the
+ * day they asked for, another try two days after a voicemail or no answer
+ * (up to 3 tries). Anyone who replied, booked, said no, or was a wrong
+ * number is done. Not capped by the weekly target.
+ */
+function followUpTodos(play, { acts = [], facilities = [], contacts = [], now = new Date(), weekStart, weekEnd, have = [] }) {
+  const touch = TOUCH[play.channel];
+  if (!touch || touch === "linkedin") return [];
+  const forSchedulers = (play.audience || []).includes("scheduler");
+  const fById = new Map(facilities.map((f) => [String(f._id), f]));
+  const cById = new Map(contacts.map((c) => [String(c._id), c]));
+  const start = new Date(weekStart);
+  const end = new Date(weekEnd);
+  const keyOf = (a) => (forSchedulers ? (a.facilityId ? String(a.facilityId) : "") : a.contactId ? String(a.contactId) : "");
+  const groups = new Map();
+  for (const a of acts) {
+    if (String(a.playId) !== String(play._id) || a.kind !== touch) continue;
+    const k = keyOf(a);
+    if (!k) continue;
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(a);
+  }
+  const onList = new Set(have.map((t) => `${t.refId}:${t.fkey || ""}`));
+  const stopped = stoppedIds(acts, now);
+  const out = [];
+  for (const [id, list] of groups) {
+    if (stopped.has(id)) continue;
+    list.sort((a, b) => new Date(a.at) - new Date(b.at));
+    const last = list[list.length - 1];
+    let due = null;
+    let fkey = "";
+    let reason = "";
+    let step = null;
+    if (touch === "email") {
+      const sent = Math.max(...list.map((a) => a.step || 1));
+      const gaps = play.followUps || [];
+      if (sent - 1 >= gaps.length) continue;
+      due = weekday(new Date(new Date(list[0].at).getTime() + gaps[sent - 1] * DAY));
+      step = sent + 1;
+      fkey = `email:${step}`;
+      reason = `Email ${step} · day ${gaps[sent - 1]}`;
+    } else if (last.outcome === "callback") {
+      due = weekday(last.nextDate ? new Date(last.nextDate) : new Date(new Date(last.at).getTime() + RETRY_DAYS * DAY));
+      fkey = `callback:${new Date(last.at).toISOString().slice(0, 10)}`;
+      reason = "Call back";
+    } else if (RETRY.has(last.outcome)) {
+      let tries = 0;
+      for (let i = list.length - 1; i >= 0 && RETRY.has(list[i].outcome); i -= 1) tries += 1;
+      if (tries >= MAX_TRIES) continue;
+      due = weekday(new Date(new Date(last.at).getTime() + RETRY_DAYS * DAY));
+      fkey = `retry:${tries + 1}:${new Date(last.at).toISOString().slice(0, 10)}`;
+      reason = `Try again (${tries + 1} of ${MAX_TRIES})`;
+    } else continue;
+    if (due >= end || onList.has(`${id}:${fkey}`)) continue;
+    const row = forSchedulers ? (fById.get(id) ? facilityTodo(fById.get(id), touch) : null) : cById.get(id) ? contactTodo(cById.get(id), fById, touch) : null;
+    if (!row) continue;
+    const day = due < start ? 0 : Math.min(6, Math.floor((due - start) / DAY));
+    out.push({ ...row, day, step, fkey, reason: last.notes && touch === "call" ? `${reason}: ${String(last.notes).slice(0, 80)}` : reason });
+  }
+  return out.sort((a, b) => a.day - b.day);
+}
+
 /** What else you could do for a play beyond the list: the next people, or later content. */
 function moreFor(play, ctx, limit = 8) {
   const kind = listKind(play);
@@ -226,4 +335,4 @@ function moreFor(play, ctx, limit = 8) {
   return peopleFor(play, { ...ctx, skip }).slice(0, limit);
 }
 
-module.exports = { listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, facebookTodos, whyShort, contentDay, TOUCH };
+module.exports = { OUTCOMES, STOP, stoppedIds, followUpTodos, facilityTodo, contactTodo, listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, facebookTodos, whyShort, contentDay, TOUCH };

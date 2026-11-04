@@ -14,7 +14,7 @@ const HqFacility = require("../models/hqFacilityModel");
 const HqContact = require("../models/hqContactModel");
 const HqFbGroup = require("../models/hqFbGroupModel");
 const HqFbPerson = require("../models/hqFbPersonModel");
-const { lastWeeks } = require("../utils/hq/weeks");
+const { lastWeeks, dayToDate } = require("../utils/hq/weeks");
 const plan = require("../utils/hq/weekPlan");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
@@ -36,19 +36,32 @@ async function context(now) {
     HqFbPerson.find({}).lean(),
   ]);
   const counts = new Map((await scoreboard(plays, [week])).map((s) => [s.playId, s.weeks[0]]));
-  return { week, plays, items, facilities, contacts, lastTouch, groups, people, counts, now };
+  // Calls and emails from the last six months: what happened decides the follow-ups, and who's done.
+  const peoplePlays = plays.filter((p) => plan.listKind(p) === "people").map((p) => p._id);
+  const acts = await HqActivity.find({ at: { $gte: new Date(now - 180 * 86400000) }, $or: [{ playId: { $in: peoplePlays } }, { outcome: { $in: [...plan.STOP] } }] })
+    .select("playId facilityId contactId at kind step outcome nextDate notes")
+    .lean();
+  return { week, plays, items, facilities, contacts, lastTouch, groups, people, counts, now, acts, stopped: plan.stoppedIds(acts, now) };
 }
 
 /** Add to-dos so every play's list reaches its target. Returns how many were added. */
 function fill(doc, ctx, only = null) {
   const removed = new Set(doc.removed || []);
-  // Someone on one play's list this week isn't put on another's.
-  const taken = new Set(doc.items.filter((t) => t.refId).map((t) => String(t.refId)));
+  // Someone on one play's list this week isn't put on another's; anyone who replied, booked or said no isn't put on any.
+  const taken = new Set([...doc.items.filter((t) => t.refId).map((t) => String(t.refId)), ...(ctx.stopped || [])]);
   let added = 0;
   for (const p of ctx.plays) {
-    if (only && plan.listKind(p) !== only) continue;
+    const kind = plan.listKind(p);
     const have = doc.items.filter((t) => String(t.playId) === String(p._id) && t.kind !== "task");
-    const todos = plan.todosFor(p, { ...ctx, weekStart: ctx.week.start, weekEnd: ctx.week.end, have, removed, taken });
+    // Follow-ups (email 2 and 3, call-backs, another try) are owed, so they're added whenever they come due.
+    if (kind === "people" && (!only || only === "followups")) {
+      for (const t of plan.followUpTodos(p, { ...ctx, weekStart: ctx.week.start, weekEnd: ctx.week.end, have })) {
+        doc.items.push({ ...t, playId: p._id });
+        added += 1;
+      }
+    }
+    if (only && only !== kind) continue;
+    const todos = plan.todosFor(p, { ...ctx, weekStart: ctx.week.start, weekEnd: ctx.week.end, have: have.filter((t) => !t.fkey), removed, taken });
     for (const t of todos) {
       doc.items.push({ ...t, playId: p._id });
       taken.add(String(t.refId));
@@ -86,16 +99,23 @@ async function view(doc, ctx) {
     return Math.min(6, Math.floor((t - new Date(ctx.week.start)) / 86400000));
   };
   const acts = await HqActivity.find({ playId: { $in: ctx.plays.map((p) => p._id) }, at: { $gte: ctx.week.start, $lt: ctx.week.end } })
-    .select("playId facilityId contactId at fbGroupId fbPersonId fbAction")
+    .select("playId facilityId contactId at fbGroupId fbPersonId fbAction step outcome")
     .lean();
-  const actIds = new Set((await HqActivity.find({ _id: { $in: doc.items.filter((t) => t.activityId).map((t) => t.activityId) } }).select("_id").lean()).map((a) => String(a._id)));
+  const actById = new Map((await HqActivity.find({ _id: { $in: doc.items.filter((t) => t.activityId).map((t) => t.activityId) } }).select("_id outcome nextDate").lean()).map((a) => [String(a._id), a]));
+  const actIds = new Set(actById.keys());
   const loggedFor = (t) =>
     t.kind === "fbgroup" || t.kind === "fbperson"
       ? acts.find((a) => a.fbAction === t.action && String(t.kind === "fbgroup" ? a.fbGroupId : a.fbPersonId) === String(t.refId))
-      : acts.find((a) => String(a.playId) === String(t.playId) && (t.kind === "contact" ? String(a.contactId) === String(t.refId) : String(a.facilityId) === String(t.refId)));
+      : acts.find(
+          (a) =>
+            String(a.playId) === String(t.playId) &&
+            (t.kind === "contact" ? String(a.contactId) === String(t.refId) : String(a.facilityId) === String(t.refId)) &&
+            // A follow-up is done by a later touch (for email, the right one in the sequence), not the one before it.
+            (!t.fkey || (new Date(a.at) > t._id.getTimestamp() && (!t.step || (a.step || 1) === t.step))),
+        );
 
   const todo = (t) => {
-    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", url: t.kind === "fbgroup" || t.kind === "fbperson" ? require("../utils/hq/facebook").fullUrl(t.url) : t.url || "" };
+    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", step: t.step || null, reason: t.reason || "", fkey: t.fkey || "", url: t.kind === "fbgroup" || t.kind === "fbperson" ? require("../utils/hq/facebook").fullUrl(t.url) : t.url || "" };
     if (t.kind === "content") {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted
@@ -126,7 +146,9 @@ async function view(doc, ctx) {
     }
     const mine = t.activityId && actIds.has(String(t.activityId));
     const other = !mine && loggedFor(t);
-    return { ...base, done: Boolean(mine || other), doneAt: mine ? t.doneAt : other ? other.at : null, canUndo: Boolean(mine) };
+    const outcome = mine ? actById.get(String(t.activityId))?.outcome || "" : other?.outcome || "";
+    const nextDate = mine ? actById.get(String(t.activityId))?.nextDate || null : null;
+    return { ...base, done: Boolean(mine || other), doneAt: mine ? t.doneAt : other ? other.at : null, canUndo: Boolean(mine), outcome, outcomeLabel: plan.OUTCOMES[outcome] || "", nextDate };
   };
 
   const removed = new Set(doc.removed || []);
@@ -177,8 +199,8 @@ exports.getWeek = async (req, res, next) => {
   try {
     const ctx = await context(new Date());
     const doc = await loadWeek(ctx);
-    // New Facebook groups and people to message join the week on their own.
-    if (fill(doc, ctx, "facebook")) await doc.save();
+    // New Facebook groups and people to message, and follow-ups as they come due, join the week on their own.
+    if (fill(doc, ctx, "facebook") + fill(doc, ctx, "followups")) await doc.save();
     res.json(await view(doc, ctx));
   } catch (err) {
     next(err);
@@ -244,21 +266,45 @@ async function setDone(t, done, req) {
   if (done && !t.activityId) {
     const contact = t.kind === "contact" ? await HqContact.findById(t.refId).select("facilityId").lean() : null;
     const facilityId = t.kind === "facility" ? t.refId : contact?.facilityId || null;
-    const a = await HqActivity.create({ facilityId, contactId: t.kind === "contact" ? t.refId : null, kind, playId: t.playId, at: now, by: by(req), notes: String(req.body?.notes || "").slice(0, 4000), outcome: String(req.body?.outcome || "").slice(0, 200) });
+    // What happened on the call (booked, call back, voicemail…) decides what comes next.
+    const outcome = kind === "call" && plan.OUTCOMES[req.body?.outcome] ? req.body.outcome : kind === "call" ? "reached" : "";
+    const nextDate = outcome === "callback" ? dayToDate(req.body?.nextDate) || new Date(now.getTime() + 2 * 86400000) : null;
+    const a = await HqActivity.create({
+      facilityId,
+      contactId: t.kind === "contact" ? t.refId : null,
+      kind,
+      playId: t.playId,
+      at: now,
+      by: by(req),
+      notes: String(req.body?.notes || "").slice(0, 4000),
+      outcome,
+      nextDate,
+      step: kind === "email" ? t.step || 1 : null,
+    });
     t.activityId = a._id;
     t.doneAt = now;
-    if (facilityId && kind === "call") {
-      const f = await HqFacility.findById(facilityId).select("lastCallDate").lean();
+    if (facilityId && kind === "call" && t.kind === "facility") {
+      const f = await HqFacility.findById(facilityId).select("lastCallDate nextDate nextStep stage").lean();
       t.prevLastCall = f?.lastCallDate || null;
-      await HqFacility.updateOne({ _id: facilityId }, { $set: { lastCallDate: now }, $inc: { attempts: 1 } });
+      t.prevFacility = { nextDate: f?.nextDate || null, nextStep: f?.nextStep || "", stage: f?.stage || "" };
+      const set = { lastCallDate: now };
+      if (outcome === "callback") Object.assign(set, { nextDate, nextStep: "Call back" });
+      else if (f?.nextDate && new Date(f.nextDate) <= new Date(now.getTime() + 86400000)) Object.assign(set, { nextDate: null, nextStep: "" }); // the call-back happened
+      if (outcome === "booked") Object.assign(set, { stage: "Setup booked", nextStep: "Free setup booked" });
+      if (outcome === "not_interested") set.stage = "Not interested";
+      if (outcome === "wrong_number") set.stage = "Wrong number";
+      await HqFacility.updateOne({ _id: facilityId }, { $set: set, $inc: { attempts: 1 } });
     }
   } else if (!done) {
     if (!t.activityId) return "This was logged somewhere else. Remove it from the history there.";
     const a = await HqActivity.findByIdAndDelete(t.activityId).lean();
-    if (a?.facilityId && a.kind === "call") await HqFacility.updateOne({ _id: a.facilityId }, { $set: { lastCallDate: t.prevLastCall || null }, $inc: { attempts: -1 } });
+    if (a?.facilityId && a.kind === "call" && t.kind === "facility") {
+      await HqFacility.updateOne({ _id: a.facilityId }, { $set: { lastCallDate: t.prevLastCall || null, ...(t.prevFacility || {}) }, $inc: { attempts: -1 } });
+    }
     t.activityId = null;
     t.doneAt = null;
     t.prevLastCall = null;
+    t.prevFacility = null;
   }
   return null;
 }
@@ -331,5 +377,25 @@ exports.removeItem = async (req, res, next) => {
 module.exports.topUp = async () => {
   const ctx = await context(new Date());
   const doc = await loadWeek(ctx);
-  if (fill(doc, ctx, "facebook")) await doc.save();
+  if (fill(doc, ctx, "facebook") + fill(doc, ctx, "followups")) await doc.save();
+};
+
+/**
+ * After an email: "They replied" or "Not interested" ends that person's
+ * sequence (and takes them off cold lists). Empty puts it back.
+ */
+exports.setOutcome = async (req, res, next) => {
+  try {
+    const outcome = String(req.body?.outcome || "");
+    if (outcome && !["replied", "not_interested", "booked"].includes(outcome)) return fail(res, 400, "Which outcome?");
+    const ctx = await context(new Date());
+    const doc = await loadWeek(ctx);
+    const t = isId(req.params.itemId) ? doc.items.id(req.params.itemId) : null;
+    if (!t) return fail(res, 404, "Not on this week's list");
+    if (!t.activityId) return fail(res, 409, "Tick it as sent first.");
+    await HqActivity.updateOne({ _id: t.activityId }, { $set: { outcome } });
+    res.json(await view(doc, await context(new Date())));
+  } catch (err) {
+    next(err);
+  }
 };

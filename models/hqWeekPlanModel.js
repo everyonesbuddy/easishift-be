@@ -8,6 +8,10 @@ const todoSchema = new mongoose.Schema({
   playId: { type: mongoose.Schema.Types.ObjectId, ref: "HqPlaybookPlay", default: null },
   kind: { type: String, enum: ["facility", "contact", "content", "task", "fbgroup", "fbperson"], required: true },
   action: { type: String, default: "" }, // Facebook: the step (join, admin, offer, answer, message…)
+  // Follow-ups: which email in the sequence, why it is on the list ("Email 2 · day 4", "Call back"), and a key so it is added once.
+  step: { type: Number, default: null },
+  reason: { type: String, default: "" },
+  fkey: { type: String, default: "" },
   url: { type: String, default: "" },
   refId: { type: mongoose.Schema.Types.ObjectId, default: null }, // the facility, person, content piece or Facebook group / person
   facilityId: { type: mongoose.Schema.Types.ObjectId, ref: "HqFacility", default: null },
@@ -21,6 +25,7 @@ const todoSchema = new mongoose.Schema({
   activityId: { type: mongoose.Schema.Types.ObjectId, ref: "HqActivity", default: null }, // the touch a tick logged
   prevStatus: { type: String, default: "" }, // a content piece's status before the tick, for undo
   prevLastCall: { type: Date, default: null },
+  prevFacility: { type: Object, default: null }, // the facility's next date, next step and stage before a call outcome changed them
   added: { type: Boolean, default: false }, // added by hand or ticked from "more"
 });
 

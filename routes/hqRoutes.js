@@ -76,6 +76,7 @@ router.get("/week", week.getWeek);
 router.post("/week/refill", week.refill);
 router.post("/week/tasks", week.addTask);
 router.post("/week/items/:itemId/check", week.check);
+router.post("/week/items/:itemId/outcome", week.setOutcome);
 router.delete("/week/items/:itemId", week.removeItem);
 
 router.get("/facebook", facebook.getAll);

@@ -966,3 +966,47 @@ test("playbook v11: follow-up days and call scripts by situation, added once", a
   assert.equal(updates.e2, undefined, "follow-up days you set are kept");
   assert.equal(updates.c1.$push.scripts.$each.length, v11.CALL_SCRIPTS["calls-front-desk"].length - 1);
 });
+
+test("playbook v12: exact duplicate scripts are removed; one update at a time", async () => {
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const v = { label: "Voicemail (DON or administrator)", body: "Hi {First name}…" };
+  const set = {};
+  let finds = 0;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => {
+    if (x.key === "playbook-seed") finds += 1;
+    return q(x.key === "playbook-seed" ? { data: { version: 11 } } : null);
+  };
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "p1", scripts: [{ label: "With a setup", body: "a" }, v, { label: "No budget", body: "b" }, { ...v }, { label: "With a setup", body: "edited" }] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set.scripts);
+  try {
+    const pb = require("../controllers/hqPlaybookController");
+    await Promise.all([pb.ensureSeeded(), pb.ensureSeeded(), pb.ensureSeeded()]);
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(finds, 1, "three requests at once run the update once");
+  assert.deepEqual(set.p1.map((x) => x.label), ["With a setup", "Voicemail (DON or administrator)", "No budget", "With a setup"], "only the exact copy goes; an edited one with the same name stays");
+});
+
+test("playbook update: another server holding the update means this one skips it", async () => {
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find];
+  let ran = false;
+  HqSync.findOne = () => ({ lean: async () => ({ data: { version: 11, lockUntil: new Date(Date.now() + 60000) } }) });
+  HqSync.updateOne = async () => ({ matchedCount: 0 }); // the claim fails
+  HqPlaybookPlay.find = () => {
+    ran = true;
+    return { select: () => ({ lean: async () => [] }) };
+  };
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find] = orig;
+  }
+  assert.equal(ran, false);
+});

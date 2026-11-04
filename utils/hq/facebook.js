@@ -49,6 +49,18 @@ const PERSON_ACTIONS = {
 
 const FOLLOW_UP_DAYS = { admin: 5, person: 3 };
 const daysSince = (d, now) => (d ? (now - new Date(d)) / DAY : Infinity);
+const agoText = (d, now) => {
+  const days = Math.floor(daysSince(d, now));
+  return days <= 0 ? "today" : days === 1 ? "yesterday" : `${days} days ago`;
+};
+/** A link as typed ("facebook.com/groups/…") made into a full one, so it opens Facebook and not a page in HQ. */
+function fullUrl(u) {
+  const s = String(u || "").trim();
+  if (!s) return "";
+  if (/^https?:\/\//i.test(s)) return s;
+  if (/^\/\//.test(s)) return `https:${s}`;
+  return `https://${s.replace(/^\/+/, "")}`;
+}
 const offerOk = (g) => g.status === "approved" || g.promo === "allowed" || g.promo === "thread";
 
 /**
@@ -60,7 +72,7 @@ function nextGroupStep(g, now = new Date()) {
   const name = g.name;
   if (g.status === "left") return null;
   if (g.status === "found") return { action: "join", title: `Join ${name} as the WiserShifts Page`, why: g.allowsPages === "no" ? "This group doesn't take Pages; join from a profile or skip it." : "Switch to the Page, then ask to join. Answer the questions honestly." };
-  if (g.status === "requested") return { action: "joined", title: `See if ${name} let the Page in`, why: g.requestedAt ? `Asked ${Math.floor(daysSince(g.requestedAt, now))} days ago.` : "" };
+  if (g.status === "requested") return { action: "joined", title: `See if ${name} let the Page in`, why: g.requestedAt ? `Asked ${agoText(g.requestedAt, now)}. Check the group, or your Page's notifications.` : "" };
   if (g.status === "joined" && (g.promo === "ask" || g.promo === "unknown" || !g.promo) && !g.askedAt) return { action: "admin", title: `Message the admin of ${name}`, why: "Ask before posting the offer. Use the admin script." };
   if (g.status === "asked" && daysSince(g.askedAt, now) >= FOLLOW_UP_DAYS.admin && !g.adminFollowedUpAt) return { action: "admin_followup", title: `Follow up with the admin of ${name}`, why: `No answer in ${Math.floor(daysSince(g.askedAt, now))} days. One polite nudge, then let it go.` };
   if (offerOk(g) && !g.offerAt) return { action: "offer", title: `Post the offer in ${name}`, why: g.promo === "thread" ? "Only in their promo thread." : "The admin said yes. Plain text, as the Page." };
@@ -126,7 +138,7 @@ function groupTodos(groups, { n, now = new Date(), skip = new Set() }) {
     action: s.action,
     title: s.title,
     detail: [s.why, g.members ? `${Number(g.members).toLocaleString("en-US")} members` : ""].filter(Boolean).join(" · "),
-    url: g.url || "",
+    url: fullUrl(g.url),
   }));
 }
 
@@ -136,7 +148,7 @@ function personTodos(people, groupsById = new Map(), { now = new Date(), skip = 
     .filter((p) => !skip.has(String(p._id)))
     .map((p) => ({ p, s: nextPersonStep({ ...p, groupName: groupsById.get(String(p.groupId))?.name || "" }, now) }))
     .filter((x) => x.s)
-    .map(({ p, s }) => ({ kind: "fbperson", refId: String(p._id), action: s.action, title: s.title, detail: s.why, url: p.profileUrl || "" }));
+    .map(({ p, s }) => ({ kind: "fbperson", refId: String(p._id), action: s.action, title: s.title, detail: s.why, url: fullUrl(p.profileUrl) }));
 }
 
-module.exports = { GROUP_STATUSES, PROMO, PERSON_STATUSES, GROUP_ACTIONS, PERSON_ACTIONS, nextGroupStep, nextPersonStep, groupChange, personChange, groupTodos, personTodos };
+module.exports = { fullUrl, GROUP_STATUSES, PROMO, PERSON_STATUSES, GROUP_ACTIONS, PERSON_ACTIONS, nextGroupStep, nextPersonStep, groupChange, personChange, groupTodos, personTodos };

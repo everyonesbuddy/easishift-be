@@ -799,3 +799,14 @@ test("week plan: a short list says why, and content is spread over the weekdays"
   assert.equal(plan.contentDay(0, 1), 1);
   assert.equal(plan.contentDay(6, 7), 1);
 });
+
+test("facebook: links typed without https:// still open Facebook; 'asked today' reads right", () => {
+  const fb = require("../utils/hq/facebook");
+  assert.equal(fb.fullUrl("facebook.com/groups/alconnect"), "https://facebook.com/groups/alconnect");
+  assert.equal(fb.fullUrl("www.facebook.com/groups/1"), "https://www.facebook.com/groups/1");
+  assert.equal(fb.fullUrl("https://www.facebook.com/groups/1"), "https://www.facebook.com/groups/1");
+  assert.equal(fb.fullUrl(""), "");
+  const now = new Date("2026-11-04T18:00:00Z");
+  assert.match(fb.nextGroupStep({ name: "G", status: "requested", requestedAt: new Date("2026-11-04T15:00:00Z") }, now).why, /^Asked today\./);
+  assert.equal(fb.groupTodos([{ _id: "g", name: "G", status: "found", url: "facebook.com/groups/g" }], { n: 1, now })[0].url, "https://facebook.com/groups/g");
+});

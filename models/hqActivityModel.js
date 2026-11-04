@@ -12,6 +12,7 @@ const hqActivitySchema = new mongoose.Schema(
     notes: { type: String, default: "" },
     at: { type: Date, default: Date.now },
     nextDate: { type: Date, default: null },
+    step: { type: Number, default: null }, // which email in a sequence (1, 2, 3); empty means the first
     by: { type: String, trim: true, default: "" },
     importKey: { type: String, default: null },
     // Set when this activity closes a play from the Plays list.

@@ -217,6 +217,7 @@ const ROUTES = [
   ["post", "/hq/week/refill", "HQ", "Top this week's checklist up to every play's target"],
   ["post", "/hq/week/tasks", "HQ", "Add your own to-do to this week", { body: { title: "Ask Dana for a referral", day: 2 } }],
   ["post", "/hq/week/items/{itemId}/check", "HQ", "Tick (or untick with done: false) a to-do: logs the call or email, or marks the piece published. Use \"new\" as itemId with playId, kind and refId to tick something not on the list yet", { body: { done: true } }],
+  ["post", "/hq/week/items/{itemId}/outcome", "HQ", "After an email: mark that they replied or aren't interested (ends their sequence). Empty clears it", { body: { outcome: "replied" } }],
   ["delete", "/hq/week/items/{itemId}", "HQ", "Take a to-do off this week's list"],
   ["get", "/hq/facebook", "HQ", "Facebook groups (with where we stand and the next step in each) and the people to message, with totals"],
   ["post", "/hq/facebook/groups", "HQ", "Add a Facebook group", { body: { name: "CNA Schedulers of Ohio", url: "https://www.facebook.com/groups/…", members: 4200, audience: ["scheduler"], allowsPages: "yes", promo: "ask" } }],

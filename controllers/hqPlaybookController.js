@@ -13,10 +13,18 @@ const seed = require("../utils/hq/playbookSeed");
 const { lastWeeks } = require("../utils/hq/weeks");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
-const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active"];
-const pick = (b) => Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
+const FIELDS = ["order", "title", "channel", "audience", "who", "goal", "when", "steps", "scripts", "volume", "weeklyTarget", "targetUnit", "countsFrom", "measure", "active", "followUps"];
+const pick = (b) => {
+  const out = Object.fromEntries(FIELDS.filter((f) => b?.[f] !== undefined).map((f) => [f, b[f]]));
+  // Follow-up days: whole days after the first email, in order ("4, 9" or [4, 9]).
+  if (out.followUps !== undefined) {
+    const list = Array.isArray(out.followUps) ? out.followUps : String(out.followUps || "").split(/[^\d]+/);
+    out.followUps = [...new Set(list.map(Number).filter((n) => Number.isInteger(n) && n > 0 && n <= 60))].sort((x, y) => x - y).slice(0, 5);
+  }
+  return out;
+};
 
-const SEED_VERSION = 10;
+const SEED_VERSION = 11;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -72,7 +80,30 @@ async function ensureSeeded() {
   if (version < 8) await migrateV8();
   if (version < 9) await migrateV9();
   if (version < 10) await migrateV10();
+  if (version < 11) await migrateV11();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/**
+ * Version 11: calls and cold emails follow what happens. The two cold email
+ * plays get their follow-up days (email 2 and 3), and the call plays get a
+ * script for each situation on a call. Scripts are added after yours,
+ * skipping any with the same name; follow-up days only if none are set.
+ */
+async function migrateV11() {
+  const v11 = require("../utils/hq/playbookCallsV11");
+  const keys = [...new Set([...Object.keys(v11.FOLLOW_UPS), ...Object.keys(v11.CALL_SCRIPTS)])];
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: keys } }).select("seedKey scripts followUps").lean();
+  for (const p of plays) {
+    const set = {};
+    if (v11.FOLLOW_UPS[p.seedKey] && !(p.followUps || []).length) set.followUps = v11.FOLLOW_UPS[p.seedKey];
+    const have = new Set((p.scripts || []).map((x) => x.label));
+    const add = (v11.CALL_SCRIPTS[p.seedKey] || []).filter((x) => !have.has(x.label));
+    const update = {};
+    if (Object.keys(set).length) update.$set = set;
+    if (add.length) update.$push = { scripts: { $each: add } };
+    if (Object.keys(update).length) await HqPlaybookPlay.updateOne({ _id: p._id }, update);
+  }
 }
 
 /**

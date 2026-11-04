@@ -692,6 +692,15 @@ test("week checklist: ticking a call logs it with the play, unticking removes it
     assert.equal(unticked.plays[0].count, 0);
     assert.equal(activities.length, 0);
     assert.equal(facilityUpdates[1].$inc.attempts, -1);
+    // A call outcome: "call back Thursday" sets the facility's next call; unticking puts it back.
+    await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: true, outcome: "callback", nextDate: "2026-11-12" } });
+    assert.equal(activities[0].outcome, "callback");
+    assert.ok(activities[0].nextDate instanceof Date);
+    assert.equal(facilityUpdates[2].$set.nextStep, "Call back");
+    assert.ok(facilityUpdates[2].$set.nextDate instanceof Date);
+    await call(require("../controllers/hqWeekController").check, { params: { itemId: p.todos[0]._id }, body: { done: false } });
+    assert.equal(facilityUpdates[3].$set.nextStep, "", "back to what it was");
+    assert.equal(facilityUpdates[3].$set.nextDate, null);
     // Your own to-do.
     const withTask = await call(require("../controllers/hqWeekController").addTask, { body: { title: "Ask Dana for a referral" } });
     assert.equal(withTask.tasks[0].title, "Ask Dana for a referral");
@@ -873,7 +882,8 @@ test("playbook v10: drafts fill only untouched notes; scripts and newsletters ar
     if (u.$setOnInsert) upserts.push(f.seedKey);
   };
   HqPlaybookPlay.find = () => q([{ _id: "n", seedKey: "newsletter", scripts: [] }, { _id: "c1", seedKey: "calls-front-desk", scripts: [{ label: "Voicemail (scheduler)" }] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (pushes[f._id] = u.$push.scripts.$each.map((x) => x.label));
+  // v11 runs after v10, so keep each update separately; [0] is v10's.
+  HqPlaybookPlay.updateOne = async (f, u) => (pushes[f._id] ||= []).push(u.$push ? u.$push.scripts.$each.map((x) => x.label) : []);
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -884,8 +894,75 @@ test("playbook v10: drafts fill only untouched notes; scripts and newsletters ar
   assert.equal(notesSet.c, undefined, "your own notes stay");
   assert.match(notesSet.a, /https:\/\/wisershifts\.com\/calculators\/call-out-cost-calculator/, "real links in content");
   assert.deepEqual(upserts, ["nl-sched-callout", "nl-leaders-overtime"]);
-  assert.deepEqual(pushes.n, v10.SCRIPTS.newsletter.map((x) => x.label));
-  assert.ok(!pushes.c1.includes("Voicemail (scheduler)"), "a script you already have isn't added twice");
-  assert.ok(pushes.c1.length === v10.SCRIPTS["calls-front-desk"].length - 1);
+  assert.deepEqual(pushes.n[0], v10.SCRIPTS.newsletter.map((x) => x.label));
+  assert.ok(!pushes.c1[0].includes("Voicemail (scheduler)"), "a script you already have isn't added twice");
+  assert.ok(pushes.c1[0].length === v10.SCRIPTS["calls-front-desk"].length - 1);
   assert.match(v10.NEW_ITEMS[0].notes, /\{\{ first_name\|default:"there" \}\}/, "newsletters use Klaviyo's first-name tag");
+});
+
+test("follow-ups: email 2 and 3 on their days, call-backs, retries after a voicemail, and stopping", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const weekStart = new Date("2026-11-09T05:00:00Z"); // Monday
+  const weekEnd = new Date("2026-11-16T05:00:00Z");
+  const now = new Date("2026-11-10T15:00:00Z");
+  const email = { _id: "e", active: true, channel: "email", audience: ["director"], weeklyTarget: 35, countsFrom: "activities", followUps: [4, 9] };
+  const contacts = [
+    { _id: "c1", name: "Dana Price", title: "ED", role: "executive_director", email: "d@x.org" },
+    { _id: "c2", name: "Ann Lee", role: "don", email: "a@x.org" },
+    { _id: "c3", name: "Rae Kim", role: "don", email: "r@x.org" },
+    { _id: "c4", name: "Lou Bay", role: "don", email: "l@x.org" },
+  ];
+  const acts = [
+    { playId: "e", kind: "email", contactId: "c1", at: new Date("2026-11-06T15:00:00Z"), step: 1 }, // Fri → email 2 on day 4 = Tue
+    { playId: "e", kind: "email", contactId: "c2", at: new Date("2026-11-02T15:00:00Z"), step: 1 }, // email 2 due Fri 6 (sent?) no → overdue
+    { playId: "e", kind: "email", contactId: "c3", at: new Date("2026-11-02T15:00:00Z"), step: 1, outcome: "replied" }, // replied: done
+    { playId: "e", kind: "email", contactId: "c4", at: new Date("2026-10-26T15:00:00Z"), step: 1 },
+    { playId: "e", kind: "email", contactId: "c4", at: new Date("2026-10-30T15:00:00Z"), step: 2 },
+    { playId: "e", kind: "email", contactId: "c4", at: new Date("2026-11-04T15:00:00Z"), step: 3 }, // all three sent
+  ];
+  const ups = plan.followUpTodos(email, { acts, contacts, now, weekStart, weekEnd });
+  assert.deepEqual(ups.map((t) => [t.refId, t.step, t.reason, t.day]), [["c2", 2, "Email 2 · day 4", 0], ["c1", 2, "Email 2 · day 4", 1]]);
+  assert.equal(plan.followUpTodos(email, { acts, contacts, now, weekStart, weekEnd, have: ups }).length, 0, "added once");
+  assert.ok(plan.stoppedIds(acts, now).has("c3"));
+
+  const calls = { _id: "k", active: true, channel: "calls", audience: ["scheduler"], weeklyTarget: 60, countsFrom: "activities" };
+  const facilities = [{ _id: "f1", name: "Oak", frontDeskPhone: "1" }, { _id: "f2", name: "Elm", frontDeskPhone: "2" }, { _id: "f3", name: "Ash", frontDeskPhone: "3" }, { _id: "f4", name: "Fir", frontDeskPhone: "4" }];
+  const callActs = [
+    { playId: "k", kind: "call", facilityId: "f1", at: new Date("2026-11-09T15:00:00Z"), outcome: "callback", nextDate: new Date("2026-11-12T17:00:00Z"), notes: "Ask for Kim after 2" },
+    { playId: "k", kind: "call", facilityId: "f2", at: new Date("2026-11-09T15:00:00Z"), outcome: "voicemail" },
+    { playId: "k", kind: "call", facilityId: "f3", at: new Date("2026-11-03T15:00:00Z"), outcome: "no_answer" },
+    { playId: "k", kind: "call", facilityId: "f3", at: new Date("2026-11-05T15:00:00Z"), outcome: "voicemail" },
+    { playId: "k", kind: "call", facilityId: "f3", at: new Date("2026-11-09T15:00:00Z"), outcome: "no_answer" }, // three tries: stop
+    { playId: "k", kind: "call", facilityId: "f4", at: new Date("2026-11-09T15:00:00Z"), outcome: "booked" },
+  ];
+  const c = plan.followUpTodos(calls, { acts: callActs, facilities, now, weekStart, weekEnd });
+  assert.deepEqual(c.map((t) => [t.refId, t.reason, t.day]), [["f2", "Try again (2 of 3)", 2], ["f1", "Call back: Ask for Kim after 2", 3]]);
+  // A booked or not-interested facility is off the cold list too.
+  assert.ok(plan.stoppedIds(callActs, now).has("f4"));
+});
+
+test("playbook v11: follow-up days and call scripts by situation, added once", async () => {
+  const v11 = require("../utils/hq/playbookCallsV11");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const updates = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (v) => ({ select: () => ({ lean: async () => v }), lean: async () => v });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 10 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () =>
+    q([
+      { _id: "e1", seedKey: "email-hprd", scripts: [], followUps: [] },
+      { _id: "e2", seedKey: "email-operator", scripts: [], followUps: [3] },
+      { _id: "c1", seedKey: "calls-front-desk", scripts: [{ label: v11.CALL_SCRIPTS["calls-front-desk"][0].label }] },
+    ]);
+  HqPlaybookPlay.updateOne = async (f, u) => (updates[f._id] = u);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.deepEqual(updates.e1.$set.followUps, [4, 9]);
+  assert.equal(updates.e2, undefined, "follow-up days you set are kept");
+  assert.equal(updates.c1.$push.scripts.$each.length, v11.CALL_SCRIPTS["calls-front-desk"].length - 1);
 });

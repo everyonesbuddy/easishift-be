@@ -87,6 +87,59 @@ function peopleFor(play, { facilities = [], contacts = [], lastTouch = new Map()
     });
 }
 
+/**
+ * Why a calls / email play's list is shorter than its target, in plain
+ * words: how many are on file, and how many were left out for each reason.
+ */
+function whyShort(play, { facilities = [], contacts = [], lastTouch = new Map(), now = new Date() }) {
+  const touch = TOUCH[play.channel];
+  if (!touch) return null;
+  const restDays = REST_DAYS[touch] || 14;
+  const fresh = (id) => {
+    const t = lastTouch.get(String(id));
+    return !t || now - new Date(t) > restDays * DAY;
+  };
+  const fById = new Map(facilities.map((f) => [String(f._id), f]));
+  const open = (f) => f && !f.tenantId && !DONE_STAGE.test(f.stage || "");
+  const done = touch === "call" ? "called" : touch === "email" ? "emailed" : "messaged";
+  const count = (list, test) => list.filter(test).length;
+  if ((play.audience || []).includes("scheduler")) {
+    const reach = (f) => (touch === "call" ? phoneOf(f) : touch === "email" ? f.scheduler?.email : "");
+    const live = facilities.filter(open);
+    return {
+      total: facilities.length,
+      of: "facilities",
+      reasons: [
+        [facilities.length - live.length, "are customers or closed"],
+        [count(live, (f) => !reach(f)), touch === "call" ? "have no front-desk phone" : "have no scheduler email"],
+        [count(live, (f) => reach(f) && !fresh(f._id)), `were ${done} in the last ${restDays} days`],
+      ].filter(([n]) => n > 0),
+      fix: touch === "call" ? "Add front-desk phone numbers on Facilities, or import more facilities." : "Add scheduler emails on Facilities.",
+      page: "facilities",
+    };
+  }
+  const roles = new Set((play.audience || []).flatMap((a) => ROLES[a] || []));
+  const leaders = contacts.filter((c) => roles.has(c.role));
+  const reach = (c) => (touch === "call" ? c.phone || phoneOf(fById.get(String(c.facilityId)) || {}) : touch === "email" ? c.email : c.linkedin);
+  const live = leaders.filter((c) => !c.facilityId || !fById.has(String(c.facilityId)) || open(fById.get(String(c.facilityId))));
+  const who = (play.audience || []).includes("operator") && !(play.audience || []).includes("director") ? "regional leaders and owners" : "DONs, EDs and administrators";
+  return {
+    total: leaders.length,
+    of: who,
+    reasons: [
+      [leaders.length - live.length, "work at customers or closed facilities"],
+      [count(live, (c) => !reach(c)), touch === "call" ? "have no phone" : touch === "email" ? "have no email" : "have no LinkedIn"],
+      [count(live, (c) => reach(c) && !fresh(c._id)), `were ${done} in the last ${restDays} days`],
+    ].filter(([n]) => n > 0),
+    fix: `Add more ${who} on Leaders & contacts${touch === "call" ? ", with phone numbers" : touch === "email" ? ", with emails" : ""}.`,
+    page: "people",
+  };
+}
+
+/** Which weekday (0 = Monday) each of a play's n pieces goes out: spread out, never the weekend. */
+const CONTENT_DAYS = { 1: [1], 2: [1, 3], 3: [0, 2, 4], 4: [0, 1, 3, 4], 5: [0, 1, 2, 3, 4] };
+const contentDay = (i, n) => (CONTENT_DAYS[n] ? CONTENT_DAYS[n][i] : i % 5);
+
 /** A content play's open pieces, next first: ready before drafts before ideas, then by due date, then by name. */
 function queueFor(play, items) {
   return items
@@ -173,4 +226,4 @@ function moreFor(play, ctx, limit = 8) {
   return peopleFor(play, { ...ctx, skip }).slice(0, limit);
 }
 
-module.exports = { listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, facebookTodos, TOUCH };
+module.exports = { listKind, weeklyCount, dayFor, peopleFor, queueFor, todosFor, moreFor, facebookTodos, whyShort, contentDay, TOUCH };

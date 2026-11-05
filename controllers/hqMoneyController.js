@@ -8,6 +8,7 @@ const mongoose = require("mongoose");
 const Stripe = require("stripe");
 const { parse } = require("csv-parse/sync");
 const HqExpense = require("../models/hqExpenseModel");
+const Tenant = require("../models/tenantModel");
 const money = require("../utils/hq/money");
 
 const fail = (res, status, message) => res.status(status).json({ message });
@@ -40,14 +41,43 @@ async function stripeYear(year, refresh) {
   const from = Math.floor(Date.UTC(year, 0, 1) / 1000);
   const to = Math.floor(Date.UTC(year + 1, 0, 1) / 1000);
   try {
-    const [txs, subs, products] = await Promise.all([
-      s.balanceTransactions.list({ created: { gte: from, lt: to }, limit: 100 }).autoPagingToArray({ limit: 10000 }),
+    const [txs, allSubs, products, tenants] = await Promise.all([
+      s.balanceTransactions.list({ created: { gte: from, lt: to }, limit: 100, expand: ["data.source"] }).autoPagingToArray({ limit: 10000 }),
       s.subscriptions.list({ status: "all", limit: 100, expand: ["data.customer"] }).autoPagingToArray({ limit: 2000 }),
       s.products.list({ limit: 100 }).autoPagingToArray({ limit: 500 }),
+      Tenant.find({ $or: [{ stripeCustomerId: { $ne: null } }, { stripeSubscriptionId: { $ne: null } }] }).select("stripeCustomerId stripeSubscriptionId").lean(),
     ]);
+    // Only WiserShifts' own subscriptions and customers count.
+    const { subs, customers } = money.wiserShifts({ subs: allSubs, tenants });
     const names = Object.fromEntries(products.map((p) => [p.id, p.name]));
     for (const sub of subs) for (const it of sub.items?.data || []) if (it.price && typeof it.price.product === "string") it.price.product = { id: it.price.product, name: names[it.price.product] || "" };
-    const data = { configured: true, live: !stripeKey().startsWith("sk_test") && !stripeKey().startsWith("rk_test"), income: money.incomeByMonth(txs, year), subs: money.subscriptionSummary(subs, year), at: new Date() };
+
+    // Whose money each transaction is: a payment's customer, or for a refund, the customer of the payment it refunds.
+    const chargeCustomer = new Map();
+    for (const t of txs) if (t.source?.object === "charge") chargeCustomer.set(t.source.id, money.customerId(t.source.customer));
+    const missing = [...new Set(txs.filter((t) => t.source?.object === "refund").map((t) => money.customerId(t.source.charge)).filter((id) => id && !chargeCustomer.has(id)))];
+    for (const id of missing.slice(0, 100)) {
+      try {
+        const c = await s.charges.retrieve(id);
+        chargeCustomer.set(id, money.customerId(c.customer));
+      } catch {
+        chargeCustomer.set(id, null);
+      }
+    }
+    const ownerOf = (t) => {
+      if (t.source?.object === "charge") return chargeCustomer.get(t.source.id);
+      if (t.source?.object === "refund") return chargeCustomer.get(money.customerId(t.source.charge));
+      return null; // account-level fees and anything else can't be tied to WiserShifts
+    };
+    const income = money.incomeByMonth(txs, year, (t) => customers.has(ownerOf(t)));
+    const data = {
+      configured: true,
+      live: !stripeKey().startsWith("sk_test") && !stripeKey().startsWith("rk_test"),
+      income,
+      left: { ...income.left, subscriptions: allSubs.length - subs.length },
+      subs: money.subscriptionSummary(subs, year),
+      at: new Date(),
+    };
     cache.set(year, { at: Date.now(), data });
     return data;
   } catch (e) {
@@ -81,7 +111,7 @@ exports.getMoney = async (req, res) => {
       expenses: list,
       burn: Math.round(usualMonthly * 100) / 100, // what we usually spend a month now
       breakEven: avgPrice ? Math.max(0, Math.ceil((usualMonthly - mrr) / avgPrice)) : null, // more paying customers needed to cover it
-      stripe: { configured: Boolean(st.configured), live: st.live ?? null, error: st.error || null, at: st.at || null },
+      stripe: { configured: Boolean(st.configured), live: st.live ?? null, error: st.error || null, at: st.at || null, left: st.left || null },
     });
   } catch (e) {
     console.error("[hq money]", e);

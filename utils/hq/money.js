@@ -89,12 +89,39 @@ const IN = new Set(["charge", "payment"]);
 const BACK = new Set(["refund", "payment_refund", "payment_failure_refund"]);
 const FEES = new Set(["stripe_fee", "tax_fee"]);
 
-/** Income by month from Stripe balance transactions (amounts in cents). */
-function incomeByMonth(txs, year) {
+const customerId = (c) => (typeof c === "string" ? c : c?.id || null);
+
+/**
+ * Which subscriptions and customers are WiserShifts': a subscription made
+ * by our checkout or invoices (it carries a tenantId), or one a workspace
+ * has saved, and the customers behind them and behind every workspace. The
+ * same Stripe account took other payments before, and those stay out.
+ */
+function wiserShifts({ subs, tenants }) {
+  const tenantSubs = new Set(tenants.map((t) => t.stripeSubscriptionId).filter(Boolean));
+  const customers = new Set(tenants.map((t) => t.stripeCustomerId).filter(Boolean));
+  const ours = subs.filter((s) => s.metadata?.tenantId || s.customer?.metadata?.tenantId || tenantSubs.has(s.id) || customers.has(customerId(s.customer)));
+  for (const s of ours) if (customerId(s.customer)) customers.add(customerId(s.customer));
+  return { subs: ours, customers };
+}
+
+/**
+ * Income by month from Stripe balance transactions (amounts in cents).
+ * keep(t) says whether a transaction is WiserShifts'; the rest are counted
+ * in left so the page can say what was left out.
+ */
+function incomeByMonth(txs, year, keep = () => true) {
   const months = Object.fromEntries(MONTHS.map((_, i) => [monthKey(year, i), { gross: 0, refunds: 0, fees: 0, net: 0, payments: 0 }]));
+  const left = { count: 0, amount: 0 };
   for (const t of txs) {
     const m = months[keyOfDate(t.created * 1000)];
     if (!m) continue;
+    if (!IN.has(t.type) && !BACK.has(t.type) && !FEES.has(t.type)) continue;
+    if (!keep(t)) {
+      left.count += 1;
+      left.amount = cents(left.amount + t.amount / 100);
+      continue;
+    }
     if (IN.has(t.type)) {
       m.gross += t.amount / 100;
       m.fees += (t.fee || 0) / 100;
@@ -112,6 +139,7 @@ function incomeByMonth(txs, year) {
     m.fees = cents(m.fees);
     m.net = cents(m.gross + m.refunds - m.fees);
   }
+  Object.defineProperty(months, "left", { value: left, enumerable: false });
   return months;
 }
 
@@ -192,4 +220,4 @@ function profitAndLoss({ year, income, expenses, now = new Date() }) {
   };
 }
 
-module.exports = { MONTHS, money, parseExpenseSheet, sheetCsvUrl, costFor, incomeByMonth, monthlyValue, subscriptionSummary, profitAndLoss, keyOfDate };
+module.exports = { MONTHS, wiserShifts, customerId, money, parseExpenseSheet, sheetCsvUrl, costFor, incomeByMonth, monthlyValue, subscriptionSummary, profitAndLoss, keyOfDate };

@@ -83,3 +83,21 @@ test("money: P&L leaves future months unprojected for income, totals only to now
   assert.equal(pl.totals.profit, 47);
   assert.equal(pl.totals.yearExpenses, 300);
 });
+
+test("money: only WiserShifts subscriptions, customers and payments count", () => {
+  const subs = [
+    { id: "sub_ws", metadata: { tenantId: "t1" }, customer: "cus_a" },
+    { id: "sub_saved", metadata: {}, customer: { id: "cus_b" } },
+    { id: "sub_old", metadata: {}, customer: "cus_old" },
+    { id: "sub_cust", metadata: {}, customer: "cus_c" },
+  ];
+  const { subs: ours, customers } = m.wiserShifts({ subs, tenants: [{ stripeSubscriptionId: "sub_saved" }, { stripeCustomerId: "cus_c" }] });
+  assert.deepEqual(ours.map((s) => s.id), ["sub_ws", "sub_saved", "sub_cust"]);
+  assert.deepEqual([...customers].sort(), ["cus_a", "cus_b", "cus_c"]);
+  const t = (type, amount, who) => ({ created: Date.UTC(2026, 0, 5) / 1000, type, amount, fee: 0, who });
+  const inc = m.incomeByMonth([t("charge", 4900, "cus_a"), t("charge", 25000, "cus_old"), t("charge", 1000, null), t("refund", -4900, "cus_old"), t("stripe_fee", -200, null)], 2026, (x) => customers.has(x.who));
+  assert.equal(inc["2026-01"].gross, 49);
+  assert.equal(inc["2026-01"].refunds, 0);
+  assert.equal(inc["2026-01"].fees, 0);
+  assert.deepEqual(inc.left, { count: 4, amount: 209 });
+});

@@ -17,6 +17,7 @@ const funnel = require("../controllers/hqFunnelController");
 const email = require("../controllers/hqEmailController");
 const week = require("../controllers/hqWeekController");
 const facebook = require("../controllers/hqFacebookController");
+const moneyPage = require("../controllers/hqMoneyController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
@@ -90,6 +91,12 @@ router.patch("/facebook/people/:id", facebook.updatePerson);
 router.delete("/facebook/people/:id", facebook.deletePerson);
 router.post("/facebook/people/:id/log", facebook.logPerson);
 router.delete("/facebook/activity/:activityId", facebook.undo);
+
+router.get("/money", moneyPage.getMoney);
+router.post("/money/import", moneyPage.importSheet);
+router.post("/money/expenses", moneyPage.createExpense);
+router.patch("/money/expenses/:id", moneyPage.updateExpense);
+router.delete("/money/expenses/:id", moneyPage.deleteExpense);
 
 router.get("/content-plan", contentPlan.listItems);
 router.post("/content-plan", contentPlan.createItem);

@@ -9,6 +9,7 @@ const Stripe = require("stripe");
 const { parse } = require("csv-parse/sync");
 const HqExpense = require("../models/hqExpenseModel");
 const Tenant = require("../models/tenantModel");
+const HqMoneyHidden = require("../models/hqMoneyHiddenModel");
 const money = require("../utils/hq/money");
 
 const fail = (res, status, message) => res.status(status).json({ message });
@@ -47,8 +48,9 @@ async function stripeYear(year, refresh) {
       s.products.list({ limit: 100 }).autoPagingToArray({ limit: 500 }),
       Tenant.find({ $or: [{ stripeCustomerId: { $ne: null } }, { stripeSubscriptionId: { $ne: null } }] }).select("stripeCustomerId stripeSubscriptionId").lean(),
     ]);
-    // Only WiserShifts' own subscriptions and customers count.
-    const { subs, customers } = money.wiserShifts({ subs: allSubs, tenants });
+    const hidden = await HqMoneyHidden.find().lean();
+    // Only WiserShifts' own subscriptions and customers count, less the ones hidden as tests.
+    const { subs, customers, hiddenSubs } = money.wiserShifts({ subs: allSubs, tenants, hidden: hidden.map((h) => h.customerId) });
     const names = Object.fromEntries(products.map((p) => [p.id, p.name]));
     for (const sub of subs) for (const it of sub.items?.data || []) if (it.price && typeof it.price.product === "string") it.price.product = { id: it.price.product, name: names[it.price.product] || "" };
 
@@ -76,6 +78,7 @@ async function stripeYear(year, refresh) {
       income,
       left: { ...income.left, subscriptions: allSubs.length - subs.length },
       subs: money.subscriptionSummary(subs, year),
+      hidden: hidden.map((h) => ({ customerId: h.customerId, label: h.label, subscriptions: hiddenSubs.filter((x) => money.customerId(x.customer) === h.customerId).length })),
       at: new Date(),
     };
     cache.set(year, { at: Date.now(), data });
@@ -98,7 +101,10 @@ exports.getMoney = async (req, res) => {
     const thisMonth = pl.months.find((m) => m.current) || pl.months[pl.months.length - 1];
     const usualMonthly = list.reduce((a, e) => a + (e.cadence === "monthly" && (!e.endMonth || e.endMonth >= thisMonth.month) ? Number(e.amount) || 0 : e.cadence === "yearly" ? (Number(e.amount) || 0) / 12 : 0), 0);
     const mrr = st.subs?.mrr || 0;
-    const avgPrice = st.subs?.paying ? mrr / st.subs.paying : null;
+    // Break even at the average real plan (paid-up ones first, else any not canceled); test-sized ones under $1 don't count.
+    const real = (st.subs?.list || []).filter((x) => x.monthly >= 1 && x.status !== "canceled");
+    const priced = real.some((x) => x.status === "active") ? real.filter((x) => x.status === "active") : real;
+    const avgPrice = priced.length ? priced.reduce((a, x) => a + x.monthly, 0) / priced.length : null;
     res.json({
       year,
       months: pl.months.map((m) => ({ ...m, ...(st.subs?.byMonth?.[m.month] || { started: 0, canceled: 0 }) })),
@@ -107,9 +113,13 @@ exports.getMoney = async (req, res) => {
       arr: Math.round(mrr * 12 * 100) / 100,
       paying: st.subs?.paying || 0,
       trialing: st.subs?.trialing || 0,
+      failing: st.subs?.failing || 0,
+      atRisk: st.subs?.atRisk || 0,
+      hidden: st.hidden || [],
       subscriptions: st.subs?.list || [],
       expenses: list,
       burn: Math.round(usualMonthly * 100) / 100, // what we usually spend a month now
+      covered: mrr > 0 && mrr >= usualMonthly,
       breakEven: avgPrice ? Math.max(0, Math.ceil((usualMonthly - mrr) / avgPrice)) : null, // more paying customers needed to cover it
       stripe: { configured: Boolean(st.configured), live: st.live ?? null, error: st.error || null, at: st.at || null, left: st.left || null },
     });
@@ -208,6 +218,16 @@ exports.importSheet = async (req, res) => {
     }
   }
   res.json({ added, updated, services: rows.map((r) => r.name) });
+};
+
+/** POST /hq/money/hide { customerId, hidden, label } : leave a customer (a test checkout) out of Money, or bring them back. */
+exports.hideCustomer = async (req, res) => {
+  const id = String(req.body?.customerId || "");
+  if (!/^cus_[A-Za-z0-9]+$/.test(id)) return fail(res, 400, "That isn't a Stripe customer.");
+  if (req.body?.hidden === false) await HqMoneyHidden.deleteOne({ customerId: id });
+  else await HqMoneyHidden.updateOne({ customerId: id }, { $set: { label: String(req.body?.label || "").slice(0, 200) } }, { upsert: true });
+  cache.clear();
+  res.json({ ok: true });
 };
 
 exports._test = { stripeYear, clean, cache };

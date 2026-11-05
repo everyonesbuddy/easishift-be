@@ -67,6 +67,7 @@ test("money: subscriptions → MRR (yearly / 12), paying, trial, new and cancele
   const s = m.subscriptionSummary([sub("active", 4900, "month", 0), sub("active", 58800, "year", 1), sub("trialing", 4900, "month", 9), sub("canceled", 4900, "month", 2, { ended_at: Date.UTC(2026, 4, 1) / 1000 })], 2026);
   assert.equal(s.mrr, 98);
   assert.equal(s.paying, 2);
+  assert.equal(s.failing, 0);
   assert.equal(s.trialing, 1);
   assert.equal(s.byMonth["2026-05"].canceled, 1);
   assert.equal(s.byMonth["2026-01"].started, 1);
@@ -100,4 +101,22 @@ test("money: only WiserShifts subscriptions, customers and payments count", () =
   assert.equal(inc["2026-01"].refunds, 0);
   assert.equal(inc["2026-01"].fees, 0);
   assert.deepEqual(inc.left, { count: 4, amount: 209 });
+});
+
+test("money: a failed payment isn't MRR; hidden test customers are left out", () => {
+  const sub = (id, cus, status, amount, interval = "month") => ({ id, status, metadata: { tenantId: "t" }, customer: cus, start_date: Date.UTC(2026, 0, 2) / 1000, items: { data: [{ quantity: 1, price: { unit_amount: amount, recurring: { interval } } }] } });
+  const all = [sub("s1", "cus_me", "active", 200, "year"), sub("s2", "cus_me", "active", 200, "year"), sub("s3", "cus_sc", "past_due", 80000)];
+  const s = m.subscriptionSummary(all, 2026);
+  assert.equal(s.mrr, 0.34);
+  assert.equal(s.paying, 2);
+  assert.equal(s.failing, 1);
+  assert.equal(s.atRisk, 800);
+  assert.equal(s.list.find((x) => x.id === "s1").test, true);
+  const w = m.wiserShifts({ subs: all, tenants: [{ stripeCustomerId: "cus_me" }], hidden: ["cus_me"] });
+  assert.deepEqual(w.subs.map((x) => x.id), ["s3"]);
+  assert.equal(w.hiddenSubs.length, 2);
+  assert.equal(w.customers.has("cus_me"), false);
+  const after = m.subscriptionSummary(w.subs, 2026);
+  assert.equal(after.mrr, 0);
+  assert.equal(after.paying, 0);
 });

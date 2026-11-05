@@ -97,12 +97,15 @@ const customerId = (c) => (typeof c === "string" ? c : c?.id || null);
  * has saved, and the customers behind them and behind every workspace. The
  * same Stripe account took other payments before, and those stay out.
  */
-function wiserShifts({ subs, tenants }) {
+function wiserShifts({ subs, tenants, hidden = [] }) {
   const tenantSubs = new Set(tenants.map((t) => t.stripeSubscriptionId).filter(Boolean));
   const customers = new Set(tenants.map((t) => t.stripeCustomerId).filter(Boolean));
   const ours = subs.filter((s) => s.metadata?.tenantId || s.customer?.metadata?.tenantId || tenantSubs.has(s.id) || customers.has(customerId(s.customer)));
   for (const s of ours) if (customerId(s.customer)) customers.add(customerId(s.customer));
-  return { subs: ours, customers };
+  // Customers hidden as tests: out of the list, MRR and income.
+  const hide = new Set(hidden);
+  for (const id of hide) customers.delete(id);
+  return { subs: ours.filter((s) => !hide.has(customerId(s.customer))), customers, hiddenSubs: ours.filter((s) => hide.has(customerId(s.customer))) };
 }
 
 /**
@@ -166,6 +169,8 @@ function subscriptionSummary(subs, year) {
     const price = s.items?.data?.[0]?.price || {};
     return {
       id: s.id,
+      test: monthlyValue(s) > 0 && monthlyValue(s) < 1, // a few cents a month: almost certainly a test checkout
+      customerId: customerId(s.customer),
       customer: c.name || c.email || (typeof s.customer === "string" ? s.customer : ""),
       email: c.email || "",
       plan: price.nickname || price.product?.name || (price.recurring?.interval === "year" ? "Yearly" : "Monthly"),
@@ -178,7 +183,9 @@ function subscriptionSummary(subs, year) {
       cancelAtPeriodEnd: Boolean(s.cancel_at_period_end),
     };
   });
-  const paying = list.filter((s) => s.status === "active" || s.status === "past_due");
+  // Only subscriptions that are paid up count. A failed payment isn't money yet.
+  const paying = list.filter((s) => s.status === "active");
+  const failing = list.filter((s) => s.status === "past_due" || s.status === "unpaid");
   const mrr = cents(paying.reduce((a, s) => a + s.monthly, 0));
   const byMonth = Object.fromEntries(MONTHS.map((_, i) => [monthKey(year, i), { started: 0, canceled: 0 }]));
   for (const s of list) {
@@ -187,7 +194,15 @@ function subscriptionSummary(subs, year) {
   }
   const order = { active: 0, past_due: 1, trialing: 2 };
   list.sort((a, b) => (order[a.status] ?? 9) - (order[b.status] ?? 9) || b.monthly - a.monthly || String(a.customer).localeCompare(String(b.customer)));
-  return { list, mrr, paying: paying.length, trialing: list.filter((s) => s.status === "trialing").length, byMonth };
+  return {
+    list,
+    mrr,
+    paying: paying.length,
+    trialing: list.filter((s) => s.status === "trialing").length,
+    failing: failing.length,
+    atRisk: cents(failing.reduce((a, s) => a + s.monthly, 0)), // a month, if their payments go through
+    byMonth,
+  };
 }
 
 /**

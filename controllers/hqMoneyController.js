@@ -10,6 +10,9 @@ const { parse } = require("csv-parse/sync");
 const HqExpense = require("../models/hqExpenseModel");
 const Tenant = require("../models/tenantModel");
 const HqMoneyHidden = require("../models/hqMoneyHiddenModel");
+const HqMoneyNudge = require("../models/hqMoneyNudgeModel");
+const nudge = require("../utils/hq/nudge");
+const { sendEmail } = require("../utils/sendEmail");
 const money = require("../utils/hq/money");
 
 const fail = (res, status, message) => res.status(status).json({ message });
@@ -97,6 +100,10 @@ exports.getMoney = async (req, res) => {
     const year = Number(req.query.year) || now.getUTCFullYear();
     const [expenses, st] = await Promise.all([HqExpense.find().sort({ category: 1, name: 1 }).lean(), stripeYear(year, req.query.refresh === "1")]);
     const list = expenses.map(plain);
+    const subIds = (st.subs?.list || []).filter((x) => x.status === "past_due" || x.status === "unpaid").map((x) => x.id);
+    const nudges = subIds.length ? await HqMoneyNudge.find({ subscriptionId: { $in: subIds }, test: false }).sort({ createdAt: -1 }).lean() : [];
+    const lastNudge = {};
+    for (const n of nudges) if (!lastNudge[n.subscriptionId]) lastNudge[n.subscriptionId] = { at: n.createdAt, to: n.to, by: n.by };
     const pl = money.profitAndLoss({ year, income: st.income, expenses: list, now });
     const thisMonth = pl.months.find((m) => m.current) || pl.months[pl.months.length - 1];
     const usualMonthly = list.reduce((a, e) => a + (e.cadence === "monthly" && (!e.endMonth || e.endMonth >= thisMonth.month) ? Number(e.amount) || 0 : e.cadence === "yearly" ? (Number(e.amount) || 0) / 12 : 0), 0);
@@ -116,7 +123,7 @@ exports.getMoney = async (req, res) => {
       failing: st.subs?.failing || 0,
       atRisk: st.subs?.atRisk || 0,
       hidden: st.hidden || [],
-      subscriptions: st.subs?.list || [],
+      subscriptions: (st.subs?.list || []).map((x) => (lastNudge[x.id] ? { ...x, lastNudge: lastNudge[x.id] } : x)),
       expenses: list,
       burn: Math.round(usualMonthly * 100) / 100, // what we usually spend a month now
       covered: mrr > 0 && mrr >= usualMonthly,
@@ -228,6 +235,86 @@ exports.hideCustomer = async (req, res) => {
   else await HqMoneyHidden.updateOne({ customerId: id }, { $set: { label: String(req.body?.label || "").slice(0, 200) } }, { upsert: true });
   cache.clear();
   res.json({ ok: true });
+};
+
+/** The unpaid invoice behind a failing subscription, with who to email. Read only. */
+async function failedInvoice(subscriptionId) {
+  const s = stripe();
+  if (!s) throw Object.assign(new Error("Stripe isn't connected."), { status: 400 });
+  if (!/^sub_[A-Za-z0-9]+$/.test(subscriptionId)) throw Object.assign(new Error("That isn't a subscription."), { status: 400 });
+  const sub = await s.subscriptions.retrieve(subscriptionId, { expand: ["customer"] });
+  if (!sub.metadata?.tenantId) {
+    const tenant = await Tenant.exists({ $or: [{ stripeSubscriptionId: sub.id }, { stripeCustomerId: money.customerId(sub.customer) }] });
+    if (!tenant) throw Object.assign(new Error("That isn't a WiserShifts subscription."), { status: 400 });
+  }
+  const { data } = await s.invoices.list({ subscription: sub.id, status: "open", limit: 1 });
+  const inv = data[0];
+  if (!inv) throw Object.assign(new Error("There's no unpaid invoice on this subscription right now."), { status: 404 });
+  const c = typeof sub.customer === "object" ? sub.customer : {};
+  const price = sub.items?.data?.[0]?.price || {};
+  let plan = price.nickname || "";
+  if (!plan && typeof price.product === "string") plan = (await s.products.retrieve(price.product).catch(() => null))?.name || "";
+  return {
+    sub,
+    invoice: inv,
+    customer: c.name || "",
+    to: inv.customer_email || c.email || "",
+    plan,
+    amountDue: inv.amount_due,
+    payUrl: inv.hosted_invoice_url,
+  };
+}
+
+const sender = (req) => ({ sender: req.hqUser?.name || "", senderEmail: req.hqUser?.email || "" });
+
+/** GET /hq/money/nudge/:subscriptionId : the failed invoice, who it goes to, and a draft email. */
+exports.previewNudge = async (req, res) => {
+  try {
+    const f = await failedInvoice(req.params.subscriptionId);
+    const history = await HqMoneyNudge.find({ subscriptionId: f.sub.id }).sort({ createdAt: -1 }).limit(10).lean();
+    res.json({
+      to: f.to,
+      customer: f.customer,
+      plan: f.plan,
+      amountDue: f.amountDue / 100,
+      invoiceNumber: f.invoice.number || "",
+      payUrl: f.payUrl,
+      attempts: f.invoice.attempt_count || 0,
+      nextTry: f.invoice.next_payment_attempt ? new Date(f.invoice.next_payment_attempt * 1000) : null,
+      testTo: req.hqUser?.email || "",
+      draft: nudge.draftNudge({ customer: f.customer, plan: f.plan, amountDue: f.amountDue, ...sender(req) }),
+      history: history.map((h) => ({ at: h.createdAt, to: h.to, test: h.test, by: h.by })),
+    });
+  } catch (e) {
+    fail(res, e.status || 502, e.status ? e.message : `Stripe didn't answer: ${e.message}`);
+  }
+};
+
+/**
+ * POST /hq/money/nudge/:subscriptionId { subject, message, test } : email the
+ * pay link. test: true sends it only to you, marked as a test.
+ */
+exports.sendNudge = async (req, res) => {
+  const test = req.body?.test !== false;
+  const subject = String(req.body?.subject || "").trim().slice(0, 200);
+  const message = String(req.body?.message || "").trim().slice(0, 5000);
+  if (!subject || !message) return fail(res, 400, "Write a subject and a message.");
+  let f;
+  try {
+    f = await failedInvoice(req.params.subscriptionId);
+  } catch (e) {
+    return fail(res, e.status || 502, e.status ? e.message : `Stripe didn't answer: ${e.message}`);
+  }
+  if (!f.payUrl) return fail(res, 400, "Stripe has no pay link for this invoice.");
+  const to = test ? req.hqUser?.email : f.to;
+  if (!to) return fail(res, 400, test ? "Your HQ account has no email." : "This customer has no email in Stripe.");
+  try {
+    await sendEmail(to, test ? `[Test] ${subject}` : subject, nudge.nudgeHtml({ message, payUrl: f.payUrl, amountDue: f.amountDue }), nudge.nudgeText({ message, payUrl: f.payUrl }));
+  } catch (e) {
+    return fail(res, 502, `The email didn't send: ${e.message}`);
+  }
+  await HqMoneyNudge.create({ subscriptionId: f.sub.id, invoiceId: f.invoice.id, to, subject, test, by: req.hqUser?.name || req.hqUser?.email || "" });
+  res.json({ ok: true, to, test });
 };
 
 exports._test = { stripeYear, clean, cache };

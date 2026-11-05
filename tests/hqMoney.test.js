@@ -120,3 +120,16 @@ test("money: a failed payment isn't MRR; hidden test customers are left out", ()
   assert.equal(after.mrr, 0);
   assert.equal(after.paying, 0);
 });
+
+test("money: payment nudge draft and email put the pay button in and escape the message", () => {
+  const n = require("../utils/hq/nudge");
+  const d = n.draftNudge({ customer: "Silver Comet", plan: "WiserShifts Growth", amountDue: 80000, sender: "Joseph", senderEmail: "me@example.com" });
+  assert.match(d.message, /Growth payment of \$800 for Silver Comet/);
+  assert.match(d.message, /me@example.com/);
+  const html = n.nudgeHtml({ message: "Hi <b>Melanie</b>,\n\nIt failed.\n\nUse the button.\n\nThanks", payUrl: "https://invoice.stripe.com/i/x", amountDue: 80000 });
+  assert.match(html, /Hi &lt;b&gt;Melanie/);
+  assert.match(html, /href="https:\/\/invoice.stripe.com\/i\/x"/);
+  assert.match(html, /Pay \$800 or update card/);
+  assert.ok(html.indexOf("Use the button") < html.indexOf("Pay $800") && html.indexOf("Pay $800") < html.indexOf("Thanks"));
+  assert.match(n.nudgeText({ message: "Hi", payUrl: "u" }), /Pay or update your card: u/);
+});

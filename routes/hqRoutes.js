@@ -95,6 +95,8 @@ router.delete("/facebook/activity/:activityId", facebook.undo);
 router.get("/money", moneyPage.getMoney);
 router.post("/money/import", moneyPage.importSheet);
 router.post("/money/hide", moneyPage.hideCustomer);
+router.get("/money/nudge/:subscriptionId", moneyPage.previewNudge);
+router.post("/money/nudge/:subscriptionId", moneyPage.sendNudge);
 router.post("/money/expenses", moneyPage.createExpense);
 router.patch("/money/expenses/:id", moneyPage.updateExpense);
 router.delete("/money/expenses/:id", moneyPage.deleteExpense);

@@ -233,6 +233,8 @@ const ROUTES = [
   ["get", "/hq/money", "HQ", "Money: the year's P&L by month (Stripe income less expenses), MRR, paying and trial customers, every subscription and expense. Stripe is read only", { query: ["year", "refresh"] }],
   ["post", "/hq/money/import", "HQ", "Import the expense sheet (a Google Sheets link anyone can view, or CSV): adds or updates each service by name", { body: { url: "https://docs.google.com/spreadsheets/d/…/edit", year: 2026 } }],
   ["post", "/hq/money/hide", "HQ", "Leave a Stripe customer (a test checkout) out of Money, or bring them back with hidden: false", { body: { customerId: "cus_…", hidden: true, label: "Test checkouts" } }],
+  ["get", "/hq/money/nudge/{subscriptionId}", "HQ", "A failing subscription's unpaid invoice (amount, pay link, who it goes to) and a draft email asking them to pay. Reads Stripe only"],
+  ["post", "/hq/money/nudge/{subscriptionId}", "HQ", "Email the customer the invoice's pay link. test: true (the default) sends it only to you", { body: { subject: "Your WiserShifts payment didn't go through", message: "Hi Melanie, …", test: true } }],
   ["post", "/hq/money/expenses", "HQ", "Add something we pay for", { body: { name: "Heroku", category: "Hosting", cadence: "monthly", amount: 25.67, startMonth: "2026-01" } }],
   ["patch", "/hq/money/expenses/{id}", "HQ", "Change an expense, or one month's actual cost with month and cost (cost null = back to the usual)", { body: { month: "2026-03", cost: 32 } }],
   ["delete", "/hq/money/expenses/{id}", "HQ", "Remove an expense"],

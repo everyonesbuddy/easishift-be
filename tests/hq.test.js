@@ -956,14 +956,14 @@ test("playbook v11: follow-up days and call scripts by situation, added once", a
       { _id: "e2", seedKey: "email-operator", scripts: [], followUps: [3] },
       { _id: "c1", seedKey: "calls-front-desk", scripts: [{ label: v11.CALL_SCRIPTS["calls-front-desk"][0].label }] },
     ]);
-  HqPlaybookPlay.updateOne = async (f, u) => (updates[f._id] = u);
+  HqPlaybookPlay.updateOne = async (f, u) => (updates[f._id] ??= u) // v11's own update; v13 runs after it;
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
     [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
   }
   assert.deepEqual(updates.e1.$set.followUps, [4, 9]);
-  assert.equal(updates.e2, undefined, "follow-up days you set are kept");
+  assert.equal(updates.e2?.$set?.followUps, undefined, "follow-up days you set are kept");
   assert.equal(updates.c1.$push.scripts.$each.length, v11.CALL_SCRIPTS["calls-front-desk"].length - 1);
 });
 
@@ -1009,4 +1009,54 @@ test("playbook update: another server holding the update means this one skips it
     [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find] = orig;
   }
   assert.equal(ran, false);
+});
+
+test("playbook v13: plain-word scripts replace the seeded ones; yours and your edits stay", async () => {
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const v11 = require("../utils/hq/playbookCallsV11");
+  const seed = require("../utils/hq/playbookSeed");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const lead = seed.PLAYS.find((p) => p.seedKey === "calls-leadership");
+  const old = lead.scripts[0]; // "With a setup", never edited
+  const edited = { ...v11.CALL_SCRIPTS["calls-leadership"][1], body: "My own words" };
+  const mine = { label: "My opener", body: "Hello there" };
+  const set = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 12 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () =>
+    q([
+      { _id: "l", seedKey: "calls-leadership", steps: lead.steps, scripts: [old, edited, v11.CALL_SCRIPTS["calls-leadership"][0], mine] },
+      { _id: "f", seedKey: "calls-front-desk", steps: ["my steps"], scripts: [] },
+      { _id: "n", seedKey: "linkedin-posts", scripts: [{ label: "Post formula", body: "x" }] },
+    ]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  const labels = set.l.scripts.map((x) => x.label);
+  assert.deepEqual(labels.slice(0, v13.SCRIPTS["calls-leadership"].length), v13.SCRIPTS["calls-leadership"].map((x) => x.label));
+  assert.deepEqual(set.l.scripts.slice(-2), [edited, mine], "edited and your own scripts stay, after the new ones");
+  assert.ok(!labels.includes("With a setup"));
+  assert.deepEqual(set.l.steps, v13.STEPS["calls-leadership"]);
+  assert.equal(set.f.steps, undefined, "steps you changed stay");
+  assert.equal(set.n, undefined, "campaigns without new scripts aren't touched");
+});
+
+test("playbook v13 scripts: names This week relies on, and no unexplained shorthand", () => {
+  const { SCRIPTS } = require("../utils/hq/playbookScriptsV13");
+  for (const key of ["email-hprd", "email-operator"]) {
+    const list = SCRIPTS[key];
+    assert.match(list.find((x) => x.subject).label, /^Email 1/);
+    for (const n of [2, 3]) assert.ok(list.find((x) => new RegExp(`^Email ${n}\\b`).test(x.label)), `${key} Email ${n}`);
+  }
+  for (const key of ["calls-front-desk", "calls-leadership"]) assert.ok(SCRIPTS[key].some((x) => /voicemail/i.test(x.label)));
+  const all = Object.values(SCRIPTS).flat();
+  for (const x of all) {
+    assert.doesNotMatch(x.body, /\bcensus\b|\bHPRD\b|snapshot|most (administrators|EDs|leaders) I talk to|nearby building/i, x.label);
+  }
 });

@@ -18,6 +18,7 @@ const day = (d) => new Date(d).toLocaleDateString("en-US", { month: "short", day
 function knownFor(todo, { facility = null, contact = null, acts = [], buildingActs = acts, plays = new Map() }) {
   const facts = [];
   if (facility?.tenantId) facts.push("Customer: this building has a WiserShifts workspace.");
+  if (facility?.facilityType) facts.push(`Type: ${facility.facilityType}`);
   if (facility?.stage) facts.push(`Stage: ${facility.stage}`);
   if (facility?.scheduler?.name) facts.push(`Scheduler: ${facility.scheduler.name}${facility.scheduler.title ? `, ${facility.scheduler.title}` : ""}`);
   if (contact?.notes) facts.push(`About them: ${String(contact.notes).slice(0, 140)}`);
@@ -56,6 +57,8 @@ function knownFor(todo, { facility = null, contact = null, acts = [], buildingAc
     firstContact: !acts.length,
     // So the "you spoke with their scheduler" script fills in itself.
     schedulerName: facility?.scheduler?.name || "",
+    // Assisted living and senior care get the overtime version of the cold email.
+    assisted: /assisted|senior|memory care|independent living|residential care|personal care/i.test(facility?.facilityType || ""),
     spokeOn: talk ? day(talk.at) : "",
   };
 }

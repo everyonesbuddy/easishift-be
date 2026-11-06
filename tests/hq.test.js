@@ -1113,3 +1113,45 @@ test("call context: what HQ knows, and whether you really spoke with their sched
   assert.equal(leader.schedulerName, "Sarah");
   assert.equal(leader.spokeOn, "Oct 28");
 });
+
+test("playbook v15: cold email names say which, when and what; seeded ones replaced, yours kept", async () => {
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const v15 = require("../utils/hq/playbookEmailsV15");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const mine = { label: "My subject test", subject: "Hi", body: "Mine" };
+  const set = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 14 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "h", seedKey: "email-hprd", scripts: [...v13.SCRIPTS["email-hprd"], mine] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.h.scripts.length, v15.SCRIPTS["email-hprd"].length + 1);
+  assert.deepEqual(set.h.scripts.at(-1), mine);
+  assert.ok(!set.h.scripts.some((x) => /several buildings/i.test(x.label)), "the operator email lives in its own campaign");
+
+  for (const [k, list] of Object.entries(v15.SCRIPTS)) {
+    for (const x of list) {
+      assert.match(x.label, /^(Email \d|Reply|Assisted living) · /, `${k}: ${x.label}`);
+      assert.ok(x.subject, `${k}: ${x.label} has a subject`);
+      assert.doesNotMatch(x.body, /\{(?!First name\}|Building\}|Your name\}|calculator link\}|call-out calculator\}|operators link\}|signup link\})[^}]*\}/, `${k}: ${x.label} only uses placeholders This week fills`);
+    }
+    const first = list.find((x) => x.subject);
+    assert.match(first.label, /^Email 1 /, `${k}: the first script is the first email`);
+  }
+  for (const k of ["email-hprd", "email-operator"]) assert.match(v15.SCRIPTS[k][0].body, /I'm \{Your name\}/, `${k}: the first email says who you are`);
+});
+
+test("call context: building type, and assisted living is spotted", () => {
+  const { knownFor } = require("../utils/hq/callContext");
+  const al = knownFor({ kind: "contact" }, { facility: { _id: "f", facilityType: "Assisted Living" }, acts: [] });
+  assert.equal(al.assisted, true);
+  assert.ok(al.facts.includes("Type: Assisted Living"));
+  assert.equal(knownFor({ kind: "contact" }, { facility: { _id: "f", facilityType: "Skilled Nursing Facility" }, acts: [] }).assisted, false);
+});

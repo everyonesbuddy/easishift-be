@@ -24,7 +24,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 14;
+const SEED_VERSION = 15;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -100,6 +100,7 @@ async function runSeed() {
   if (version < 12) await migrateV12();
   if (version < 13) await migrateV13();
   if (version < 14) await migrateV14();
+  if (version < 15) await migrateV15();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -117,7 +118,28 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookDraftsV10").SCRIPTS);
   walk(require("../utils/hq/playbookCallsV11").CALL_SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
+  walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   return { keys, key };
+}
+
+/**
+ * Version 15: the cold emails and calculator follow-ups, with names that say
+ * which email, when and what it does ("Email 2 · Day 4, if no reply · …"),
+ * a one-line intro in every first email, and replies for "not now" and "ask
+ * someone else". The several-buildings email moves to the operator campaign
+ * only. Same rule: seeded scripts you never edited are replaced; yours stay.
+ */
+async function migrateV15() {
+  const v15 = require("../utils/hq/playbookEmailsV15");
+  const { keys, key } = seededScriptKeys();
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: Object.keys(v15.SCRIPTS) } }).select("seedKey scripts").lean();
+  for (const p of plays) {
+    const fresh = v15.SCRIPTS[p.seedKey];
+    if (!fresh) continue;
+    const freshKeys = new Set(fresh.map(key));
+    const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+    await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: { scripts: [...fresh, ...yours] } });
+  }
 }
 
 /**

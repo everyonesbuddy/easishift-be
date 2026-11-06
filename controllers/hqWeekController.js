@@ -56,7 +56,6 @@ async function context(now) {
 
 /** Add to-dos so every play's list reaches its target. Returns how many were added. */
 function fill(doc, ctx, only = null) {
-  const blogId = (ctx.plays.find(blog.isBlogPlay) || {})._id;
   const removed = new Set(doc.removed || []);
   // Someone on one play's list this week isn't put on another's; anyone who replied, booked or said no isn't put on any.
   const taken = new Set([...doc.items.filter((t) => t.refId).map((t) => String(t.refId)), ...(ctx.stopped || [])]);
@@ -99,6 +98,7 @@ async function loadWeek(ctx) {
 
 /** The week as the page shows it: each play with its target, progress, list and "more". */
 async function view(doc, ctx) {
+  const blogId = (ctx.plays.find(blog.isBlogPlay) || {})._id; // the blog campaign: pieces already on the blog show as done
   const itemById = new Map(ctx.items.map((i) => [String(i._id), i]));
   const contactById = new Map(ctx.contacts.map((c) => [String(c._id), c]));
   const weekEnd = new Date(ctx.week.end);
@@ -520,4 +520,4 @@ exports.setOutcome = async (req, res, next) => {
   }
 };
 
-exports._test = { personLeft, undoLeft, replacementFrom };
+exports._test = { personLeft, undoLeft, replacementFrom, view };

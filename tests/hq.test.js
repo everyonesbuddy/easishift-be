@@ -1299,3 +1299,31 @@ test("playbook v17: the search campaign is called the blog", async () => {
   assert.equal(set.title, "Blog (for Google and SEO)");
   assert.ok(set.steps.some((x) => /Contentful/.test(x)));
 });
+
+test("week view: a blog campaign piece renders, and one already on the blog shows as done", async () => {
+  const { view } = require("../controllers/hqWeekController")._test;
+  const HqActivity = require("../models/hqActivityModel");
+  const orig = HqActivity.find;
+  HqActivity.find = () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] });
+  try {
+    const week = { key: "2026-11-02", start: new Date("2026-11-02T05:00:00Z"), end: new Date("2026-11-09T05:00:00Z") };
+    const play = { _id: "pb", seedKey: "search-templates", title: "Blog (for Google and SEO)", channel: "blog", countsFrom: "content", weeklyTarget: 0.5, targetUnit: "post", active: true };
+    const items = [
+      { _id: "i1", title: "Printable weekly CNA schedule template", status: "idea", playId: "pb" },
+      { _id: "i2", title: "How to calculate hours per resident day", status: "idea", playId: "pb" },
+    ];
+    const doc = { items: [{ _id: "t1", kind: "content", refId: "i1", playId: "pb", day: 1 }, { _id: "t2", kind: "content", refId: "i2", playId: "pb", day: 2 }], removed: [] };
+    const posts = [{ title: "Free Weekly CNA Schedule Template (Printable PDF and Excel)", slug: "cna", publishDate: "2026-10-30T12:00:00Z" }];
+    const ctx = { week, now: new Date("2026-11-06T19:00:00Z"), plays: [play], items, facilities: [], contacts: [], lastTouch: new Map(), groups: [], people: [], counts: new Map([["pb", 1]]), acts: [], stopped: new Set(), posts, spanOf: () => 2, recent: [{ start: new Date("2026-10-26T04:00:00Z") }, { start: week.start }] };
+    const out = await view(doc, ctx);
+    const p = out.plays.find((x) => x._id === "pb");
+    const [t1, t2] = p.todos;
+    assert.equal(t1.done, true, "already on the blog");
+    assert.equal(t1.onBlog, "https://wisershifts.com/blog/cna");
+    assert.equal(t2.done, false);
+    assert.equal(p.published.length, 1);
+    assert.equal(p.span, 2);
+  } finally {
+    HqActivity.find = orig;
+  }
+});

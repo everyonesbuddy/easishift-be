@@ -1044,7 +1044,7 @@ test("playbook v13: plain-word scripts replace the seeded ones; yours and your e
   assert.ok(!labels.includes("With a setup"));
   assert.deepEqual(set.l.steps, v13.STEPS["calls-leadership"]);
   assert.equal(set.f.steps, undefined, "steps you changed stay");
-  assert.equal(set.n, undefined, "campaigns without new scripts aren't touched");
+  assert.equal(set.n?.scripts, undefined, "campaigns without new scripts keep their scripts");
 });
 
 test("playbook v13 scripts: names This week relies on, and no unexplained shorthand", () => {
@@ -1075,7 +1075,7 @@ test("playbook v14: the leadership call opens with a question; nothing assumes t
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 13 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "l", seedKey: "calls-leadership", steps: v13.STEPS["calls-leadership"], who: lead.who, when: "My own timing", scripts: [...v13.SCRIPTS["calls-leadership"], mine] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => (set ??= u.$set); // v14's own update; v16 runs after it
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1126,7 +1126,7 @@ test("playbook v15: cold email names say which, when and what; seeded ones repla
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 14 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "h", seedKey: "email-hprd", scripts: [...v13.SCRIPTS["email-hprd"], mine] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] ??= u.$set) // v15's own update; v16 runs after it;
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1210,4 +1210,37 @@ test("no longer works there: a contact is marked left and their replacement adde
   } finally {
     [HqContact.findById, HqContact.create, HqContact.updateOne, HqFacility.findById, HqFacility.updateOne] = orig;
   }
+});
+
+test("playbook v16: campaign names say where they happen; your own wording stays", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const op = seed.PLAYS.find((p) => p.seedKey === "email-operator");
+  const fd = seed.PLAYS.find((p) => p.seedKey === "calls-front-desk");
+  const set = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 15 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () =>
+    q([
+      { _id: "o", seedKey: "email-operator", title: op.title, who: op.who, goal: op.goal, when: op.when, steps: op.steps, scripts: [] },
+      { _id: "f", seedKey: "calls-front-desk", title: "My call campaign", steps: fd.steps, scripts: v13.SCRIPTS["calls-front-desk"] },
+    ]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.o.title, "Email: companies with several buildings");
+  assert.equal(set.o.goal, "Try WiserShifts free in one of their buildings for a month.");
+  assert.ok(!JSON.stringify(set.o).includes("demo"), "no demo link that doesn't exist");
+  assert.equal(set.f.title, undefined, "a name you changed stays");
+  assert.deepEqual(set.f.steps, v16.CAMPAIGNS["calls-front-desk"].steps);
+  assert.ok(set.f.scripts.some((x) => x.body.includes("Calls: DONs and administrators")));
+  for (const c of Object.values(v16.CAMPAIGNS)) assert.match(c.title, /^(Calls|Email|LinkedIn|YouTube|Google|Facebook): /);
 });

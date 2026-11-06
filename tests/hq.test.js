@@ -1172,19 +1172,21 @@ test("no longer works there: a contact is marked left and their replacement adde
   const orig = [HqContact.findById, HqContact.create, HqContact.updateOne, HqFacility.findById, HqFacility.updateOne];
   const created = [];
   const updates = [];
-  HqContact.findById = () => ({ lean: async () => ({ _id: "c1", name: "Aaron Old", role: "director", facilityId: "f1", facilityName: "Elm House", group: "", leftAt: null }) });
+  HqContact.findById = () => ({ lean: async () => ({ _id: "c1", name: "Aaron Old", title: "Administrator", phone: "555-0100", role: "director", facilityId: "f1", facilityName: "Elm House", group: "", leftAt: null }) });
   HqContact.create = async (x) => (created.push(x), { _id: "c2", ...x });
   HqContact.updateOne = async (f, u) => updates.push([f, u]);
   const fUpdates = [];
   HqFacility.findById = () => ({ select: () => ({ lean: async () => ({ _id: "f1", scheduler: { name: "Pat", title: "Staffing coordinator" } }) }) });
   HqFacility.updateOne = async (f, u) => fUpdates.push([f, u]);
   try {
-    assert.equal(replacementFrom({ replacement: { name: "  " } }), null);
+    assert.equal(replacementFrom({ replacement: { name: "  " }, keepCalling: false }), null);
+    assert.equal(replacementFrom({}).unnamed, true, "with no name, whoever has the job now is still added");
     const now = new Date("2026-11-06T15:00:00Z");
     const t = { kind: "contact", refId: "c1" };
     const note = await personLeft(t, replacementFrom({ replacement: { name: "Dana Lee", title: "DON", email: "Dana@Example.com" } }), now);
     assert.equal(note, "Replaced by Dana Lee, DON.");
     assert.equal(created[0].email, "dana@example.com");
+    assert.equal(created[0].phone, "555-0100", "the number you called carries over");
     assert.equal(created[0].facilityId, "f1");
     assert.equal(created[0].role, "director");
     assert.match(created[0].notes, /Replaced Aaron Old, who no longer works there \(logged Nov 6, 2026\)/);
@@ -1193,8 +1195,15 @@ test("no longer works there: a contact is marked left and their replacement adde
     assert.deepEqual(updates[1][1].$set, { leftAt: null, replacedBy: null });
     assert.equal(t.prevLeft, null);
 
+    const unnamed = await personLeft({ kind: "contact", refId: "c1" }, replacementFrom({}), now);
+    assert.match(unnamed, /still calling for the Administrator/);
+    assert.equal(created[1].name, "");
+    assert.equal(created[1].title, "Administrator");
+    assert.equal(created[1].phone, "555-0100");
+    assert.match(created[1].notes, /ask the front desk for the Administrator/);
+
     const ft = { kind: "facility", refId: "f1" };
-    assert.equal(await personLeft(ft, null, now), "Pat no longer works there.");
+    assert.equal(await personLeft(ft, replacementFrom({}), now), "Pat no longer works there.", "an unnamed scheduler just clears the old name");
     assert.equal(fUpdates[0][1].$set.scheduler.name, "");
     await undoLeft(ft);
     assert.equal(fUpdates[1][1].$set.scheduler.name, "Pat");

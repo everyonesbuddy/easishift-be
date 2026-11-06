@@ -241,12 +241,17 @@ exports.refill = async (req, res, next) => {
 };
 
 /** Tick or untick: log / unlog the touch, publish / unpublish the piece. */
-/** "Who replaced them?" from the request: name, title, phone, email (all optional; a name makes it count). */
+/**
+ * "Who replaced them?" from the request: name, title, phone, email. With no
+ * name, keepCalling (on unless false) still adds whoever has the job now,
+ * by title, on the same number: the front desk line works, the person moved on.
+ */
 function replacementFrom(body) {
   const r = body?.replacement || {};
   const clip = (v, n = 120) => String(v || "").trim().slice(0, n);
   const out = { name: clip(r.name), title: clip(r.title), phone: clip(r.phone, 40), email: clip(r.email, 200).toLowerCase() };
-  return out.name ? out : null;
+  if (out.name) return out;
+  return body?.keepCalling === false ? null : { ...out, unnamed: true };
 }
 
 /**
@@ -263,19 +268,34 @@ async function personLeft(t, replacement, now) {
     t.prevLeft = { leftAt: c.leftAt || null, replacedBy: c.replacedBy || null };
     let replacedBy = null;
     if (replacement) {
-      const n = await HqContact.create({ ...replacement, role: c.role, facilityId: c.facilityId, facilityName: c.facilityName, group: c.group, source: "manual", notes: note(c.name) });
+      // The number you called still works (it's usually the front desk), so it carries over unless you gave a new one.
+      const { unnamed, ...r } = replacement;
+      const title = r.title || c.title || "";
+      const n = await HqContact.create({
+        ...r,
+        title,
+        phone: r.phone || c.phone || "",
+        role: c.role,
+        facilityId: c.facilityId,
+        facilityName: c.facilityName,
+        group: c.group,
+        source: "manual",
+        notes: unnamed ? `Whoever has the job now: ask the front desk for the ${title || "person in this role"}. ${note(c.name)}` : note(c.name),
+      });
       replacedBy = n._id;
     }
     await HqContact.updateOne({ _id: c._id }, { $set: { leftAt: now, replacedBy } });
-    return replacement ? `Replaced by ${replacement.name}${replacement.title ? `, ${replacement.title}` : ""}.` : "";
+    if (!replacement) return "";
+    return replacement.unnamed ? `Name of who replaced them not known yet; still calling for the ${replacement.title || c.title || "same role"}.` : `Replaced by ${replacement.name}${replacement.title ? `, ${replacement.title}` : ""}.`;
   }
   if (t.kind === "facility") {
     const f = await HqFacility.findById(t.refId).select("scheduler").lean();
     if (!f) return "";
     const old = f.scheduler || {};
     t.prevLeft = { scheduler: old };
-    await HqFacility.updateOne({ _id: f._id }, { $set: { scheduler: replacement ? { name: replacement.name, title: replacement.title, phone: replacement.phone, email: replacement.email } : { name: "", title: "", phone: "", email: "" } } });
-    return `${old.name ? `${old.name} no longer works there.` : "The scheduler no longer works there."}${replacement ? ` New scheduler: ${replacement.name}.` : ""}`;
+    const named = replacement && !replacement.unnamed;
+    await HqFacility.updateOne({ _id: f._id }, { $set: { scheduler: named ? { name: replacement.name, title: replacement.title, phone: replacement.phone, email: replacement.email } : { name: "", title: "", phone: "", email: "" } } });
+    return `${old.name ? `${old.name} no longer works there.` : "The scheduler no longer works there."}${named ? ` New scheduler: ${replacement.name}.` : ""}`;
   }
   return "";
 }

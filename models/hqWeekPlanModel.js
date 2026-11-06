@@ -25,7 +25,8 @@ const todoSchema = new mongoose.Schema({
   activityId: { type: mongoose.Schema.Types.ObjectId, ref: "HqActivity", default: null }, // the touch a tick logged
   prevStatus: { type: String, default: "" }, // a content piece's status before the tick, for undo
   prevLastCall: { type: Date, default: null },
-  prevFacility: { type: Object, default: null }, // the facility's next date, next step and stage before a call outcome changed them
+  prevFacility: { type: Object, default: null },
+  prevLeft: { type: Object, default: null }, // before "no longer works there": the contact's leftAt or the building's scheduler, for undo // the facility's next date, next step and stage before a call outcome changed them
   added: { type: Boolean, default: false }, // added by hand or ticked from "more"
 });
 

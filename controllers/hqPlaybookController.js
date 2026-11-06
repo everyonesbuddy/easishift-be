@@ -24,7 +24,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 12;
+const SEED_VERSION = 13;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -98,7 +98,47 @@ async function runSeed() {
   if (version < 10) await migrateV10();
   if (version < 11) await migrateV11();
   if (version < 12) await migrateV12();
+  if (version < 13) await migrateV13();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
+}
+
+/** Every script text we've ever seeded, so we can tell ours (never edited) from yours. */
+function seededScriptKeys() {
+  const keys = new Set();
+  const key = (x) => JSON.stringify([(x.label || "").trim(), (x.subject || "").trim(), (x.body || "").trim()]);
+  const walk = (v, depth = 0) => {
+    if (!v || typeof v !== "object" || depth > 6) return;
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1));
+    if (typeof v.label === "string" && typeof v.body === "string") keys.add(key(v));
+    for (const x of Object.values(v)) walk(x, depth + 1);
+  };
+  walk(seed);
+  walk(require("../utils/hq/playbookDraftsV10").SCRIPTS);
+  walk(require("../utils/hq/playbookCallsV11").CALL_SCRIPTS);
+  return { keys, key };
+}
+
+/**
+ * Version 13: the outreach scripts, rewritten in plain words. On each
+ * campaign, scripts we seeded that you never edited are replaced by the new
+ * set; anything you wrote or edited stays, after the new ones. The leadership
+ * call's steps change only if they're still the original ones.
+ */
+async function migrateV13() {
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const { keys, key } = seededScriptKeys();
+  const originalSteps = new Map(seed.PLAYS.map((p) => [p.seedKey, JSON.stringify(p.steps || [])]));
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: Object.keys(v13.SCRIPTS) } }).select("seedKey scripts steps").lean();
+  for (const p of plays) {
+    const fresh = v13.SCRIPTS[p.seedKey];
+    if (!fresh) continue;
+    const freshKeys = new Set(fresh.map(key));
+    const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+    const set = { scripts: [...fresh, ...yours] };
+    const steps = v13.STEPS[p.seedKey];
+    if (steps && JSON.stringify(p.steps || []) === originalSteps.get(p.seedKey)) set.steps = steps;
+    await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
+  }
 }
 
 /**

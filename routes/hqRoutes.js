@@ -74,6 +74,7 @@ router.patch("/playbook/plays/:id", playbook.updatePlay);
 router.delete("/playbook/plays/:id", playbook.deletePlay);
 
 router.get("/week", week.getWeek);
+router.get("/week/history", require("../controllers/hqHistoryController").getHistory);
 router.post("/week/refill", week.refill);
 router.post("/week/tasks", week.addTask);
 router.post("/week/items/:itemId/check", week.check);

@@ -9,6 +9,7 @@ const mongoose = require("mongoose");
 const HqWeekPlan = require("../models/hqWeekPlanModel");
 const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
 const HqActivity = require("../models/hqActivityModel");
+const { knownFor } = require("../utils/hq/callContext");
 const HqContentItem = require("../models/hqContentItemModel");
 const HqFacility = require("../models/hqFacilityModel");
 const HqContact = require("../models/hqContactModel");
@@ -114,8 +115,27 @@ async function view(doc, ctx) {
             (!t.fkey || (new Date(a.at) > t._id.getTimestamp() && (!t.step || (a.step || 1) === t.step))),
         );
 
+  // What HQ knows about each person or building on the list (stage, scheduler, last touches).
+  const facById = new Map(ctx.facilities.map((f) => [String(f._id), f]));
+  const peopleTodos = doc.items.filter((t) => t.kind === "facility" || t.kind === "contact");
+  const facIds = [...new Set(peopleTodos.map((t) => t.facilityId).filter(Boolean).map(String))];
+  const conIds = [...new Set(peopleTodos.filter((t) => t.kind === "contact").map((t) => String(t.refId)))];
+  const history = facIds.length || conIds.length
+    ? await HqActivity.find({ $or: [{ facilityId: { $in: facIds } }, { contactId: { $in: conIds } }] }).select("facilityId contactId playId kind outcome notes at").lean()
+    : [];
+  history.sort((a, b) => new Date(b.at) - new Date(a.at));
+  const playById = new Map(ctx.plays.map((p) => [String(p._id), p]));
+  const knownOf = (t) => {
+    const facility = t.facilityId ? facById.get(String(t.facilityId)) || null : null;
+    const contact = t.kind === "contact" ? contactById.get(String(t.refId)) || null : null;
+    const acts = history.filter((a) => (t.kind === "contact" ? String(a.contactId) === String(t.refId) || (facility && String(a.facilityId) === String(facility._id) && !a.contactId) : facility && String(a.facilityId) === String(facility._id)));
+    // For a leader, the building's scheduler calls count too (that's how you'd know you spoke with their scheduler).
+    const building = facility ? history.filter((a) => String(a.facilityId) === String(facility._id)) : [];
+    return knownFor(t, { facility, contact, acts, buildingActs: building, plays: playById });
+  };
+
   const todo = (t) => {
-    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", step: t.step || null, reason: t.reason || "", fkey: t.fkey || "", url: t.kind === "fbgroup" || t.kind === "fbperson" ? require("../utils/hq/facebook").fullUrl(t.url) : t.url || "" };
+    const base = { _id: String(t._id), playId: t.playId ? String(t.playId) : null, kind: t.kind, refId: t.refId ? String(t.refId) : null, facilityId: t.facilityId ? String(t.facilityId) : null, title: t.title, detail: t.detail, phone: t.phone, email: t.email, day: t.day, added: t.added, action: t.action || "", step: t.step || null, reason: t.reason || "", fkey: t.fkey || "", known: t.kind === "facility" || t.kind === "contact" ? knownOf(t) : null, url: t.kind === "fbgroup" || t.kind === "fbperson" ? require("../utils/hq/facebook").fullUrl(t.url) : t.url || "" };
     if (t.kind === "content") {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted

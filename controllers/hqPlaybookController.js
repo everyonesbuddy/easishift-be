@@ -24,7 +24,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 15;
+const SEED_VERSION = 16;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -101,6 +101,7 @@ async function runSeed() {
   if (version < 13) await migrateV13();
   if (version < 14) await migrateV14();
   if (version < 15) await migrateV15();
+  if (version < 16) await migrateV16();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -120,6 +121,55 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   return { keys, key };
+}
+
+/**
+ * Version 16: campaign names and descriptions in plain words, each name
+ * starting with where it happens. A field changes only if it's still one we
+ * wrote (any version); one you edited stays. The setup script that named the
+ * old leadership campaign gets the new name, if you never edited it.
+ */
+async function migrateV16() {
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const v14 = require("../utils/hq/playbookScriptsV14");
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const FIELDS = ["title", "who", "goal", "when", "steps"];
+  // Everything we've ever seeded for each field, per campaign.
+  const ours = {};
+  const add = (k, f, v) => {
+    if (v === undefined) return;
+    ((ours[k] ||= {})[f] ||= new Set()).add(JSON.stringify(v));
+  };
+  const walk = (v, depth = 0) => {
+    if (!v || typeof v !== "object" || depth > 4) return;
+    if (Array.isArray(v)) return v.forEach((x) => walk(x, depth + 1));
+    if (typeof v.seedKey === "string") for (const f of FIELDS) add(v.seedKey, f, v[f]);
+    for (const x of Object.values(v)) walk(x, depth + 1);
+  };
+  walk(seed);
+  add("email-hprd", "title", "\"Your hours per resident day\" email");
+  add("email-operator", "title", "One-building pilot email");
+  add("calls-leadership", "steps", v13.STEPS["calls-leadership"]);
+  add("calls-leadership", "steps", v14.STEPS);
+  add("calls-leadership", "who", v14.WHO);
+  add("calls-leadership", "when", v14.WHEN);
+
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: Object.keys(v16.CAMPAIGNS) } }).select("seedKey title who goal when steps scripts").lean();
+  for (const p of plays) {
+    const next = v16.CAMPAIGNS[p.seedKey];
+    if (!next) continue;
+    const set = {};
+    for (const [f, v] of Object.entries(next)) {
+      const cur = p[f] === undefined || p[f] === "" ? undefined : JSON.stringify(p[f]);
+      if (cur === undefined || ours[p.seedKey]?.[f]?.has(cur)) set[f] = v;
+    }
+    if (p.seedKey === "calls-front-desk") {
+      const setup = v13.SCRIPTS["calls-front-desk"].find((x) => x.body.includes(v16.SETUP_SCRIPT_FROM));
+      const scripts = (p.scripts || []).map((x) => (setup && x.label === setup.label && x.body === setup.body ? { ...x, body: x.body.replace(v16.SETUP_SCRIPT_FROM, v16.SETUP_SCRIPT_TO) } : x));
+      if (JSON.stringify(scripts) !== JSON.stringify(p.scripts || [])) set.scripts = scripts;
+    }
+    if (Object.keys(set).length) await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
+  }
 }
 
 /**

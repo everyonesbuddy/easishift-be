@@ -73,4 +73,15 @@ const CAMPAIGNS = {
 const SETUP_SCRIPT_FROM = "[Add them on Leaders & contacts. They're your next call: \"The leadership follow-up call\".]";
 const SETUP_SCRIPT_TO = "[Add them on Leaders & contacts. They're your next call, on \"Calls: DONs and administrators\".]";
 
-module.exports = { CAMPAIGNS, SETUP_SCRIPT_FROM, SETUP_SCRIPT_TO };
+// Version 17: the search campaign is the blog, so it's called that, and its steps say posts count by themselves.
+const BLOG_V17 = {
+  title: "Blog (for Google and SEO)",
+  steps: [
+    "One blog post or printable template every two weeks, written for one thing people search (\"CNA schedule template\", \"how to calculate hours per resident day\").",
+    "Publish it on the blog in Contentful. It counts here by itself, and a saved idea with the same title comes off the list.",
+    "Every post ends with the matching calculator and Start free.",
+    "Check Web & search to see which searches find us, and write more of those.",
+  ],
+};
+
+module.exports = { CAMPAIGNS, SETUP_SCRIPT_FROM, SETUP_SCRIPT_TO, BLOG_V17 };

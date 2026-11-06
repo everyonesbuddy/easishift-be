@@ -10,6 +10,7 @@ const HqWeekPlan = require("../models/hqWeekPlanModel");
 const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
 const HqActivity = require("../models/hqActivityModel");
 const { knownFor } = require("../utils/hq/callContext");
+const blog = require("../utils/hq/blog");
 const HqContentItem = require("../models/hqContentItemModel");
 const HqFacility = require("../models/hqFacilityModel");
 const HqContact = require("../models/hqContactModel");
@@ -24,7 +25,7 @@ const fail = (res, status, message) => res.status(status).json({ message });
 
 async function context(now) {
   const { scoreboard, ensureSeeded } = require("./hqPlaybookController");
-  const { lastTouchMap } = require("./hqController");
+  const { lastTouchMap, blogPosts } = require("./hqController");
   await ensureSeeded();
   const week = lastWeeks(1, now)[0];
   const [plays, items, facilities, contacts, lastTouch, groups, people] = await Promise.all([
@@ -36,17 +37,26 @@ async function context(now) {
     HqFbGroup.find({}).lean(),
     HqFbPerson.find({}).lean(),
   ]);
-  const counts = new Map((await scoreboard(plays, [week])).map((s) => [s.playId, s.weeks[0]]));
+  // A play due every N weeks counts its last N weeks (1 every 2 weeks: a post last week covers this week too).
+  const posts = plays.some(blog.isBlogPlay) ? await blogPosts().catch(() => []) : [];
+  const spanOf = (p) => (p.weeklyTarget > 0 && p.weeklyTarget < 1 ? Math.min(4, Math.round(1 / p.weeklyTarget)) : 1);
+  const recent = lastWeeks(4, now);
+  const board = await scoreboard(plays, recent, { blogPosts: posts });
+  const counts = new Map(board.map((s) => {
+    const p = plays.find((x) => String(x._id) === s.playId);
+    return [s.playId, s.weeks.slice(-spanOf(p)).reduce((a, b) => a + b, 0)];
+  }));
   // Calls and emails from the last six months: what happened decides the follow-ups, and who's done.
   const peoplePlays = plays.filter((p) => plan.listKind(p) === "people").map((p) => p._id);
   const acts = await HqActivity.find({ at: { $gte: new Date(now - 180 * 86400000) }, $or: [{ playId: { $in: peoplePlays } }, { outcome: { $in: [...plan.STOP] } }] })
     .select("playId facilityId contactId at kind step outcome nextDate notes")
     .lean();
-  return { week, plays, items, facilities, contacts, lastTouch, groups, people, counts, now, acts, stopped: plan.stoppedIds(acts, now) };
+  return { week, plays, items, facilities, contacts, lastTouch, groups, people, counts, now, acts, stopped: plan.stoppedIds(acts, now), posts, spanOf, recent };
 }
 
 /** Add to-dos so every play's list reaches its target. Returns how many were added. */
 function fill(doc, ctx, only = null) {
+  const blogId = (ctx.plays.find(blog.isBlogPlay) || {})._id;
   const removed = new Set(doc.removed || []);
   // Someone on one play's list this week isn't put on another's; anyone who replied, booked or said no isn't put on any.
   const taken = new Set([...doc.items.filter((t) => t.refId).map((t) => String(t.refId)), ...(ctx.stopped || [])]);
@@ -139,7 +149,9 @@ async function view(doc, ctx) {
     if (t.kind === "content") {
       const i = itemById.get(String(t.refId));
       if (!i) return null; // the piece was deleted
-      const done = i.status === "published";
+      // A piece already published on the blog (same title) is done, even if it was never ticked here.
+      const post = String(i.playId) === String(blogId) && i.status !== "published" ? (ctx.posts || []).find((x) => blog.sameTitle(x.title, i.title)) : null;
+      const done = i.status === "published" || Boolean(post);
       return {
         ...base,
         title: i.title,
@@ -154,8 +166,9 @@ async function view(doc, ctx) {
         itemPlayId: i.playId ? String(i.playId) : null,
         day: t.day ?? dueDay(i.dueDate),
         done,
-        doneAt: done ? i.publishedAt : null,
-        canUndo: done && Boolean(t.prevStatus),
+        doneAt: post ? blog.postDate(post) : done ? i.publishedAt : null,
+        canUndo: !post && done && Boolean(t.prevStatus),
+        ...(post ? { onBlog: blog.postUrl(post) } : {}),
       };
     }
     if (t.kind === "task") return { ...base, done: t.done, doneAt: t.doneAt, canUndo: true };
@@ -184,6 +197,11 @@ async function view(doc, ctx) {
         free.forEach((t, i) => (t.day = plan.contentDay(i, free.length)));
       }
       const target = plan.weeklyCount(p);
+      const span = ctx.spanOf ? ctx.spanOf(p) : 1;
+      // The blog campaign shows what went out on the blog in its window, and drops ideas that already did.
+      const isBlog = blog.isBlogPlay(p);
+      const windowFrom = ctx.recent ? ctx.recent[ctx.recent.length - span].start : ctx.week.start;
+      const published = isBlog ? blog.postsIn(ctx.posts, windowFrom, ctx.week.end) : [];
       const short = plan.listKind(p) === "people" && todos.length < target ? plan.whyShort(p, ctx) : null;
       return {
         _id: String(p._id),
@@ -197,9 +215,14 @@ async function view(doc, ctx) {
         steps: p.steps || [],
         scripts: p.scripts || [],
         count: ctx.counts.get(String(p._id)) || 0,
+        span,
+        published,
         todos,
         short: short ? { ...short, onList: todos.length, target } : null,
-        more: plan.moreFor(p, { ...ctx, weekEnd: ctx.week.end, have, removed, taken }).map((m) => ({ ...m, playId: String(p._id) })),
+        more: plan
+          .moreFor(p, { ...ctx, weekEnd: ctx.week.end, have, removed, taken })
+          .filter((m) => !(isBlog && (ctx.posts || []).some((x) => blog.sameTitle(x.title, m.title))))
+          .map((m) => ({ ...m, playId: String(p._id) })),
       };
     });
   const tz = require("../utils/hq/weeks").zone();

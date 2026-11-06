@@ -1230,7 +1230,7 @@ test("playbook v16: campaign names say where they happen; your own wording stays
       { _id: "o", seedKey: "email-operator", title: op.title, who: op.who, goal: op.goal, when: op.when, steps: op.steps, scripts: [] },
       { _id: "f", seedKey: "calls-front-desk", title: "My call campaign", steps: fd.steps, scripts: v13.SCRIPTS["calls-front-desk"] },
     ]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] ??= u.$set); // v16's own update; v17 runs after it
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1243,4 +1243,59 @@ test("playbook v16: campaign names say where they happen; your own wording stays
   assert.deepEqual(set.f.steps, v16.CAMPAIGNS["calls-front-desk"].steps);
   assert.ok(set.f.scripts.some((x) => x.body.includes("Calls: DONs and administrators")));
   for (const c of Object.values(v16.CAMPAIGNS)) assert.match(c.title, /^(Calls|Email|LinkedIn|YouTube|Google|Facebook): /);
+});
+
+test("blog: titles match give or take a few words; posts count once toward the blog campaign", async () => {
+  const blog = require("../utils/hq/blog");
+  assert.ok(blog.sameTitle("Printable weekly CNA schedule template", "Free Weekly CNA Schedule Template (Printable PDF and Excel)"));
+  assert.ok(!blog.sameTitle("How to calculate hours per resident day (with a worked example)", "Free Weekly CNA Schedule Template (Printable PDF and Excel)"));
+  const posts = [{ title: "Free Weekly CNA Schedule Template (Printable PDF and Excel)", slug: "free-weekly-cna-schedule-template-printable-pdf-and-excel", publishDate: "2026-10-30T12:00:00Z" }];
+  const inWindow = blog.postsIn(posts, new Date("2026-10-26T04:00:00Z"), new Date("2026-11-09T05:00:00Z"));
+  assert.equal(inWindow[0].url, "https://wisershifts.com/blog/free-weekly-cna-schedule-template-printable-pdf-and-excel");
+  assert.equal(blog.uncounted(inWindow, [{ title: "Printable weekly CNA schedule template" }]).length, 0, "ticked in HQ too: counted once");
+
+  const { scoreboard } = require("../controllers/hqPlaybookController");
+  const HqActivity = require("../models/hqActivityModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const HqLead = require("../models/hqLeadModel");
+  const Tenant = require("../models/tenantModel");
+  const orig = [HqActivity.find, HqContentItem.find, HqLead.find, Tenant.find];
+  const none = () => ({ select: () => ({ lean: async () => [] }) });
+  HqActivity.find = none;
+  HqContentItem.find = none;
+  HqLead.find = none;
+  Tenant.find = none;
+  try {
+    const weeks = [
+      { start: new Date("2026-10-26T04:00:00Z"), end: new Date("2026-11-02T05:00:00Z") },
+      { start: new Date("2026-11-02T05:00:00Z"), end: new Date("2026-11-09T05:00:00Z") },
+    ];
+    const [b, other] = await scoreboard([{ _id: "b", seedKey: "search-templates", countsFrom: "content" }, { _id: "y", seedKey: "youtube-howto", countsFrom: "content" }], weeks, { blogPosts: posts });
+    assert.deepEqual(b.weeks, [1, 0], "the Oct 30 post counts in its week");
+    assert.deepEqual(other.weeks, [0, 0], "only the blog campaign counts blog posts");
+  } finally {
+    [HqActivity.find, HqContentItem.find, HqLead.find, Tenant.find] = orig;
+  }
+});
+
+test("playbook v17: the search campaign is called the blog", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const st = seed.PLAYS.find((p) => p.seedKey === "search-templates");
+  let set = null;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 16 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "s", seedKey: "search-templates", title: v16.CAMPAIGNS["search-templates"].title, steps: st.steps }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.title, "Blog (for Google and SEO)");
+  assert.ok(set.steps.some((x) => /Contentful/.test(x)));
 });

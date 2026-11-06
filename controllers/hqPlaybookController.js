@@ -10,6 +10,7 @@ const HqLead = require("../models/hqLeadModel");
 const HqSync = require("../models/hqSyncModel");
 const Tenant = require("../models/tenantModel");
 const seed = require("../utils/hq/playbookSeed");
+const blog = require("../utils/hq/blog");
 const { lastWeeks } = require("../utils/hq/weeks");
 
 const isId = (v) => mongoose.Types.ObjectId.isValid(String(v || ""));
@@ -24,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 16;
+const SEED_VERSION = 17;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -102,6 +103,7 @@ async function runSeed() {
   if (version < 14) await migrateV14();
   if (version < 15) await migrateV15();
   if (version < 16) await migrateV16();
+  if (version < 17) await migrateV17();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -121,6 +123,18 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   return { keys, key };
+}
+
+/** Version 17: the search campaign is called the blog; its steps say Contentful posts count. Only if still ours. */
+async function migrateV17() {
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const orig = seed.PLAYS.find((p) => p.seedKey === blog.BLOG_KEY) || {};
+  const p = (await HqPlaybookPlay.find({ seedKey: blog.BLOG_KEY }).select("seedKey title steps").lean()).find((x) => x.seedKey === blog.BLOG_KEY);
+  if (!p) return;
+  const set = {};
+  if (!p.title || [orig.title, v16.CAMPAIGNS[blog.BLOG_KEY].title].includes(p.title)) set.title = v16.BLOG_V17.title;
+  if (!(p.steps || []).length || JSON.stringify(p.steps) === JSON.stringify(orig.steps || [])) set.steps = v16.BLOG_V17.steps;
+  if (Object.keys(set).length) await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
 }
 
 /**
@@ -450,13 +464,19 @@ async function seedV1() {
 }
 
 /** Done per play per week, from activities / published content / leads / signups. */
-async function scoreboard(plays, weeks) {
+/**
+ * Done per play per week. The blog campaign also counts posts published on
+ * the blog (Contentful), once each, even if no piece was ticked in HQ.
+ */
+async function scoreboard(plays, weeks, { blogPosts = null } = {}) {
   const from = weeks[0].start;
   const to = weeks[weeks.length - 1].end;
   const ids = plays.map((p) => p._id);
+  const blogPlay = plays.find(blog.isBlogPlay);
+  const posts = blogPlay ? blogPosts || (await require("./hqController").blogPosts().catch(() => [])) : [];
   const [acts, content, leads, signups] = await Promise.all([
     HqActivity.find({ playId: { $in: ids }, at: { $gte: from, $lt: to } }).select("playId at count").lean(),
-    HqContentItem.find({ playId: { $in: ids }, status: "published", publishedAt: { $gte: from, $lt: to } }).select("playId publishedAt").lean(),
+    HqContentItem.find({ playId: { $in: ids }, status: "published", publishedAt: { $gte: from, $lt: to } }).select("playId publishedAt title").lean(),
     HqLead.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
     Tenant.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
   ]);
@@ -469,7 +489,11 @@ async function scoreboard(plays, weeks) {
     };
     const id = String(p._id);
     if (p.countsFrom === "activities") acts.filter((a) => String(a.playId) === id).forEach((a) => add(a.at, a.count || 1));
-    else if (p.countsFrom === "content") content.filter((c) => String(c.playId) === id).forEach((c) => add(c.publishedAt));
+    else if (p.countsFrom === "content") {
+      const mine = content.filter((c) => String(c.playId) === id);
+      mine.forEach((c) => add(c.publishedAt));
+      if (blog.isBlogPlay(p)) blog.uncounted(blog.postsIn(posts, from, to), mine).forEach((x) => add(x.date));
+    }
     else if (p.countsFrom === "leads") leads.forEach((l) => add(l.createdAt));
     else if (p.countsFrom === "signups") signups.forEach((t) => add(t.createdAt));
     return { playId: id, weeks: counts };

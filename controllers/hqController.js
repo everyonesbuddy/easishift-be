@@ -659,3 +659,10 @@ exports.syncKlaviyo = async (req, res, next) => {
 };
 
 exports.lastTouchMap = lastTouchMap;
+
+/** The blog's posts from Contentful (the same hourly copy the Blog list uses); [] if not connected. */
+exports.blogPosts = async () => {
+  if (!contentful.isConfigured()) return [];
+  const r = await cached("blog", HOUR, false, () => contentful.listPosts());
+  return Array.isArray(r.data) ? r.data : [];
+};

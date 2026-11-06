@@ -20,6 +20,8 @@ const hqContactSchema = new mongoose.Schema(
     emailReply: { type: String, trim: true, default: "" },
     dealClosed: { type: String, trim: true, default: "" },
     notes: { type: String, default: "" },
+    leftAt: { type: Date, default: null }, // logged as "no longer works there": off every list for good
+    replacedBy: { type: mongoose.Schema.Types.ObjectId, ref: "HqContact", default: null },
     // What the spreadsheet said at the last import (re-imports only write fields the sheet changed).
     imported: { type: Object, default: null },
     source: { type: String, enum: ["crm", "signup", "manual", "calculator"], default: "manual" },

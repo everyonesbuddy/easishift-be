@@ -1155,3 +1155,50 @@ test("call context: building type, and assisted living is spotted", () => {
   assert.ok(al.facts.includes("Type: Assisted Living"));
   assert.equal(knownFor({ kind: "contact" }, { facility: { _id: "f", facilityType: "Skilled Nursing Facility" }, acts: [] }).assisted, false);
 });
+
+test("no longer works there: the person stops for good, the building doesn't", () => {
+  const plan = require("../utils/hq/weekPlan");
+  assert.equal(plan.OUTCOMES.left, "No longer works there");
+  const now = new Date("2026-11-06T15:00:00Z");
+  const stopped = plan.stoppedIds([{ outcome: "left", contactId: "c1", facilityId: "f1", at: now }, { outcome: "left", facilityId: "f2", at: now }], now);
+  assert.ok(stopped.has("c1"));
+  assert.ok(!stopped.has("f1") && !stopped.has("f2"), "the building stays on the list to find who replaced them");
+});
+
+test("no longer works there: a contact is marked left and their replacement added; undo brings them back", async () => {
+  const { personLeft, undoLeft, replacementFrom } = require("../controllers/hqWeekController")._test;
+  const HqContact = require("../models/hqContactModel");
+  const HqFacility = require("../models/hqFacilityModel");
+  const orig = [HqContact.findById, HqContact.create, HqContact.updateOne, HqFacility.findById, HqFacility.updateOne];
+  const created = [];
+  const updates = [];
+  HqContact.findById = () => ({ lean: async () => ({ _id: "c1", name: "Aaron Old", role: "director", facilityId: "f1", facilityName: "Elm House", group: "", leftAt: null }) });
+  HqContact.create = async (x) => (created.push(x), { _id: "c2", ...x });
+  HqContact.updateOne = async (f, u) => updates.push([f, u]);
+  const fUpdates = [];
+  HqFacility.findById = () => ({ select: () => ({ lean: async () => ({ _id: "f1", scheduler: { name: "Pat", title: "Staffing coordinator" } }) }) });
+  HqFacility.updateOne = async (f, u) => fUpdates.push([f, u]);
+  try {
+    assert.equal(replacementFrom({ replacement: { name: "  " } }), null);
+    const now = new Date("2026-11-06T15:00:00Z");
+    const t = { kind: "contact", refId: "c1" };
+    const note = await personLeft(t, replacementFrom({ replacement: { name: "Dana Lee", title: "DON", email: "Dana@Example.com" } }), now);
+    assert.equal(note, "Replaced by Dana Lee, DON.");
+    assert.equal(created[0].email, "dana@example.com");
+    assert.equal(created[0].facilityId, "f1");
+    assert.equal(created[0].role, "director");
+    assert.match(created[0].notes, /Replaced Aaron Old, who no longer works there \(logged Nov 6, 2026\)/);
+    assert.deepEqual(updates[0][1].$set, { leftAt: now, replacedBy: "c2" });
+    await undoLeft(t);
+    assert.deepEqual(updates[1][1].$set, { leftAt: null, replacedBy: null });
+    assert.equal(t.prevLeft, null);
+
+    const ft = { kind: "facility", refId: "f1" };
+    assert.equal(await personLeft(ft, null, now), "Pat no longer works there.");
+    assert.equal(fUpdates[0][1].$set.scheduler.name, "");
+    await undoLeft(ft);
+    assert.equal(fUpdates[1][1].$set.scheduler.name, "Pat");
+  } finally {
+    [HqContact.findById, HqContact.create, HqContact.updateOne, HqFacility.findById, HqFacility.updateOne] = orig;
+  }
+});

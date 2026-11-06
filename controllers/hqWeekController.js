@@ -31,7 +31,7 @@ async function context(now) {
     HqPlaybookPlay.find({ active: true }).sort({ order: 1, createdAt: 1 }).lean(),
     HqContentItem.find({}).select("title status playId publishedAt dueDate channel format audience url notes owner").lean(),
     HqFacility.find({}).select("name city state tier stage nextDate nextStep lastCallDate frontDeskPhone scheduler tenantId").lean(),
-    HqContact.find({}).select("name title role email phone linkedin facilityId facilityName group").lean(),
+    HqContact.find({ leftAt: null }).select("name title role email phone linkedin facilityId facilityName group").lean(), // people who left are off every list
     lastTouchMap(),
     HqFbGroup.find({}).lean(),
     HqFbPerson.find({}).lean(),
@@ -241,6 +241,53 @@ exports.refill = async (req, res, next) => {
 };
 
 /** Tick or untick: log / unlog the touch, publish / unpublish the piece. */
+/** "Who replaced them?" from the request: name, title, phone, email (all optional; a name makes it count). */
+function replacementFrom(body) {
+  const r = body?.replacement || {};
+  const clip = (v, n = 120) => String(v || "").trim().slice(0, n);
+  const out = { name: clip(r.name), title: clip(r.title), phone: clip(r.phone, 40), email: clip(r.email, 200).toLowerCase() };
+  return out.name ? out : null;
+}
+
+/**
+ * "No longer works there". A person: off every list for good, and whoever
+ * replaced them becomes a new contact at the same building. The front desk
+ * call: the scheduler you had saved is cleared (or replaced) and the building
+ * stays on the list. Remembers what it changed on the to-do, for undo.
+ */
+async function personLeft(t, replacement, now) {
+  const note = (who) => `Replaced ${who || "someone"}, who no longer works there (logged ${now.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric", timeZone: "America/New_York" })}).`;
+  if (t.kind === "contact") {
+    const c = await HqContact.findById(t.refId).lean();
+    if (!c) return "";
+    t.prevLeft = { leftAt: c.leftAt || null, replacedBy: c.replacedBy || null };
+    let replacedBy = null;
+    if (replacement) {
+      const n = await HqContact.create({ ...replacement, role: c.role, facilityId: c.facilityId, facilityName: c.facilityName, group: c.group, source: "manual", notes: note(c.name) });
+      replacedBy = n._id;
+    }
+    await HqContact.updateOne({ _id: c._id }, { $set: { leftAt: now, replacedBy } });
+    return replacement ? `Replaced by ${replacement.name}${replacement.title ? `, ${replacement.title}` : ""}.` : "";
+  }
+  if (t.kind === "facility") {
+    const f = await HqFacility.findById(t.refId).select("scheduler").lean();
+    if (!f) return "";
+    const old = f.scheduler || {};
+    t.prevLeft = { scheduler: old };
+    await HqFacility.updateOne({ _id: f._id }, { $set: { scheduler: replacement ? { name: replacement.name, title: replacement.title, phone: replacement.phone, email: replacement.email } : { name: "", title: "", phone: "", email: "" } } });
+    return `${old.name ? `${old.name} no longer works there.` : "The scheduler no longer works there."}${replacement ? ` New scheduler: ${replacement.name}.` : ""}`;
+  }
+  return "";
+}
+
+/** Undo "no longer works there": the person is back on the lists, or the old scheduler is restored. A replacement contact stays. */
+async function undoLeft(t) {
+  if (!t.prevLeft) return;
+  if (t.kind === "contact") await HqContact.updateOne({ _id: t.refId }, { $set: { leftAt: t.prevLeft.leftAt || null, replacedBy: t.prevLeft.replacedBy || null } });
+  if (t.kind === "facility" && t.prevLeft.scheduler) await HqFacility.updateOne({ _id: t.refId }, { $set: { scheduler: t.prevLeft.scheduler } });
+  t.prevLeft = null;
+}
+
 async function setDone(t, done, req) {
   const now = new Date();
   if (t.kind === "task") {
@@ -289,6 +336,7 @@ async function setDone(t, done, req) {
     // What happened on the call (booked, call back, voicemail…) decides what comes next.
     const outcome = kind === "call" && plan.OUTCOMES[req.body?.outcome] ? req.body.outcome : kind === "call" ? "reached" : "";
     const nextDate = outcome === "callback" ? dayToDate(req.body?.nextDate) || new Date(now.getTime() + 2 * 86400000) : null;
+    const leftNote = outcome === "left" ? await personLeft(t, replacementFrom(req.body), now) : "";
     const a = await HqActivity.create({
       facilityId,
       contactId: t.kind === "contact" ? t.refId : null,
@@ -296,7 +344,7 @@ async function setDone(t, done, req) {
       playId: t.playId,
       at: now,
       by: by(req),
-      notes: String(req.body?.notes || "").slice(0, 4000),
+      notes: [String(req.body?.notes || "").trim(), leftNote].filter(Boolean).join(" ").slice(0, 4000),
       outcome,
       nextDate,
       step: kind === "email" ? t.step || 1 : null,
@@ -318,6 +366,7 @@ async function setDone(t, done, req) {
   } else if (!done) {
     if (!t.activityId) return "This was logged somewhere else. Remove it from the history there.";
     const a = await HqActivity.findByIdAndDelete(t.activityId).lean();
+    if (a?.outcome === "left") await undoLeft(t);
     if (a?.facilityId && a.kind === "call" && t.kind === "facility") {
       await HqFacility.updateOne({ _id: a.facilityId }, { $set: { lastCallDate: t.prevLastCall || null, ...(t.prevFacility || {}) }, $inc: { attempts: -1 } });
     }
@@ -407,15 +456,25 @@ module.exports.topUp = async () => {
 exports.setOutcome = async (req, res, next) => {
   try {
     const outcome = String(req.body?.outcome || "");
-    if (outcome && !["replied", "not_interested", "booked"].includes(outcome)) return fail(res, 400, "Which outcome?");
+    if (outcome && !["replied", "not_interested", "booked", "left"].includes(outcome)) return fail(res, 400, "Which outcome?");
     const ctx = await context(new Date());
     const doc = await loadWeek(ctx);
     const t = isId(req.params.itemId) ? doc.items.id(req.params.itemId) : null;
     if (!t) return fail(res, 404, "Not on this week's list");
     if (!t.activityId) return fail(res, 409, "Tick it as sent first.");
-    await HqActivity.updateOne({ _id: t.activityId }, { $set: { outcome } });
+    const was = (await HqActivity.findById(t.activityId).select("outcome notes").lean()) || {};
+    const set = { outcome };
+    if (was.outcome === "left" && outcome !== "left") await undoLeft(t);
+    if (outcome === "left" && was.outcome !== "left") {
+      const note = await personLeft(t, replacementFrom(req.body), new Date());
+      if (note) set.notes = [was.notes, note].filter(Boolean).join(" ").slice(0, 4000);
+    }
+    await HqActivity.updateOne({ _id: t.activityId }, { $set: set });
+    if (t.isModified?.("prevLeft") || outcome === "left" || was.outcome === "left") await doc.save();
     res.json(await view(doc, await context(new Date())));
   } catch (err) {
     next(err);
   }
 };
+
+exports._test = { personLeft, undoLeft, replacementFrom };

@@ -229,10 +229,12 @@ const OUTCOMES = {
   no_answer: "No answer",
   not_interested: "Not interested",
   wrong_number: "Wrong number",
+  left: "No longer works there",
   replied: "They replied",
 };
 // Any of these, on any play, takes the person off cold lists and ends their sequences.
-const STOP = new Set(["booked", "not_interested", "wrong_number", "replied"]);
+// "left" stops the person, not the building: someone else works there now.
+const STOP = new Set(["booked", "not_interested", "wrong_number", "replied", "left"]);
 const RETRY = new Set(["voicemail", "no_answer"]);
 const MAX_TRIES = 3; // a voicemail or no answer gets tried up to 3 times, two days apart
 const RETRY_DAYS = 2;
@@ -252,6 +254,7 @@ function stoppedIds(acts, now = new Date()) {
   const out = new Set();
   for (const a of acts) {
     if (!STOP.has(a.outcome) || now - new Date(a.at) > STOP_DAYS * DAY) continue;
+    if (a.outcome === "left" && !a.contactId) continue; // the scheduler left; the building stays on the list to find the new one
     if (a.contactId) out.add(String(a.contactId));
     if (a.facilityId && !a.contactId) out.add(String(a.facilityId));
   }

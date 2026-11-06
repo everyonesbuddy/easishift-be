@@ -24,7 +24,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 13;
+const SEED_VERSION = 15;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -99,6 +99,8 @@ async function runSeed() {
   if (version < 11) await migrateV11();
   if (version < 12) await migrateV12();
   if (version < 13) await migrateV13();
+  if (version < 14) await migrateV14();
+  if (version < 15) await migrateV15();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -115,7 +117,53 @@ function seededScriptKeys() {
   walk(seed);
   walk(require("../utils/hq/playbookDraftsV10").SCRIPTS);
   walk(require("../utils/hq/playbookCallsV11").CALL_SCRIPTS);
+  walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
+  walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   return { keys, key };
+}
+
+/**
+ * Version 15: the cold emails and calculator follow-ups, with names that say
+ * which email, when and what it does ("Email 2 · Day 4, if no reply · …"),
+ * a one-line intro in every first email, and replies for "not now" and "ask
+ * someone else". The several-buildings email moves to the operator campaign
+ * only. Same rule: seeded scripts you never edited are replaced; yours stay.
+ */
+async function migrateV15() {
+  const v15 = require("../utils/hq/playbookEmailsV15");
+  const { keys, key } = seededScriptKeys();
+  const plays = await HqPlaybookPlay.find({ seedKey: { $in: Object.keys(v15.SCRIPTS) } }).select("seedKey scripts").lean();
+  for (const p of plays) {
+    const fresh = v15.SCRIPTS[p.seedKey];
+    if (!fresh) continue;
+    const freshKeys = new Set(fresh.map(key));
+    const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+    await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: { scripts: [...fresh, ...yours] } });
+  }
+}
+
+/**
+ * Version 14: the leadership call assumes nothing. Its first script opens
+ * with a question; "you spoke with their scheduler" is a separate version
+ * for when HQ shows that call. Same rule as v13: scripts we seeded and you
+ * never edited are replaced, yours stay after them. Steps, who and when
+ * change only if they're still ours.
+ */
+async function migrateV14() {
+  const v14 = require("../utils/hq/playbookScriptsV14");
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const { keys, key } = seededScriptKeys();
+  const orig = seed.PLAYS.find((p) => p.seedKey === "calls-leadership") || {};
+  const p = (await HqPlaybookPlay.find({ seedKey: "calls-leadership" }).select("seedKey scripts steps who when").lean()).find((x) => x.seedKey === "calls-leadership");
+  if (!p) return; // deleted plays stay deleted
+  const freshKeys = new Set(v14.LEADERSHIP.map(key));
+  const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+  const set = { scripts: [...v14.LEADERSHIP, ...yours] };
+  const steps = JSON.stringify(p.steps || []);
+  if (steps === JSON.stringify(orig.steps || []) || steps === JSON.stringify(v13.STEPS["calls-leadership"])) set.steps = v14.STEPS;
+  if (!p.who || p.who === orig.who) set.who = v14.WHO;
+  if (!p.when || p.when === orig.when) set.when = v14.WHEN;
+  await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
 }
 
 /**

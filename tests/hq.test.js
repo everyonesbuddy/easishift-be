@@ -1032,7 +1032,7 @@ test("playbook v13: plain-word scripts replace the seeded ones; yours and your e
       { _id: "f", seedKey: "calls-front-desk", steps: ["my steps"], scripts: [] },
       { _id: "n", seedKey: "linkedin-posts", scripts: [{ label: "Post formula", body: "x" }] },
     ]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] ??= u.$set) // v13's own update; v14 runs after it;
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1059,4 +1059,99 @@ test("playbook v13 scripts: names This week relies on, and no unexplained shorth
   for (const x of all) {
     assert.doesNotMatch(x.body, /\bcensus\b|\bHPRD\b|snapshot|most (administrators|EDs|leaders) I talk to|nearby building/i, x.label);
   }
+});
+
+test("playbook v14: the leadership call opens with a question; nothing assumes they're a customer", async () => {
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const v14 = require("../utils/hq/playbookScriptsV14");
+  const seed = require("../utils/hq/playbookSeed");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const lead = seed.PLAYS.find((p) => p.seedKey === "calls-leadership");
+  const mine = { label: "My opener", body: "Hello" };
+  let set = null;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 13 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "l", seedKey: "calls-leadership", steps: v13.STEPS["calls-leadership"], who: lead.who, when: "My own timing", scripts: [...v13.SCRIPTS["calls-leadership"], mine] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.scripts[0].label, "1. First call: open with a question");
+  assert.deepEqual(set.scripts.at(-1), mine);
+  assert.equal(set.scripts.length, v14.LEADERSHIP.length + 1, "the v13 versions are gone");
+  assert.deepEqual(set.steps, v14.STEPS);
+  assert.equal(set.who, v14.WHO);
+  assert.equal(set.when, undefined, "your own wording stays");
+  for (const x of v14.LEADERSHIP) assert.doesNotMatch(x.body, /has been building your schedules|already builds|already uses WiserShifts/i, x.label);
+});
+
+test("call context: what HQ knows, and whether you really spoke with their scheduler", () => {
+  const { knownFor } = require("../utils/hq/callContext");
+  const plays = new Map([["fd", { title: "Front desk to scheduler", audience: ["scheduler"] }], ["ld", { title: "Leadership call", audience: ["director"] }]]);
+  const f = { _id: "f1", stage: "Contacted", scheduler: { name: "Sarah" } };
+  const none = knownFor({ kind: "contact" }, { facility: f, acts: [], plays });
+  assert.equal(none.firstContact, true);
+  assert.equal(none.spokeWithScheduler, false);
+  assert.ok(none.facts.some((x) => /first contact/.test(x)));
+  assert.ok(none.facts.includes("Stage: Contacted") && none.facts.includes("Scheduler: Sarah"));
+  const vm = [{ facilityId: "f1", playId: "fd", kind: "call", outcome: "voicemail", at: new Date("2026-10-28T15:00:00Z") }];
+  assert.equal(knownFor({ kind: "contact" }, { facility: f, acts: [], buildingActs: vm, plays }).spokeWithScheduler, false, "a voicemail isn't talking");
+  const talked = [{ facilityId: "f1", playId: "fd", kind: "call", outcome: "booked", notes: "Setup Thursday 2pm", at: new Date("2026-10-28T15:00:00Z") }, ...vm];
+  const k = knownFor({ kind: "facility" }, { facility: f, acts: talked, plays });
+  assert.equal(k.spokeWithScheduler, true);
+  assert.equal(k.setupBooked, true);
+  assert.equal(k.history[0], "Oct 28 · Call (Front desk to scheduler) · Booked the setup: Setup Thursday 2pm");
+  assert.equal(knownFor({ kind: "contact" }, { facility: f, acts: [], buildingActs: [{ ...talked[0], playId: "ld" }], plays }).spokeWithScheduler, false, "a leadership call isn't the scheduler");
+  const leader = knownFor({ kind: "contact" }, { facility: f, acts: [], buildingActs: talked, plays });
+  assert.ok(leader.facts.some((x) => /haven't reached out to them yet/.test(x)), "not called 'first contact' when the building has history");
+  assert.equal(leader.history.length, 2);
+  assert.equal(leader.schedulerName, "Sarah");
+  assert.equal(leader.spokeOn, "Oct 28");
+});
+
+test("playbook v15: cold email names say which, when and what; seeded ones replaced, yours kept", async () => {
+  const v13 = require("../utils/hq/playbookScriptsV13");
+  const v15 = require("../utils/hq/playbookEmailsV15");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const mine = { label: "My subject test", subject: "Hi", body: "Mine" };
+  const set = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 14 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "h", seedKey: "email-hprd", scripts: [...v13.SCRIPTS["email-hprd"], mine] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.h.scripts.length, v15.SCRIPTS["email-hprd"].length + 1);
+  assert.deepEqual(set.h.scripts.at(-1), mine);
+  assert.ok(!set.h.scripts.some((x) => /several buildings/i.test(x.label)), "the operator email lives in its own campaign");
+
+  for (const [k, list] of Object.entries(v15.SCRIPTS)) {
+    for (const x of list) {
+      assert.match(x.label, /^(Email \d|Reply|Assisted living) · /, `${k}: ${x.label}`);
+      assert.ok(x.subject, `${k}: ${x.label} has a subject`);
+      assert.doesNotMatch(x.body, /\{(?!First name\}|Building\}|Your name\}|calculator link\}|call-out calculator\}|operators link\}|signup link\})[^}]*\}/, `${k}: ${x.label} only uses placeholders This week fills`);
+    }
+    const first = list.find((x) => x.subject);
+    assert.match(first.label, /^Email 1 /, `${k}: the first script is the first email`);
+  }
+  for (const k of ["email-hprd", "email-operator"]) assert.match(v15.SCRIPTS[k][0].body, /I'm \{Your name\}/, `${k}: the first email says who you are`);
+});
+
+test("call context: building type, and assisted living is spotted", () => {
+  const { knownFor } = require("../utils/hq/callContext");
+  const al = knownFor({ kind: "contact" }, { facility: { _id: "f", facilityType: "Assisted Living" }, acts: [] });
+  assert.equal(al.assisted, true);
+  assert.ok(al.facts.includes("Type: Assisted Living"));
+  assert.equal(knownFor({ kind: "contact" }, { facility: { _id: "f", facilityType: "Skilled Nursing Facility" }, acts: [] }).assisted, false);
 });

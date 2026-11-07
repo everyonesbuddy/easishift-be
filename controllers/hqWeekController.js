@@ -201,7 +201,16 @@ async function view(doc, ctx) {
       // The blog campaign shows what went out on the blog in its window, and drops ideas that already did.
       const isBlog = blog.isBlogPlay(p);
       const windowFrom = ctx.recent ? ctx.recent[ctx.recent.length - span].start : ctx.week.start;
-      const published = isBlog ? blog.postsIn(ctx.posts, windowFrom, ctx.week.end) : [];
+      // What went out in the window that isn't a row on the list: blog posts, and pieces published
+      // from the calendar (so "logged another way" never leaves you guessing what it was).
+      const listed = new Set(todos.filter((t) => t.kind === "content").map((t) => String(t.refId)));
+      const pieces = plan.listKind(p) === "content"
+        ? ctx.items
+            .filter((i) => String(i.playId) === String(p._id) && i.status === "published" && i.publishedAt && new Date(i.publishedAt) >= windowFrom && new Date(i.publishedAt) < ctx.week.end && !listed.has(String(i._id)))
+            .map((i) => ({ title: i.title, url: i.url || "", date: i.publishedAt, where: "Published" }))
+        : [];
+      const posts = isBlog ? blog.uncounted(blog.postsIn(ctx.posts, windowFrom, ctx.week.end), [...pieces, ...todos.filter((t) => t.kind === "content" && t.done)]).map((x) => ({ ...x, where: "On the blog" })) : [];
+      const published = [...posts, ...pieces].sort((a, b) => new Date(b.date) - new Date(a.date));
       const short = plan.listKind(p) === "people" && todos.length < target ? plan.whyShort(p, ctx) : null;
       return {
         _id: String(p._id),

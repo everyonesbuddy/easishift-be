@@ -84,4 +84,16 @@ const BLOG_V17 = {
   ],
 };
 
-module.exports = { CAMPAIGNS, SETUP_SCRIPT_FROM, SETUP_SCRIPT_TO, BLOG_V17 };
+// Version 18: the blog is one post a week (it was one every two weeks).
+const BLOG_V18 = {
+  weeklyTarget: 1,
+  volume: "1 post a week.",
+  steps: [
+    "One blog post or printable template a week, written for one thing people search (\"CNA schedule template\", \"how to calculate hours per resident day\").",
+    BLOG_V17.steps[1],
+    BLOG_V17.steps[2],
+    BLOG_V17.steps[3],
+  ],
+};
+
+module.exports = { CAMPAIGNS, SETUP_SCRIPT_FROM, SETUP_SCRIPT_TO, BLOG_V17, BLOG_V18 };

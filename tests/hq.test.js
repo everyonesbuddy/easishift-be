@@ -1290,7 +1290,7 @@ test("playbook v17: the search campaign is called the blog", async () => {
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 16 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "s", seedKey: "search-templates", title: v16.CAMPAIGNS["search-templates"].title, steps: st.steps }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => (set ??= u.$set); // v17's own update; v18 runs after it
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1321,9 +1321,44 @@ test("week view: a blog campaign piece renders, and one already on the blog show
     assert.equal(t1.done, true, "already on the blog");
     assert.equal(t1.onBlog, "https://wisershifts.com/blog/cna");
     assert.equal(t2.done, false);
-    assert.equal(p.published.length, 1);
+    assert.equal(p.published.length, 0, "the post is already shown as the done piece, not listed twice");
     assert.equal(p.span, 2);
   } finally {
     HqActivity.find = orig;
   }
+});
+
+test("playbook v18: the blog is one post a week", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const st = seed.PLAYS.find((p) => p.seedKey === "search-templates");
+  let set = null;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 17 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "s", seedKey: "search-templates", weeklyTarget: 0.5, volume: st.volume, steps: v16.BLOG_V17.steps }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.weeklyTarget, 1);
+  assert.equal(set.volume, "1 post a week.");
+  assert.match(set.steps[0], /a week/);
+});
+
+test("week plan: a weekly blog gets the next idea, skipping one that's already on the blog", () => {
+  const plan = require("../utils/hq/weekPlan");
+  const play = { _id: "pb", seedKey: "search-templates", channel: "blog", countsFrom: "content", weeklyTarget: 1, active: true };
+  const items = [
+    { _id: "i1", title: "Printable weekly CNA schedule template", status: "idea", playId: "pb" },
+    { _id: "i2", title: "How to calculate hours per resident day", status: "idea", playId: "pb" },
+  ];
+  const posts = [{ title: "Free Weekly CNA Schedule Template (Printable PDF and Excel)", publishDate: "2026-10-30T12:00:00Z" }];
+  const out = plan.todosFor(play, { items, posts, now: new Date("2026-11-09T15:00:00Z"), weekStart: new Date("2026-11-09T05:00:00Z") });
+  assert.deepEqual(out.map((t) => t.refId), ["i2"]);
 });

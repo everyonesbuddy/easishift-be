@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 17;
+const SEED_VERSION = 18;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -104,6 +104,7 @@ async function runSeed() {
   if (version < 15) await migrateV15();
   if (version < 16) await migrateV16();
   if (version < 17) await migrateV17();
+  if (version < 18) await migrateV18();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -123,6 +124,20 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   return { keys, key };
+}
+
+/** Version 18: the blog is one post a week. Target, volume and steps change only if they're still ours. */
+async function migrateV18() {
+  const v16 = require("../utils/hq/playbookNamesV16");
+  const orig = seed.PLAYS.find((p) => p.seedKey === blog.BLOG_KEY) || {};
+  const p = (await HqPlaybookPlay.find({ seedKey: blog.BLOG_KEY }).select("seedKey weeklyTarget volume steps").lean()).find((x) => x.seedKey === blog.BLOG_KEY);
+  if (!p) return;
+  const set = {};
+  if (p.weeklyTarget === 0.5) set.weeklyTarget = v16.BLOG_V18.weeklyTarget;
+  if (!p.volume || p.volume === orig.volume) set.volume = v16.BLOG_V18.volume;
+  const steps = JSON.stringify(p.steps || []);
+  if (steps === JSON.stringify(v16.BLOG_V17.steps) || steps === JSON.stringify(orig.steps || [])) set.steps = v16.BLOG_V18.steps;
+  if (Object.keys(set).length) await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
 }
 
 /** Version 17: the search campaign is called the blog; its steps say Contentful posts count. Only if still ours. */

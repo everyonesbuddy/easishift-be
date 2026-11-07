@@ -164,7 +164,7 @@ const contentTodo = (i) => ({ kind: "content", refId: String(i._id), title: i.ti
  * The to-dos to add for one play so its list reaches the weekly target.
  * `have` = to-dos already on this week's list for the play (refills only add).
  */
-function todosFor(play, { items = [], facilities = [], contacts = [], groups = [], people = [], lastTouch, now = new Date(), weekStart = null, weekEnd = null, have = [], removed = new Set(), taken = new Set() }) {
+function todosFor(play, { items = [], facilities = [], contacts = [], groups = [], people = [], posts = [], lastTouch, now = new Date(), weekStart = null, weekEnd = null, have = [], removed = new Set(), taken = new Set() }) {
   const kind = listKind(play);
   if (!kind) return [];
   const n = weeklyCount(play);
@@ -185,7 +185,9 @@ function todosFor(play, { items = [], facilities = [], contacts = [], groups = [
     }
     const out = publishedThisWeek.filter((i) => !skip.has(String(i._id))).map(contentTodo);
     const left = n - have.length - out.length;
-    if (left > 0) out.push(...queueFor(play, items).filter((i) => !skip.has(String(i._id))).slice(0, left).map(contentTodo));
+    // An idea that's already on the blog (same title) isn't a to-do.
+    const onBlog = (i) => require("./blog").isBlogPlay(play) && (posts || []).some((x) => require("./blog").sameTitle(x.title, i.title));
+    if (left > 0) out.push(...queueFor(play, items).filter((i) => !skip.has(String(i._id)) && !onBlog(i)).slice(0, left).map(contentTodo));
     return out.slice(0, Math.max(0, n - have.length));
   }
 

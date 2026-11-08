@@ -219,13 +219,43 @@ const applyPhone = async (req, member) => {
   return null;
 };
 
-/** PATCH /api/v1/members/me { userPhone, userPhoneCountryCode }: your own phone. */
+/**
+ * Name, email and phone together. Email signs them in, so it must be free
+ * across WiserShifts; a pending invite goes to the new address. Returns
+ * { status, message } on a problem, or null.
+ */
+const applyContact = async (req, member) => {
+  const b = req.body || {};
+  let emailChanged = false;
+  if (b.name !== undefined) {
+    const name = String(b.name || "").trim().slice(0, 100);
+    if (!name) return { status: 400, message: "Name can't be empty." };
+    member.name = name;
+  }
+  if (b.email !== undefined) {
+    const email = normalizeEmail(b.email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { status: 400, message: "That email doesn't look right." };
+    if (email !== member.email) {
+      const taken = await User.findOne({ email, loginEnabled: true, _id: { $ne: member._id } }).select("tenantId").lean();
+      if (taken) return { status: 409, message: String(taken.tenantId) === String(req.tenantId) ? "Someone on your team already uses that email." : "That email already has a WiserShifts account." };
+      member.email = email;
+      emailChanged = true;
+    }
+  }
+  const phoneErr = await applyPhone(req, member); // saves when the phone is in the request
+  if (phoneErr) return { status: 400, message: phoneErr };
+  if (req.body?.userPhone === undefined && (b.name !== undefined || emailChanged)) await member.save({ validateBeforeSave: false });
+  if (emailChanged && !member.passwordHash) await sendInviteEmail(req, member).catch(() => null);
+  return null;
+};
+
+/** PATCH /api/v1/members/me { name, email, userPhone, userPhoneCountryCode }: your own details. */
 exports.updateMe = async (req, res, next) => {
   try {
     const member = await findMember(req, String(req.user._id));
     if (!member) return res.status(404).json({ message: "Member not found" });
-    const err = await applyPhone(req, member);
-    if (err) return res.status(400).json({ message: err });
+    const err = await applyContact(req, member);
+    if (err) return res.status(err.status).json({ message: err.message });
     res.json(toMemberResponse(member));
   } catch (err) {
     next(err);
@@ -237,9 +267,9 @@ exports.updateMember = async (req, res, next) => {
     const member = await findMember(req);
     if (!member) return res.status(404).json({ message: "Member not found" });
 
-    const phoneErr = await applyPhone(req, member);
-    if (phoneErr) return res.status(400).json({ message: phoneErr });
-    // Just the phone: done.
+    const contactErr = await applyContact(req, member);
+    if (contactErr) return res.status(contactErr.status).json({ message: contactErr.message });
+    // Just their details: done.
     if (req.body?.role === undefined) return res.json(toMemberResponse(member));
 
     const role = String(req.body?.role || "").toLowerCase();
@@ -356,3 +386,4 @@ exports.addStaffProfile = async (req, res, next) => {
 };
 
 exports._getMemberRole = getMemberRole;
+exports._test = { applyContact };

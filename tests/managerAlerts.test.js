@@ -146,3 +146,25 @@ test("opt-in for managers: asks once with the managers' wording; skips no phone,
     delete require.cache[require.resolve("../utils/notify")];
   }
 });
+
+test("members: edit name, email and phone together; a taken email or blank name is refused", async () => {
+  const { applyContact } = require("../controllers/memberController")._test;
+  const User = require("../models/userModel");
+  const orig = User.findOne;
+  const saved = [];
+  const member = (extra = {}) => ({ _id: "m1", name: "Joseph", email: "old@example.com", passwordHash: "x", save: async function () { saved.push({ name: this.name, email: this.email }); }, ...extra });
+  try {
+    User.findOne = () => ({ select: () => ({ lean: async () => null }) });
+    const m = member();
+    assert.equal(await applyContact({ body: { name: " Joseph Adeyemo ", email: "New@Example.com" }, tenantId: "t1" }, m), null);
+    assert.equal(m.name, "Joseph Adeyemo");
+    assert.equal(m.email, "new@example.com");
+    assert.equal(saved.length, 1);
+    assert.deepEqual(await applyContact({ body: { name: "  " }, tenantId: "t1" }, member()), { status: 400, message: "Name can't be empty." });
+    assert.equal((await applyContact({ body: { email: "not-an-email" }, tenantId: "t1" }, member())).status, 400);
+    User.findOne = () => ({ select: () => ({ lean: async () => ({ tenantId: "t1" }) }) });
+    assert.deepEqual(await applyContact({ body: { email: "taken@example.com" }, tenantId: "t1" }, member()), { status: 409, message: "Someone on your team already uses that email." });
+  } finally {
+    User.findOne = orig;
+  }
+});

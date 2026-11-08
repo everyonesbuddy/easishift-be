@@ -41,6 +41,8 @@ const pickAllowedPreferenceFields = (payload) => ({
         : new Date(payload.rotationAnchorDate),
   emailNotificationsEnabled: payload.emailNotificationsEnabled,
   smsNotificationsEnabled: payload.smsNotificationsEnabled,
+  morningSummaryEnabled:
+    payload.morningSummaryEnabled === undefined ? undefined : Boolean(payload.morningSummaryEnabled),
 });
 
 // Returns an error message, or null when the payload is acceptable.

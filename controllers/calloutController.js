@@ -41,6 +41,16 @@ const loadCandidates = async ({ tenantId, coverage }) => {
   return { candidates, prefs, settings, weekStart };
 };
 
+/** Who could take this shift without going into overtime, for the call-out text to managers. */
+exports.coverCount = async (tenantId, coverage) => {
+  try {
+    const { candidates } = await loadCandidates({ tenantId, coverage });
+    return candidates.filter((r) => r.eligible && !r.overtimeIfAssigned).length;
+  } catch {
+    return null;
+  }
+};
+
 const toCandidate = (row) => ({
   staffId: row.staff._id,
   name: row.staff.name,

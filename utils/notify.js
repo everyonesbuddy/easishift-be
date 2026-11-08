@@ -158,6 +158,10 @@ async function requestOptIn({ tenant, planKey, person, manager = false }) {
   return { sent: true };
 }
 
+/** After someone opts in from inside the app: the confirmation carriers expect, with how to stop. */
+const managerConfirmText = (facilityName) =>
+  `You're set: ${facilityName} will text you from WiserShifts when someone calls out or asks for time off, plus a short morning summary. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+
 async function notifySchedulers({ tenantId, subject, html, excludeUserIds = [] }) {
   try {
     const schedulers = await findSchedulers(tenantId, excludeUserIds)
@@ -177,7 +181,9 @@ module.exports = {
   notifySchedulers,
   optInText,
   managerOptInText,
+  managerConfirmText,
   requestOptIn,
+  logMessage,
   shortShift,
   shortWeek,
   firstName,

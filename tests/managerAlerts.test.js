@@ -168,3 +168,37 @@ test("members: edit name, email and phone together; a taken email or blank name 
     User.findOne = orig;
   }
 });
+
+test("members: ticking Text me alerts on your own number opts you in now; someone else's number still gets asked", async () => {
+  const smsMod = require("../utils/sendSMS");
+  const notify = require("../utils/notify");
+  const OutboundMessage = require("../models/outboundMessageModel");
+  const User = require("../models/userModel");
+  const orig = [smsMod.sendSMS, OutboundMessage.create, User.updateOne, User.findById];
+  const texts = [];
+  smsMod.sendSMS = async (to, body) => (texts.push({ to, body }), { success: true });
+  OutboundMessage.create = async () => ({});
+  User.updateOne = async () => ({});
+  User.findById = () => ({ select: () => ({ lean: async () => ({ smsConsent: { status: "pending" } }) }) });
+  delete require.cache[require.resolve("../utils/notify")];
+  delete require.cache[require.resolve("../controllers/memberController")];
+  try {
+    const { applyContact } = require("../controllers/memberController")._test;
+    const tenant = { _id: "t1", name: "Little Bonanza", plan: "growth", subscriptionStatus: "active" };
+    const m = (id) => ({ _id: id, name: "J", email: "j@example.com", passwordHash: "x", smsConsent: { status: "none" }, save: async () => {} });
+    const me = m("u1");
+    await applyContact({ user: { _id: "u1" }, tenant, tenantId: "t1", body: { userPhone: "3045550100", userPhoneCountryCode: "+1", textConsent: true } }, me);
+    assert.equal(me.smsConsent.status, "opted_in");
+    assert.equal(me.smsConsent.method, "in_app");
+    assert.match(texts[0].body, /^You're set: Little Bonanza will text you/);
+    const other = m("u2");
+    await applyContact({ user: { _id: "u1" }, tenant, tenantId: "t1", body: { userPhone: "3045550101", userPhoneCountryCode: "+1", textConsent: true } }, other);
+    assert.notEqual(other.smsConsent.status, "opted_in", "you can't say yes for someone else");
+    assert.match(texts[1].body, /Reply START to get texts/);
+  } finally {
+    [smsMod.sendSMS, OutboundMessage.create, User.updateOne, User.findById] = orig;
+    delete require.cache[require.resolve("../utils/notify")];
+    delete require.cache[require.resolve("../controllers/memberController")];
+  }
+  void notify;
+});

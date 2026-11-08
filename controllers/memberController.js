@@ -10,7 +10,9 @@ const { escapeHtml } = require("../utils/notify");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
 const { buildE164Number } = require("../utils/phone");
-const { requestOptIn } = require("../utils/notify");
+const { requestOptIn, managerConfirmText, logMessage } = require("../utils/notify");
+const { sendSMS } = require("../utils/sendSMS");
+const { hasFeature } = require("../config/plans");
 const { getEffectivePlanKey } = require("../config/plans");
 const { getUserRoles } = require("../config/authorization");
 const { assertLimit } = require("../utils/planLimits");
@@ -155,6 +157,15 @@ exports.inviteMember = async (req, res, next) => {
       status: "active",
     });
 
+    // A phone on the invite: saved, and they get the opt-in text.
+    if (req.body?.userPhone) {
+      const phoneErr = await applyPhone(req, member);
+      if (phoneErr) {
+        await User.deleteOne({ _id: member._id });
+        return res.status(400).json({ message: phoneErr });
+      }
+    }
+
     const emailResult = await sendInviteEmail(req, member);
     res.status(201).json({
       ...toMemberResponse(member),
@@ -194,13 +205,29 @@ exports.resendInvite = async (req, res, next) => {
  * PATCH /api/v1/members/:id
  * Body: { role: "administrator" | "scheduler" | "viewer" }
  */
+/** Opted in from inside the app: record how, and send the confirmation text (texting plans). */
+const optInInApp = async (req, member) => {
+  member.smsConsent = { status: "opted_in", updatedAt: new Date(), method: "in_app" };
+  await member.save({ validateBeforeSave: false });
+  const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
+  if (!hasFeature(getEffectivePlanKey(tenant), "sms")) return;
+  const result = await sendSMS(member.phoneE164, managerConfirmText(tenant.name || "Your workplace")).catch((e) => ({ success: false, error: e?.message }));
+  await logMessage({ tenantId: tenant._id, staffId: member._id, kind: "opt_in_confirm", refId: null, channel: "sms", to: member.phoneE164, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
+};
+
 /**
  * A team member's phone, for call-out alerts and the morning summary by text.
  * A new number starts over on consent and gets the managers' opt-in text
  * (texting plans). Returns an error message, or null.
  */
 const applyPhone = async (req, member) => {
-  if (req.body?.userPhone === undefined) return null;
+  const isSelf = String(req.user?._id) === String(member._id);
+  // Someone adding their own number and ticking "Text me alerts" has said yes, in the app.
+  const selfConsent = isSelf && req.body?.textConsent === true;
+  if (req.body?.userPhone === undefined) {
+    if (selfConsent && member.phoneE164 && member.smsConsent?.status !== "opted_in") await optInInApp(req, member);
+    return null;
+  }
   const raw = String(req.body.userPhone || "").trim();
   const code = String(req.body.userPhoneCountryCode || member.userPhoneCountryCode || "+1").trim();
   const e164 = raw ? buildE164Number(code, raw) : null;
@@ -211,7 +238,9 @@ const applyPhone = async (req, member) => {
   member.phoneE164 = e164;
   if (changed) member.smsConsent = { status: "none", updatedAt: new Date() };
   await member.save({ validateBeforeSave: false });
-  if (changed && e164) {
+  if (e164 && selfConsent && member.smsConsent?.status !== "opted_in") {
+    await optInInApp(req, member);
+  } else if (changed && e164) {
     const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
     await requestOptIn({ tenant, planKey: getEffectivePlanKey(tenant), person: member, manager: true }).catch(() => null);
     member.smsConsent = (await User.findById(member._id).select("smsConsent").lean())?.smsConsent || member.smsConsent;

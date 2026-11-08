@@ -52,9 +52,9 @@ const ROUTES = [
 
   // ── Members (accounts) ────────────────────────────────────────────────────
   ["get", "/members", "Members", "List owner, schedulers and viewers"],
-  ["post", "/members/invite", "Members", "Invite an admin, scheduler or viewer (role: administrator | scheduler | viewer; viewers are free)", { body: { name: "Sam", email: "sam@example.com", role: "scheduler" } }],
+  ["post", "/members/invite", "Members", "Invite an admin, scheduler or viewer (role: administrator | scheduler | viewer; viewers are free). With a phone, they also get the opt-in text", { body: { name: "Sam", email: "sam@example.com", role: "scheduler", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],
   ["post", "/members/{id}/resend-invite", "Members", "Resend invite"],
-  ["patch", "/members/me", "Members", "Your own name, email and phone (alerts and the morning summary by text). A new number gets the opt-in text", { body: { name: "Sam Lee", email: "sam@example.com", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],
+  ["patch", "/members/me", "Members", "Your own name, email and phone (alerts and the morning summary by text). textConsent: true opts you in now (with a confirmation text); otherwise a new number gets the opt-in text", { body: { name: "Sam Lee", email: "sam@example.com", userPhone: "5551234567", userPhoneCountryCode: "+1", textConsent: true } }],
   ["patch", "/members/{id}", "Members", "Change a member's name, email, phone and/or role (owner). A new email on a pending invite resends it; a new phone gets the managers' opt-in text", { body: { name: "Sam Lee", email: "sam@example.com", userPhone: "5551234567", userPhoneCountryCode: "+1", role: "viewer" } }],
   ["post", "/members/{id}/make-owner", "Members", "Transfer ownership (owner only)"],
   ["post", "/members/{id}/staff-profile", "Members", "Also put this member on the schedule (creates their staff contact)", { body: { role: "lpn", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],

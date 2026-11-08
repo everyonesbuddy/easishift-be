@@ -95,6 +95,7 @@ router.delete("/facebook/activity/:activityId", facebook.undo);
 
 router.get("/customers/lookup", require("../controllers/hqCustomerTestController").lookup);
 router.post("/customers/:tenantId/test-message", require("../controllers/hqCustomerTestController").sendTest);
+router.post("/customers/:tenantId/opt-in", require("../controllers/hqCustomerTestController").sendOptIn);
 router.get("/money", moneyPage.getMoney);
 router.post("/money/import", moneyPage.importSheet);
 router.post("/money/hide", moneyPage.hideCustomer);

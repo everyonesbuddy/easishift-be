@@ -23,6 +23,10 @@ const { normalizeZone } = require("./timezoneUtils");
 const optInText = (facilityName) =>
   `${facilityName} uses WiserShifts to send your work schedule. Reply START to get schedule texts. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
 
+// Managers get their own opt-in: what they'll be texted about.
+const managerOptInText = (facilityName) =>
+  `${facilityName} uses WiserShifts. Reply START to get texts when someone calls out or asks for time off, plus a short morning summary. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+
 const firstName = (name) => String(name || "").trim().split(/\s+/)[0] || "there";
 
 const escapeHtml = (value) =>
@@ -71,6 +75,7 @@ async function sendToStaff({
   emailHtml,
   refId = null,
   preferences, // optional pre-loaded Preferences doc
+  optInMessage = null, // the opt-in text to ask with (managers get their own)
 }) {
   try {
     const tenantId = tenant._id;
@@ -100,7 +105,7 @@ async function sendToStaff({
     const canAskOptIn =
       planHasSms && phone && consent === "none" && smsAllowedByStaff;
     const askOptIn = async () => {
-      const result = await sendSMS(phone, optInText(tenant.name));
+      const result = await sendSMS(phone, optInMessage || optInText(tenant.name));
       await logMessage({ ...base, kind: "opt_in", channel: "sms", to: phone, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
       if (result?.success) {
         await User.updateOne(
@@ -135,6 +140,24 @@ async function sendToStaff({
 }
 
 /** Email the owner and schedulers (best-effort). */
+/**
+ * Ask someone to opt in to texts now (HQ's button, or a manager's phone just
+ * added). Only when they haven't answered STOP. Returns { sent, reason }.
+ */
+async function requestOptIn({ tenant, planKey, person, manager = false }) {
+  const phone = person.phoneE164 || null;
+  if (!phone) return { sent: false, reason: "no_phone" };
+  if (!hasFeature(planKey, "sms")) return { sent: false, reason: "sms_needs_upgrade" };
+  const consent = person.smsConsent?.status || "none";
+  if (consent === "opted_in") return { sent: false, reason: "already_opted_in" };
+  if (consent === "opted_out") return { sent: false, reason: "opted_out" };
+  const result = await sendSMS(phone, manager ? managerOptInText(tenant.name) : optInText(tenant.name));
+  await logMessage({ tenantId: tenant._id, staffId: person._id, kind: "opt_in", refId: null, channel: "sms", to: phone, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
+  if (!result?.success) return { sent: false, reason: "send_failed" };
+  await User.updateOne({ _id: person._id }, { $set: { smsConsent: { status: "pending", updatedAt: new Date() } } });
+  return { sent: true };
+}
+
 async function notifySchedulers({ tenantId, subject, html, excludeUserIds = [] }) {
   try {
     const schedulers = await findSchedulers(tenantId, excludeUserIds)
@@ -153,6 +176,8 @@ module.exports = {
   sendToStaff,
   notifySchedulers,
   optInText,
+  managerOptInText,
+  requestOptIn,
   shortShift,
   shortWeek,
   firstName,

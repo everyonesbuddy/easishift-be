@@ -5,6 +5,7 @@ const {
   inviteMember,
   resendInvite,
   updateMember,
+  updateMe,
   transferOwnership,
   removeMember,
   addStaffProfile,
@@ -22,6 +23,7 @@ const ownerOnly = requirePermission("roles.manage");
 router.get("/", requirePermission("staff.view"), listMembers);
 router.post("/invite", ownerOnly, inviteMember);
 router.post("/:id/resend-invite", ownerOnly, resendInvite);
+router.patch("/me", updateMe);
 router.patch("/:id", ownerOnly, updateMember);
 router.post("/:id/make-owner", requirePermission("ownership.transfer"), transferOwnership);
 router.delete("/:id", ownerOnly, removeMember);

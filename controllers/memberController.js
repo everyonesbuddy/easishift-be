@@ -8,6 +8,10 @@
 const mongoose = require("mongoose");
 const { escapeHtml } = require("../utils/notify");
 const User = require("../models/userModel");
+const Tenant = require("../models/tenantModel");
+const { buildE164Number } = require("../utils/phone");
+const { requestOptIn } = require("../utils/notify");
+const { getEffectivePlanKey } = require("../config/plans");
 const { getUserRoles } = require("../config/authorization");
 const { assertLimit } = require("../utils/planLimits");
 const { createStaffContact } = require("./staffController");
@@ -38,6 +42,10 @@ const toMemberResponse = (user) => ({
   _id: user._id,
   name: user.name,
   email: user.email,
+  userPhone: user.userPhone || "",
+  userPhoneCountryCode: user.userPhoneCountryCode || "+1",
+  phoneE164: user.phoneE164 || "",
+  textStatus: user.phoneE164 ? user.smsConsent?.status || "none" : "no_phone",
   role: getMemberRole(user),
   status: user.status || "active",
   invitePending: !user.passwordHash,
@@ -186,16 +194,60 @@ exports.resendInvite = async (req, res, next) => {
  * PATCH /api/v1/members/:id
  * Body: { role: "administrator" | "scheduler" | "viewer" }
  */
+/**
+ * A team member's phone, for call-out alerts and the morning summary by text.
+ * A new number starts over on consent and gets the managers' opt-in text
+ * (texting plans). Returns an error message, or null.
+ */
+const applyPhone = async (req, member) => {
+  if (req.body?.userPhone === undefined) return null;
+  const raw = String(req.body.userPhone || "").trim();
+  const code = String(req.body.userPhoneCountryCode || member.userPhoneCountryCode || "+1").trim();
+  const e164 = raw ? buildE164Number(code, raw) : null;
+  if (raw && !e164) return "That phone number doesn't look right.";
+  const changed = (e164 || null) !== (member.phoneE164 || null);
+  member.userPhone = raw ? raw : null;
+  member.userPhoneCountryCode = code;
+  member.phoneE164 = e164;
+  if (changed) member.smsConsent = { status: "none", updatedAt: new Date() };
+  await member.save({ validateBeforeSave: false });
+  if (changed && e164) {
+    const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
+    await requestOptIn({ tenant, planKey: getEffectivePlanKey(tenant), person: member, manager: true }).catch(() => null);
+    member.smsConsent = (await User.findById(member._id).select("smsConsent").lean())?.smsConsent || member.smsConsent;
+  }
+  return null;
+};
+
+/** PATCH /api/v1/members/me { userPhone, userPhoneCountryCode }: your own phone. */
+exports.updateMe = async (req, res, next) => {
+  try {
+    const member = await findMember(req, String(req.user._id));
+    if (!member) return res.status(404).json({ message: "Member not found" });
+    const err = await applyPhone(req, member);
+    if (err) return res.status(400).json({ message: err });
+    res.json(toMemberResponse(member));
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.updateMember = async (req, res, next) => {
   try {
+    const member = await findMember(req);
+    if (!member) return res.status(404).json({ message: "Member not found" });
+
+    const phoneErr = await applyPhone(req, member);
+    if (phoneErr) return res.status(400).json({ message: phoneErr });
+    // Just the phone: done.
+    if (req.body?.role === undefined) return res.json(toMemberResponse(member));
+
     const role = String(req.body?.role || "").toLowerCase();
     if (!INVITABLE_ROLES.includes(role))
       return res
         .status(400)
         .json({ message: "role must be scheduler or viewer" });
 
-    const member = await findMember(req);
-    if (!member) return res.status(404).json({ message: "Member not found" });
     if (getMemberRole(member) === "owner") {
       return res.status(400).json({
         message: "Transfer ownership first to change the owner's role",

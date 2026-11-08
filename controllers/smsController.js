@@ -106,9 +106,9 @@ exports.handleInbound = async (req, res, next) => {
       .replace(/[^A-Z]/g, "");
     if (!from) return twiml(res);
 
+    // Staff contacts and team members (managers get alerts by text too).
     const contacts = await User.find({
       phoneE164: from,
-      loginEnabled: false,
       status: "active",
     });
 

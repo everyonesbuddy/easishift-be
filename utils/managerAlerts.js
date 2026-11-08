@@ -7,7 +7,7 @@
 const Tenant = require("../models/tenantModel");
 const Preferences = require("../models/preferencesModel");
 const { findSchedulers } = require("./schedulers");
-const { sendToStaff } = require("./notify");
+const { sendToStaff, managerOptInText } = require("./notify");
 const { getEffectivePlanKey } = require("../config/plans");
 
 const appUrl = (path = "") => `${String(process.env.FRONTEND_URL || "").replace(/\/+$/, "")}${path}`;
@@ -33,7 +33,7 @@ async function alertManagers({ tenantId, kind, sms, emailSubject, emailHtml, ref
     for (const m of managers) {
       const p = prefOf.get(String(m._id)) || null;
       if (kind === "morning_summary" && p?.morningSummaryEnabled === false) continue;
-      const r = await sendToStaff({ tenant, planKey, staff: m, kind, sms: val(sms, m), emailSubject: val(emailSubject, m), emailHtml: val(emailHtml, m), refId, preferences: p });
+      const r = await sendToStaff({ tenant, planKey, staff: m, kind, sms: val(sms, m), emailSubject: val(emailSubject, m), emailHtml: val(emailHtml, m), refId, preferences: p, optInMessage: managerOptInText(tenant.name || "Your workplace") });
       out.push({ managerId: String(m._id), ...r });
     }
   } catch (err) {

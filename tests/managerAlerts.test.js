@@ -116,3 +116,33 @@ test("morning summary: carries the next step, and links to it on an otherwise qu
   assert.match(s.sms, /Next step: Next week isn't published yet\. https:\/\/app\.example\/schedule$/);
   assert.equal(s.needsYou, 1);
 });
+
+test("opt-in for managers: asks once with the managers' wording; skips no phone, no texting plan, STOP and already yes", async () => {
+  const smsMod = require("../utils/sendSMS");
+  const User = require("../models/userModel");
+  const OutboundMessage = require("../models/outboundMessageModel");
+  const orig = [smsMod.sendSMS, User.updateOne, OutboundMessage.create];
+  const texts = [];
+  const updates = [];
+  smsMod.sendSMS = async (to, body) => (texts.push({ to, body }), { success: true });
+  User.updateOne = async (f, u) => updates.push([f, u]);
+  OutboundMessage.create = async () => ({});
+  delete require.cache[require.resolve("../utils/notify")];
+  try {
+    const { requestOptIn } = require("../utils/notify");
+    const tenant = { _id: "t1", name: "Little Bonanza" };
+    const paid = "growth";
+    const p = (consent, phone = "+14705550100") => ({ _id: "m1", phoneE164: phone, smsConsent: { status: consent } });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("none", null), manager: true }), { sent: false, reason: "no_phone" });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: "free", person: p("none"), manager: true }), { sent: false, reason: "sms_needs_upgrade" });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("opted_out"), manager: true }), { sent: false, reason: "opted_out" });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("opted_in"), manager: true }), { sent: false, reason: "already_opted_in" });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("pending"), manager: true }), { sent: true }, "asking again is allowed (HQ's button)");
+    assert.match(texts[0].body, /^Little Bonanza uses WiserShifts\. Reply START to get texts when someone calls out or asks for time off, plus a short morning summary\./);
+    assert.match(texts[0].body, /Reply STOP to opt out, HELP for help\.$/);
+    assert.equal(updates[0][1].$set.smsConsent.status, "pending");
+  } finally {
+    [smsMod.sendSMS, User.updateOne, OutboundMessage.create] = orig;
+    delete require.cache[require.resolve("../utils/notify")];
+  }
+});

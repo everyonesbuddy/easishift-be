@@ -13,6 +13,51 @@ const { runFor, factsFor } = require("../utils/morningSummaryJobs");
 const { alertManagers, appUrl } = require("../utils/managerAlerts");
 const { getEffectivePlanKey, hasFeature } = require("../config/plans");
 const { requestOptIn } = require("../utils/notify");
+const OutboundMessage = require("../models/outboundMessageModel");
+
+// What a segment costs, all in (Twilio's price plus carrier fees). About a penny in the US.
+const COST_PER_SEGMENT = () => Number(process.env.SMS_COST_PER_SEGMENT || 0.0115);
+const KIND_LABEL = {
+  callout_offer: "Open-shift offers",
+  callout_filled: "\"It's filled\" notes",
+  reminder: "Shift reminders",
+  week_published: "Schedule published",
+  shift_added: "Shift changes",
+  shift_changed: "Shift changes",
+  shift_removed: "Shift changes",
+  callout_alert: "Call-out alerts (managers)",
+  morning_summary: "Morning summaries and nudges",
+  timeoff_alert: "Time-off alerts (managers)",
+  timeoff: "Time-off answers",
+  opt_in: "Opt-in texts",
+  opt_in_confirm: "Opt-in texts",
+  link: "Staff links",
+  message: "Messages",
+};
+
+/** Texts sent and what they cost, from the message log. */
+async function textingSince(match, since) {
+  const rows = await OutboundMessage.aggregate([
+    { $match: { ...match, channel: "sms", status: "sent", createdAt: { $gte: since } } },
+    { $group: { _id: "$kind", texts: { $sum: 1 }, segments: { $sum: { $ifNull: ["$segments", 1] } } } },
+  ]);
+  const byKind = {};
+  for (const r of rows) {
+    const k = KIND_LABEL[r._id] || r._id;
+    byKind[k] = byKind[k] || { texts: 0, segments: 0 };
+    byKind[k].texts += r.texts;
+    byKind[k].segments += r.segments;
+  }
+  const texts = rows.reduce((a, r) => a + r.texts, 0);
+  const segments = rows.reduce((a, r) => a + r.segments, 0);
+  return {
+    texts,
+    segments,
+    cost: Math.round(segments * COST_PER_SEGMENT() * 100) / 100,
+    byKind: Object.entries(byKind).map(([kind, v]) => ({ kind, ...v })).sort((a, b) => b.segments - a.segments),
+  };
+}
+const monthStart = (now = new Date()) => new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
 
 const fail = (res, status, message) => res.status(status).json({ message });
 const TENANT_FIELDS = "name createdAt setupCompletedAt plan subscriptionStatus trialEndsAt";
@@ -54,6 +99,7 @@ async function describe(tenant) {
     },
     setup: facts.setup,
     nextStep: facts.step,
+    texting: await textingSince({ tenantId: tenant._id }, new Date(Date.now() - 30 * 864e5)),
   };
 }
 
@@ -132,6 +178,32 @@ exports.sendOptIn = async (req, res, next) => {
       results.push({ name: m.name, delivered: r.sent, note: r.sent ? "Sent the opt-in text. Texts start once they reply START or YES." : NOTE[r.reason] || r.reason });
     }
     res.json({ sent: results.filter((r) => r.delivered).length, results });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** GET /hq/customers/texting: this month's texts and cost across every workspace, and the top ones. */
+exports.texting = async (req, res, next) => {
+  try {
+    const since = monthStart();
+    const [all, top] = await Promise.all([
+      textingSince({}, since),
+      OutboundMessage.aggregate([
+        { $match: { channel: "sms", status: "sent", createdAt: { $gte: since } } },
+        { $group: { _id: "$tenantId", texts: { $sum: 1 }, segments: { $sum: { $ifNull: ["$segments", 1] } } } },
+        { $sort: { segments: -1 } },
+        { $limit: 8 },
+      ]),
+    ]);
+    const names = new Map((await Tenant.find({ _id: { $in: top.map((t) => t._id) } }).select("name").lean()).map((t) => [String(t._id), t.name]));
+    res.json({
+      since,
+      ...all,
+      costPerSegment: COST_PER_SEGMENT(),
+      cap: Number(process.env.SMS_MONTHLY_SEGMENT_CAP ?? 4000) || null,
+      top: top.map((t) => ({ name: names.get(String(t._id)) || "Unknown", texts: t.texts, segments: t.segments, cost: Math.round(t.segments * COST_PER_SEGMENT() * 100) / 100 })),
+    });
   } catch (err) {
     next(err);
   }

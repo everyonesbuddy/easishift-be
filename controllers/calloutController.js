@@ -21,7 +21,7 @@ const {
   weekBounds,
   dateKeyToCoverageDate,
 } = require("../utils/dateUtils");
-const { sendCalloutOffer, remainingFor } = require("../utils/callouts");
+const { sendCalloutOffer, remainingFor, rankForOffer, WAVE_MINUTES } = require("../utils/callouts");
 
 const loadCandidates = async ({ tenantId, coverage }) => {
   const [prefs, settings] = await Promise.all([
@@ -39,6 +39,16 @@ const loadCandidates = async ({ tenantId, coverage }) => {
     overtimeThresholdMinutes: (prefs?.weeklyOvertimeThresholdHours || 40) * 60,
   });
   return { candidates, prefs, settings, weekStart };
+};
+
+/** Staff ids who could take this shift now without overtime (for later call-out waves); null if it can't be worked out. */
+exports.eligibleNow = async (tenantId, coverage) => {
+  try {
+    const { candidates } = await loadCandidates({ tenantId, coverage });
+    return new Set(candidates.filter((r) => r.eligible && !r.overtimeIfAssigned).map((r) => String(r.staff._id)));
+  } catch {
+    return null;
+  }
 };
 
 /** Who could take this shift without going into overtime, for the call-out text to managers. */
@@ -162,21 +172,28 @@ exports.fillByText = async (req, res, next) => {
       { $set: { status: "cancelled" } },
     );
 
+    // Most likely to say yes first. Unless the scheduler picked people or asked for everyone,
+    // a few get it now and the rest in waves while it's still open: fewer texts, same fill.
+    const ranked = await rankForOffer(coverage.tenantId, chosen);
     const offer = await sendCalloutOffer({
       tenant: req.tenant,
       coverage,
-      people: chosen.map((row) => row.staff),
+      people: ranked.map((row) => row.staff),
       createdBy: req.user._id,
       timezone: settings.timezone,
+      waves: !requested && req.body?.everyone !== true,
     });
 
     res.status(201).json({
       offerId: offer._id,
       sentTo: offer.recipients.filter((r) => r.channel).length,
+      queued: offer.recipients.filter((r) => !r.sentAt && !r.notReachedReason).length,
+      waveSize: offer.waveSize || null,
+      waveMinutes: offer.waveSize ? WAVE_MINUTES : null,
       bySms: offer.recipients.filter((r) => r.channel === "sms").length,
       byEmail: offer.recipients.filter((r) => r.channel === "email").length,
       notReached: offer.recipients
-        .filter((r) => !r.channel)
+        .filter((r) => !r.channel && r.notReachedReason)
         .map((r) => ({ staffId: r.staffId, name: r.name, reason: r.notReachedReason })),
       skippedForOvertime: skipOvertime
         ? candidates.filter((row) => row.eligible && row.overtimeIfAssigned).length

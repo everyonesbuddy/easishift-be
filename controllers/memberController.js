@@ -212,7 +212,7 @@ const optInInApp = async (req, member) => {
   const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
   if (!hasFeature(getEffectivePlanKey(tenant), "sms")) return;
   const result = await sendSMS(member.phoneE164, managerConfirmText(tenant.name || "Your workplace")).catch((e) => ({ success: false, error: e?.message }));
-  await logMessage({ tenantId: tenant._id, staffId: member._id, kind: "opt_in_confirm", refId: null, channel: "sms", to: member.phoneE164, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
+  await logMessage({ tenantId: tenant._id, staffId: member._id, kind: "opt_in_confirm", refId: null, channel: "sms", to: member.phoneE164, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
 };
 
 /**

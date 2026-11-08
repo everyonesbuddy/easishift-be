@@ -147,7 +147,11 @@ async function runFor(tenant, which, { now = new Date(), force = false } = {}) {
     const results = await alertManagers({
       tenantId: tenant._id,
       kind: "morning_summary",
-      sms: (m) => buildMorningSummary(facts, m, link).sms,
+      // Texted only when something needs them (an open slot, an uncovered call-out, a request…); otherwise email.
+      sms: (m) => {
+        const b = buildMorningSummary(facts, m, link);
+        return b.needsYou || force ? b.sms : null; // HQ's test button always texts, so you can see it
+      },
       emailSubject: (m) => buildMorningSummary(facts, m, link).subject,
       emailHtml: (m) => buildMorningSummary(facts, m, link).html,
     });
@@ -159,7 +163,8 @@ async function runFor(tenant, which, { now = new Date(), force = false } = {}) {
     const results = await alertManagers({
       tenantId: tenant._id,
       kind: "morning_summary", // same off switch as the summary
-      sms: (m) => buildNudge(facts.step, facts.facility, m).sms,
+      // Nudges go by email, except "publish next week" on Friday, which is time-sensitive.
+      sms: (m) => (facts.step.key === "publish_next" || force ? buildNudge(facts.step, facts.facility, m).sms : null),
       emailSubject: (m) => buildNudge(facts.step, facts.facility, m).subject,
       emailHtml: (m) => buildNudge(facts.step, facts.facility, m).html,
     });

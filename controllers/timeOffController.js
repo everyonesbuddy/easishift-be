@@ -84,7 +84,8 @@ exports.requestTimeOff = async (req, res, next) => {
         tenantId: req.tenantId,
         kind: "timeoff_alert",
         refId: timeOffRequest._id,
-        sms: `WiserShifts: ${req.user.name || "A staff member"} asked for time off ${timeOffWindow}. Review it: ${appUrl("/timeoff-decisions")}`,
+        // Email only: not urgent, and the morning summary lists requests still waiting.
+        sms: null,
         emailSubject: `Time-off request: ${req.user.name || "staff member"}`,
         emailHtml: (person) => `
           <p>Hi ${escapeHtml(firstName(person.name))},</p>

@@ -232,6 +232,7 @@ const ROUTES = [
   ["delete", "/hq/facebook/people/{id}", "HQ", "Remove someone to message"],
   ["post", "/hq/facebook/people/{id}/log", "HQ", "Log a person action (message, followup, replied, call_booked, signed_up, not_interested)", { body: { action: "message" } }],
   ["delete", "/hq/facebook/activity/{activityId}", "HQ", "Undo a logged Facebook action (puts the group or person back)"],
+  ["get", "/hq/customers/texting", "HQ", "Texts sent this month across every workspace: count, segments, estimated cost, by kind, and the top workspaces"],
   ["get", "/hq/customers/lookup", "HQ", "Find a workspace by anyone's email (or q= its name): its managers, whether they can get texts, today's numbers, and its next setup step", { query: ["email", "q"] }],
   ["post", "/hq/customers/{tenantId}/opt-in", "HQ", "Text the workspace's managers who have a phone and haven't answered the opt-in text (or one of them, with userId)", { body: { userId: "…" } }],
   ["post", "/hq/customers/{tenantId}/test-message", "HQ", "Send that workspace's managers the morning summary, the next-step nudge or a sample call-out alert, for real, now", { body: { which: "summary" } }],

@@ -3703,11 +3703,13 @@ exports.updateOwnScheduleStatus = async (req, res, next) => {
       const who = req.user.name || "Someone";
       const role = require("../utils/morningSummary").role(schedule.role);
       const cover = canCover === null ? "" : canCover === 0 ? " Nobody can cover it without overtime." : ` ${canCover} can cover it without overtime.`;
+      // A text only when it's urgent (the shift starts within a day); further out, email does.
+      const urgent = new Date(schedule.startTime) - Date.now() < 24 * 3600 * 1000;
       await alertManagers({
         tenantId: req.tenantId,
         kind: "callout_alert",
         refId: schedule._id,
-        sms: `WiserShifts: ${who} called out of ${role} ${when}.${cover} Fill it: ${link}`,
+        sms: urgent ? `WiserShifts: ${who} called out of ${role} ${when}.${cover} Fill it: ${link}` : null,
         emailSubject: `${who} called out: ${when}`,
         emailHtml: (person) => `
           <p>Hi ${escapeHtml(firstName(person.name))},</p>

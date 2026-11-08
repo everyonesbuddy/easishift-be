@@ -76,6 +76,14 @@ const facilityPreferencesSchema = new mongoose.Schema(
       min: 1,
     },
 
+    // Which shifts get a reminder text: "smart" = the first shift back after a day off
+    // (people working in a row already know), "all" = every shift, "off" = none.
+    shiftReminderMode: {
+      type: String,
+      enum: ["smart", "all", "off"],
+      default: "smart",
+    },
+
     /**
      * Whether the facility wants staff notified when a new open coverage
      * slot is posted (opt-in broadcast).

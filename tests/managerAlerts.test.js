@@ -87,3 +87,32 @@ test("roles read naturally in texts", () => {
   assert.equal(role("concierge"), "Concierge");
   assert.equal(role("RN"), "RN");
 });
+
+test("next step: earlier steps first; getting-started steps stop for abandoned signups", () => {
+  const { nextStep, buildNudge } = require("../utils/setupNudge");
+  const link = (p) => `https://app.example${p}`;
+  const now = new Date("2026-11-09T15:00:00Z");
+  const fresh = { createdAt: new Date("2026-11-01"), setupDone: false, staff: 0, staffWithPhone: 0, optedIn: 0, smsPlan: true, thisWeekPublished: false, nextWeekPublished: false, weekday: 1 };
+  assert.equal(nextStep(fresh, link, now).key, "setup");
+  assert.equal(nextStep({ ...fresh, createdAt: new Date("2026-08-01") }, link, now), null, "signed up months ago and never set up: leave them be");
+  assert.equal(nextStep({ ...fresh, setupDone: true }, link, now).key, "staff");
+  assert.equal(nextStep({ ...fresh, setupDone: true, staff: 12 }, link, now).key, "phones");
+  const ready = { ...fresh, setupDone: true, staff: 12, staffWithPhone: 10 };
+  assert.equal(nextStep(ready, link, now).key, "publish");
+  assert.equal(nextStep({ ...ready, thisWeekPublished: true, weekday: 2 }, link, now)?.key, "optin");
+  assert.equal(nextStep({ ...ready, thisWeekPublished: true, weekday: 4 }, link, now).key, "publish_next", "from Thursday, next week");
+  assert.equal(nextStep({ ...ready, thisWeekPublished: true, nextWeekPublished: true, optedIn: 8 }, link, now), null);
+  assert.equal(nextStep({ ...ready, thisWeekPublished: true, smsPlan: false }, link, now), null, "no texting plan: don't ask for opt-ins");
+
+  const n = buildNudge(nextStep(fresh, link, now), "Little Bonanza", { name: "Joseph Adeyemo" });
+  assert.match(n.sms, /^WiserShifts · Little Bonanza: Hi Joseph\. Finish setting up WiserShifts\..*https:\/\/app\.example\/setup$/);
+  assert.equal(n.subject, "Finish setting up Little Bonanza");
+  assert.match(n.html, /Finish setup/);
+});
+
+test("morning summary: carries the next step, and links to it on an otherwise quiet day", () => {
+  const facts = { ...base, open: [], step: { key: "publish_next", text: "Next week isn't published yet.", link: "https://app.example/schedule" } };
+  const s = buildMorningSummary(facts, { name: "Melanie" }, "https://app.example/dashboard");
+  assert.match(s.sms, /Next step: Next week isn't published yet\. https:\/\/app\.example\/schedule$/);
+  assert.equal(s.needsYou, 1);
+});

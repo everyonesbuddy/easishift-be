@@ -24,6 +24,7 @@ const list = (xs, max = 3) => (xs.length > max ? `${xs.slice(0, max).join(", ")}
  * }
  */
 function buildMorningSummary(facts, manager, link) {
+  // eslint-disable-next-line no-param-reassign
   const tz = facts.timezone || "UTC";
   const t = (d) => DateTime.fromJSDate(new Date(d), { zone: tz }).toFormat("h:mma").replace(":00", "").toLowerCase();
   const day = (d) => DateTime.fromJSDate(new Date(d), { zone: tz });
@@ -46,8 +47,11 @@ function buildMorningSummary(facts, manager, link) {
   if (facts.pendingSwaps) waiting.push(plural(facts.pendingSwaps, "swap"));
   if (waiting.length) parts.push(`Waiting on you: ${waiting.join(", ")}.`);
   if (facts.overtime.length) parts.push(`Heading into overtime this week: ${list(facts.overtime.map((o) => `${o.name} (${o.hours}h)`))}.`);
+  // The one thing that would get the most out of WiserShifts next (publish next week, add phones…).
+  if (facts.step) parts.push(`Next step: ${facts.step.text}`);
 
-  const needsYou = facts.open.length + facts.callouts.filter((c) => !c.coveredBy).length + (facts.pendingTimeOff || 0) + (facts.pendingSwaps || 0);
+  const needsYou = facts.open.length + facts.callouts.filter((c) => !c.coveredBy).length + (facts.pendingTimeOff || 0) + (facts.pendingSwaps || 0) + (facts.step ? 1 : 0);
+  if (facts.step && facts.open.length + facts.callouts.length + (facts.pendingTimeOff || 0) + (facts.pendingSwaps || 0) === 0) link = facts.step.link;
   const greeting = `Good morning, ${first(manager.name)}.`;
   const sms = `WiserShifts · ${facts.facility}: ${greeting} ${parts.join(" ")}${needsYou ? ` ${link}` : ""}`;
   const subject = needsYou ? `${facts.facility} today: ${plural(needsYou, "thing")} need${needsYou === 1 ? "s" : ""} you` : `${facts.facility} today: all covered`;

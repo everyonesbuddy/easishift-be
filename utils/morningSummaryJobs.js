@@ -15,12 +15,18 @@ const User = require("../models/userModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const ManagerDigest = require("../models/managerDigestModel");
 const { getWeekSettings } = require("./weekService");
-const { weekStartFor, weekBounds } = require("./dateUtils");
+const { weekStartFor, weekBounds, dateKeyToCoverageDate } = require("./dateUtils");
+const ScheduleWeek = require("../models/scheduleWeekModel");
+const { findSchedulers } = require("./schedulers");
+const { nextStep, buildNudge } = require("./setupNudge");
+const { getEffectivePlanKey, hasFeature } = require("../config/plans");
 const { remainingFor } = require("./callouts");
 const { buildMorningSummary } = require("./morningSummary");
 const { alertManagers, appUrl } = require("./managerAlerts");
 
-const SEND_HOUR = 6;
+const SEND_HOUR = 6; // the morning summary
+const NUDGE_HOUR = 10; // a next-step nudge on its own, on quiet days
+const NUDGE_DAYS = new Set([1, 3, 5]); // Monday, Wednesday, Friday
 const WORKING = ["scheduled", "in_progress", "completed", "left_early"];
 
 /** What happened and what's coming, for one workspace's day. */
@@ -75,8 +81,33 @@ async function factsFor(tenant, now = new Date()) {
     .map((id) => ({ name: String(names.get(id) || "Someone").split(/\s+/)[0], hours: Math.round((minutes.get(id) / 60) * 10) / 10 }))
     .sort((a, b) => b.hours - a.hours);
 
+  // Where they are in getting started, for the next step.
+  const thisKey = weekStartFor(now, timezone, weekStartsOn);
+  const nextKey = DateTime.fromISO(thisKey, { zone: timezone }).plus({ weeks: 1 }).toISODate();
+  const [managers, people, weeks] = await Promise.all([
+    findSchedulers(tenantId).select("_id").lean(),
+    User.find({ tenantId, status: { $ne: "archived" } }).select("phoneE164 smsConsent").lean(),
+    ScheduleWeek.find({ tenantId, weekStart: { $in: [dateKeyToCoverageDate(thisKey), dateKeyToCoverageDate(nextKey)] }, status: "published" }).select("weekStart").lean(),
+  ]);
+  const mgr = new Set(managers.map((m) => String(m._id)));
+  const staff = people.filter((u) => !mgr.has(String(u._id)));
+  const published = new Set(weeks.map((w) => new Date(w.weekStart).toISOString().slice(0, 10)));
+  const setup = {
+    createdAt: tenant.createdAt,
+    setupDone: Boolean(tenant.setupCompletedAt),
+    staff: staff.length,
+    staffWithPhone: staff.filter((u) => u.phoneE164).length,
+    optedIn: staff.filter((u) => u.phoneE164 && u.smsConsent?.status === "opted_in").length,
+    smsPlan: hasFeature(getEffectivePlanKey(tenant), "sms"),
+    thisWeekPublished: published.has(thisKey),
+    nextWeekPublished: published.has(nextKey),
+    weekday: local.weekday,
+  };
+
   return {
     facility: tenant.name || "Your facility",
+    setup,
+    step: nextStep(setup, appUrl, now),
     timezone,
     dayKey: local.toISODate(),
     localHour: local.hour,
@@ -89,36 +120,72 @@ async function factsFor(tenant, now = new Date()) {
   };
 }
 
-/** Send to every workspace where it's 6 a.m. now and something is happening today. */
+const isQuiet = (f) => !f.shiftsToday && !f.open.length && !f.callouts.length && !f.pendingTimeOff && !f.pendingSwaps;
+
+/** Claim a workspace's day for one kind of message, so it goes out once even with two servers. */
+async function claim(tenantId, dayKey) {
+  try {
+    await ManagerDigest.create({ tenantId, dayKey });
+    return true;
+  } catch (e) {
+    if (e?.code === 11000) return false;
+    throw e;
+  }
+}
+
+/**
+ * Send one workspace's message now. which: "summary" (the morning summary,
+ * with the next step in it), "nudge" (the next step on its own). force skips
+ * the time and once-a-day checks (HQ's test button).
+ */
+async function runFor(tenant, which, { now = new Date(), force = false } = {}) {
+  const facts = await factsFor(tenant, now);
+  if (which === "summary") {
+    if (!force && isQuiet(facts)) return { sent: 0, skipped: "quiet" };
+    if (!force && !(await claim(tenant._id, facts.dayKey))) return { sent: 0, skipped: "already_sent" };
+    const link = appUrl("/dashboard");
+    const results = await alertManagers({
+      tenantId: tenant._id,
+      kind: "morning_summary",
+      sms: (m) => buildMorningSummary(facts, m, link).sms,
+      emailSubject: (m) => buildMorningSummary(facts, m, link).subject,
+      emailHtml: (m) => buildMorningSummary(facts, m, link).html,
+    });
+    return { sent: results.filter((r) => r.delivered).length, results, facts };
+  }
+  if (which === "nudge") {
+    if (!facts.step) return { sent: 0, skipped: "nothing_to_nudge", facts };
+    if (!force && !(await claim(tenant._id, `${facts.dayKey}:nudge`))) return { sent: 0, skipped: "already_sent" };
+    const results = await alertManagers({
+      tenantId: tenant._id,
+      kind: "morning_summary", // same off switch as the summary
+      sms: (m) => buildNudge(facts.step, facts.facility, m).sms,
+      emailSubject: (m) => buildNudge(facts.step, facts.facility, m).subject,
+      emailHtml: (m) => buildNudge(facts.step, facts.facility, m).html,
+    });
+    return { sent: results.filter((r) => r.delivered).length, results, facts };
+  }
+  throw new Error(`Unknown message: ${which}`);
+}
+
+/**
+ * Hourly. At 6 a.m. facility time: the morning summary wherever something is
+ * happening today. At 10 a.m. on Mondays, Wednesdays and Fridays: the next
+ * step on its own wherever the day is quiet and something's left to do
+ * (signed up but never set up, no staff, nothing published…).
+ */
 async function sendMorningSummaries(now = new Date()) {
   let sent = 0;
-  const tenants = await Tenant.find({}).select("name").lean();
+  const tenants = await Tenant.find({}).select("name createdAt setupCompletedAt plan subscriptionStatus trialEndsAt").lean();
   for (const tenant of tenants) {
     try {
       const { timezone } = await getWeekSettings(tenant._id);
       const local = DateTime.fromJSDate(now, { zone: timezone });
-      if (local.hour !== SEND_HOUR) continue;
-      const facts = await factsFor(tenant, now);
-      const quiet = !facts.shiftsToday && !facts.open.length && !facts.callouts.length && !facts.pendingTimeOff && !facts.pendingSwaps;
-      if (quiet) continue;
-      // Claim the day first so two servers never both send.
-      try {
-        await ManagerDigest.create({ tenantId: tenant._id, dayKey: facts.dayKey });
-      } catch (e) {
-        if (e?.code === 11000) continue;
-        throw e;
+      if (local.hour === SEND_HOUR) sent += (await runFor(tenant, "summary", { now })).sent;
+      else if (local.hour === NUDGE_HOUR && NUDGE_DAYS.has(local.weekday)) {
+        const facts = await factsFor(tenant, now);
+        if (isQuiet(facts) && facts.step) sent += (await runFor(tenant, "nudge", { now })).sent;
       }
-      const link = appUrl("/dashboard");
-      const results = await alertManagers({
-        tenantId: tenant._id,
-        kind: "morning_summary",
-        sms: (m) => buildMorningSummary(facts, m, link).sms,
-        emailSubject: (m) => buildMorningSummary(facts, m, link).subject,
-        emailHtml: (m) => buildMorningSummary(facts, m, link).html,
-      });
-      const n = results.filter((r) => r.delivered).length;
-      sent += n;
-      await ManagerDigest.updateOne({ tenantId: tenant._id, dayKey: facts.dayKey }, { $set: { sent: n } });
     } catch (err) {
       console.error(`morning summary failed for ${tenant._id}:`, err.message);
     }
@@ -126,4 +193,4 @@ async function sendMorningSummaries(now = new Date()) {
   return { sent };
 }
 
-module.exports = { sendMorningSummaries, factsFor, SEND_HOUR };
+module.exports = { sendMorningSummaries, runFor, factsFor, SEND_HOUR, NUDGE_HOUR };

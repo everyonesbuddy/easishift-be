@@ -18,6 +18,7 @@ const recipientSchema = new mongoose.Schema(
       default: "none",
     },
     respondedAt: { type: Date, default: null },
+    wave: { type: Number, default: 1 }, // which wave they're in; later waves only go out if it's still open
   },
   { _id: false },
 );
@@ -36,11 +37,14 @@ const calloutOfferSchema = new mongoose.Schema(
     filledBy: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
     filledAt: { type: Date, default: null },
     expiresAt: { type: Date, required: true }, // the shift's start time
+    waveSize: { type: Number, default: null }, // null = everyone at once
+    nextWaveAt: { type: Date, default: null }, // when the next wave goes, if still open
   },
   { timestamps: true },
 );
 
 calloutOfferSchema.index({ tenantId: 1, coverageId: 1, status: 1 });
+calloutOfferSchema.index({ status: 1, nextWaveAt: 1 });
 calloutOfferSchema.index({ "recipients.phoneE164": 1, status: 1, createdAt: -1 });
 
 module.exports = mongoose.model("CalloutOffer", calloutOfferSchema);

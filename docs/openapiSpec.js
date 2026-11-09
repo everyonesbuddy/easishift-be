@@ -52,9 +52,10 @@ const ROUTES = [
 
   // ── Members (accounts) ────────────────────────────────────────────────────
   ["get", "/members", "Members", "List owner, schedulers and viewers"],
-  ["post", "/members/invite", "Members", "Invite an admin, scheduler or viewer (role: administrator | scheduler | viewer; viewers are free)", { body: { name: "Sam", email: "sam@example.com", role: "scheduler" } }],
+  ["post", "/members/invite", "Members", "Invite an admin, scheduler or viewer (role: administrator | scheduler | viewer; viewers are free). With a phone, they also get the opt-in text", { body: { name: "Sam", email: "sam@example.com", role: "scheduler", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],
   ["post", "/members/{id}/resend-invite", "Members", "Resend invite"],
-  ["patch", "/members/{id}", "Members", "Change role", { body: { role: "viewer" } }],
+  ["patch", "/members/me", "Members", "Your own name, email and phone (alerts and the morning summary by text). textConsent: true opts you in now (with a confirmation text); otherwise a new number gets the opt-in text", { body: { name: "Sam Lee", email: "sam@example.com", userPhone: "5551234567", userPhoneCountryCode: "+1", textConsent: true } }],
+  ["patch", "/members/{id}", "Members", "Change a member's name, email, phone and/or role (owner). A new email on a pending invite resends it; a new phone gets the managers' opt-in text", { body: { name: "Sam Lee", email: "sam@example.com", userPhone: "5551234567", userPhoneCountryCode: "+1", role: "viewer" } }],
   ["post", "/members/{id}/make-owner", "Members", "Transfer ownership (owner only)"],
   ["post", "/members/{id}/staff-profile", "Members", "Also put this member on the schedule (creates their staff contact)", { body: { role: "lpn", userPhone: "5551234567", userPhoneCountryCode: "+1" } }],
   ["delete", "/members/{id}", "Members", "Remove"],
@@ -231,6 +232,10 @@ const ROUTES = [
   ["delete", "/hq/facebook/people/{id}", "HQ", "Remove someone to message"],
   ["post", "/hq/facebook/people/{id}/log", "HQ", "Log a person action (message, followup, replied, call_booked, signed_up, not_interested)", { body: { action: "message" } }],
   ["delete", "/hq/facebook/activity/{activityId}", "HQ", "Undo a logged Facebook action (puts the group or person back)"],
+  ["get", "/hq/customers/texting", "HQ", "Texts sent this month across every workspace: count, segments, estimated cost, by kind, and the top workspaces"],
+  ["get", "/hq/customers/lookup", "HQ", "Find a workspace by anyone's email (or q= its name): its managers, whether they can get texts, today's numbers, and its next setup step", { query: ["email", "q"] }],
+  ["post", "/hq/customers/{tenantId}/opt-in", "HQ", "Text the workspace's managers who have a phone and haven't answered the opt-in text (or one of them, with userId)", { body: { userId: "…" } }],
+  ["post", "/hq/customers/{tenantId}/test-message", "HQ", "Send that workspace's managers the morning summary, the next-step nudge or a sample call-out alert, for real, now", { body: { which: "summary" } }],
   ["get", "/hq/money", "HQ", "Money: the year's P&L by month (Stripe income less expenses), MRR, paying and trial customers, every subscription and expense. Stripe is read only", { query: ["year", "refresh"] }],
   ["post", "/hq/money/import", "HQ", "Import the expense sheet (a Google Sheets link anyone can view, or CSV): adds or updates each service by name", { body: { url: "https://docs.google.com/spreadsheets/d/…/edit", year: 2026 } }],
   ["post", "/hq/money/hide", "HQ", "Leave a Stripe customer (a test checkout) out of Money, or bring them back with hidden: false", { body: { customerId: "cus_…", hidden: true, label: "Test checkouts" } }],

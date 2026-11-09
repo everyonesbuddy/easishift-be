@@ -8,6 +8,12 @@
 const mongoose = require("mongoose");
 const { escapeHtml } = require("../utils/notify");
 const User = require("../models/userModel");
+const Tenant = require("../models/tenantModel");
+const { buildE164Number } = require("../utils/phone");
+const { requestOptIn, managerConfirmText, logMessage } = require("../utils/notify");
+const { sendSMS } = require("../utils/sendSMS");
+const { hasFeature } = require("../config/plans");
+const { getEffectivePlanKey } = require("../config/plans");
 const { getUserRoles } = require("../config/authorization");
 const { assertLimit } = require("../utils/planLimits");
 const { createStaffContact } = require("./staffController");
@@ -38,6 +44,10 @@ const toMemberResponse = (user) => ({
   _id: user._id,
   name: user.name,
   email: user.email,
+  userPhone: user.userPhone || "",
+  userPhoneCountryCode: user.userPhoneCountryCode || "+1",
+  phoneE164: user.phoneE164 || "",
+  textStatus: user.phoneE164 ? user.smsConsent?.status || "none" : "no_phone",
   role: getMemberRole(user),
   status: user.status || "active",
   invitePending: !user.passwordHash,
@@ -147,6 +157,15 @@ exports.inviteMember = async (req, res, next) => {
       status: "active",
     });
 
+    // A phone on the invite: saved, and they get the opt-in text.
+    if (req.body?.userPhone) {
+      const phoneErr = await applyPhone(req, member);
+      if (phoneErr) {
+        await User.deleteOne({ _id: member._id });
+        return res.status(400).json({ message: phoneErr });
+      }
+    }
+
     const emailResult = await sendInviteEmail(req, member);
     res.status(201).json({
       ...toMemberResponse(member),
@@ -186,16 +205,108 @@ exports.resendInvite = async (req, res, next) => {
  * PATCH /api/v1/members/:id
  * Body: { role: "administrator" | "scheduler" | "viewer" }
  */
+/** Opted in from inside the app: record how, and send the confirmation text (texting plans). */
+const optInInApp = async (req, member) => {
+  member.smsConsent = { status: "opted_in", updatedAt: new Date(), method: "in_app" };
+  await member.save({ validateBeforeSave: false });
+  const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
+  if (!hasFeature(getEffectivePlanKey(tenant), "sms")) return;
+  const result = await sendSMS(member.phoneE164, managerConfirmText(tenant.name || "Your workplace")).catch((e) => ({ success: false, error: e?.message }));
+  await logMessage({ tenantId: tenant._id, staffId: member._id, kind: "opt_in_confirm", refId: null, channel: "sms", to: member.phoneE164, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
+};
+
+/**
+ * A team member's phone, for call-out alerts and the morning summary by text.
+ * A new number starts over on consent and gets the managers' opt-in text
+ * (texting plans). Returns an error message, or null.
+ */
+const applyPhone = async (req, member) => {
+  const isSelf = String(req.user?._id) === String(member._id);
+  // Someone adding their own number and ticking "Text me alerts" has said yes, in the app.
+  const selfConsent = isSelf && req.body?.textConsent === true;
+  if (req.body?.userPhone === undefined) {
+    if (selfConsent && member.phoneE164 && member.smsConsent?.status !== "opted_in") await optInInApp(req, member);
+    return null;
+  }
+  const raw = String(req.body.userPhone || "").trim();
+  const code = String(req.body.userPhoneCountryCode || member.userPhoneCountryCode || "+1").trim();
+  const e164 = raw ? buildE164Number(code, raw) : null;
+  if (raw && !e164) return "That phone number doesn't look right.";
+  const changed = (e164 || null) !== (member.phoneE164 || null);
+  member.userPhone = raw ? raw : null;
+  member.userPhoneCountryCode = code;
+  member.phoneE164 = e164;
+  if (changed) member.smsConsent = { status: "none", updatedAt: new Date() };
+  await member.save({ validateBeforeSave: false });
+  if (e164 && selfConsent && member.smsConsent?.status !== "opted_in") {
+    await optInInApp(req, member);
+  } else if (changed && e164) {
+    const tenant = req.tenant || (await Tenant.findById(req.tenantId).lean());
+    await requestOptIn({ tenant, planKey: getEffectivePlanKey(tenant), person: member, manager: true }).catch(() => null);
+    member.smsConsent = (await User.findById(member._id).select("smsConsent").lean())?.smsConsent || member.smsConsent;
+  }
+  return null;
+};
+
+/**
+ * Name, email and phone together. Email signs them in, so it must be free
+ * across WiserShifts; a pending invite goes to the new address. Returns
+ * { status, message } on a problem, or null.
+ */
+const applyContact = async (req, member) => {
+  const b = req.body || {};
+  let emailChanged = false;
+  if (b.name !== undefined) {
+    const name = String(b.name || "").trim().slice(0, 100);
+    if (!name) return { status: 400, message: "Name can't be empty." };
+    member.name = name;
+  }
+  if (b.email !== undefined) {
+    const email = normalizeEmail(b.email);
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return { status: 400, message: "That email doesn't look right." };
+    if (email !== member.email) {
+      const taken = await User.findOne({ email, loginEnabled: true, _id: { $ne: member._id } }).select("tenantId").lean();
+      if (taken) return { status: 409, message: String(taken.tenantId) === String(req.tenantId) ? "Someone on your team already uses that email." : "That email already has a WiserShifts account." };
+      member.email = email;
+      emailChanged = true;
+    }
+  }
+  const phoneErr = await applyPhone(req, member); // saves when the phone is in the request
+  if (phoneErr) return { status: 400, message: phoneErr };
+  if (req.body?.userPhone === undefined && (b.name !== undefined || emailChanged)) await member.save({ validateBeforeSave: false });
+  if (emailChanged && !member.passwordHash) await sendInviteEmail(req, member).catch(() => null);
+  return null;
+};
+
+/** PATCH /api/v1/members/me { name, email, userPhone, userPhoneCountryCode }: your own details. */
+exports.updateMe = async (req, res, next) => {
+  try {
+    const member = await findMember(req, String(req.user._id));
+    if (!member) return res.status(404).json({ message: "Member not found" });
+    const err = await applyContact(req, member);
+    if (err) return res.status(err.status).json({ message: err.message });
+    res.json(toMemberResponse(member));
+  } catch (err) {
+    next(err);
+  }
+};
+
 exports.updateMember = async (req, res, next) => {
   try {
+    const member = await findMember(req);
+    if (!member) return res.status(404).json({ message: "Member not found" });
+
+    const contactErr = await applyContact(req, member);
+    if (contactErr) return res.status(contactErr.status).json({ message: contactErr.message });
+    // Just their details: done.
+    if (req.body?.role === undefined) return res.json(toMemberResponse(member));
+
     const role = String(req.body?.role || "").toLowerCase();
     if (!INVITABLE_ROLES.includes(role))
       return res
         .status(400)
         .json({ message: "role must be scheduler or viewer" });
 
-    const member = await findMember(req);
-    if (!member) return res.status(404).json({ message: "Member not found" });
     if (getMemberRole(member) === "owner") {
       return res.status(400).json({
         message: "Transfer ownership first to change the owner's role",
@@ -304,3 +415,4 @@ exports.addStaffProfile = async (req, res, next) => {
 };
 
 exports._getMemberRole = getMemberRole;
+exports._test = { applyContact };

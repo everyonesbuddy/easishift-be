@@ -106,9 +106,9 @@ exports.handleInbound = async (req, res, next) => {
       .replace(/[^A-Z]/g, "");
     if (!from) return twiml(res);
 
+    // Staff contacts and team members (managers get alerts by text too).
     const contacts = await User.find({
       phoneE164: from,
-      loginEnabled: false,
       status: "active",
     });
 
@@ -128,7 +128,7 @@ exports.handleInbound = async (req, res, next) => {
 
     if (YES_WORDS.has(word)) {
       const offer = await findOpenOfferForPhone(from);
-      const recipient = offer?.recipients.find((r) => r.phoneE164 === from);
+      const recipient = offer?.recipients.find((r) => r.phoneE164 === from && r.sentAt);
       const staff =
         recipient && contacts.find((c) => String(c._id) === String(recipient.staffId));
       if (offer && staff) {

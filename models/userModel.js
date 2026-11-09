@@ -111,6 +111,8 @@ const userSchema = new mongoose.Schema(
         default: "none",
       },
       updatedAt: { type: Date, default: null },
+      // How they said yes: "reply" (START or YES to our text) or "in_app" (ticked "Text me alerts" on their own number).
+      method: { type: String, default: null },
     },
     notes: {
       type: String,

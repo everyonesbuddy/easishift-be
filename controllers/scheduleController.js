@@ -2,9 +2,9 @@
 const Schedule = require("../models/scheduleModel");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
+const { alertManagers, appUrl } = require("../utils/managerAlerts");
 const {
   sendToStaff,
-  notifySchedulers,
   shortShift,
   firstName,
   escapeHtml,
@@ -3693,19 +3693,30 @@ exports.updateOwnScheduleStatus = async (req, res, next) => {
     }
     await schedule.save();
 
-    // Tell the schedulers right away so they can fill it.
+    // Tell the managers right away (a text if they've opted in) so they can fill it in one tap.
     if (callingOut) {
       const timezone = await getFacilityTimezone(req.tenantId);
       const when = shortShift(schedule.startTime, schedule.endTime, timezone);
-      const appUrl = String(process.env.FRONTEND_URL || "").replace(/\/+$/, "");
-      await notifySchedulers({
+      const link = appUrl(`/schedule?callout=${schedule._id}`);
+      const coverage = schedule.coverageId ? await Coverage.findOne({ _id: schedule.coverageId, tenantId: req.tenantId }).lean() : null;
+      const canCover = coverage ? await require("./calloutController").coverCount(req.tenantId, coverage) : null;
+      const who = req.user.name || "Someone";
+      const role = require("../utils/morningSummary").role(schedule.role);
+      const cover = canCover === null ? "" : canCover === 0 ? " Nobody can cover it without overtime." : ` ${canCover} can cover it without overtime.`;
+      // A text only when it's urgent (the shift starts within a day); further out, email does.
+      const urgent = new Date(schedule.startTime) - Date.now() < 24 * 3600 * 1000;
+      await alertManagers({
         tenantId: req.tenantId,
-        subject: `${req.user.name} called out: ${when}`,
-        html: (person) => `
+        kind: "callout_alert",
+        refId: schedule._id,
+        sms: urgent ? `WiserShifts: ${who} called out of ${role} ${when}.${cover} Fill it: ${link}` : null,
+        emailSubject: `${who} called out: ${when}`,
+        emailHtml: (person) => `
           <p>Hi ${escapeHtml(firstName(person.name))},</p>
-          <p><strong>${escapeHtml(req.user.name)}</strong> can't make their ${escapeHtml(schedule.role)} shift on ${escapeHtml(when)}.</p>
+          <p><strong>${escapeHtml(who)}</strong> can't make their ${escapeHtml(role)} shift on ${escapeHtml(when)}.</p>
           ${schedule.meta.callOutReason ? `<p>Reason: ${escapeHtml(schedule.meta.callOutReason)}</p>` : ""}
-          ${appUrl ? `<p><a href="${appUrl}/callout/${schedule._id}">Find coverage</a></p>` : ""}`,
+          ${cover ? `<p>${escapeHtml(cover.trim())}</p>` : ""}
+          <p><a href="${link}">Fill it</a>: text the people who can cover, and the first yes takes it.</p>`,
       });
     }
 

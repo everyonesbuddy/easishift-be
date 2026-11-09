@@ -1,3 +1,5 @@
+const { toGsm, segments } = require("./smsText");
+
 const twilioPkg = (() => {
   try {
     return require("twilio");
@@ -14,7 +16,10 @@ const twilioPkg = (() => {
  * @param {string} to - Recipient phone number (in E.164 format, e.g., +15555555555)
  * @param {string} body - SMS message content
  */
-const sendSMS = async (to, body) => {
+const sendSMS = async (to, rawBody) => {
+  // Plain GSM-7 text costs about half as much as text with –, · or curly quotes.
+  const body = toGsm(rawBody);
+  const parts = segments(body);
   try {
     if (!twilioPkg) {
       const msg =
@@ -49,8 +54,8 @@ const sendSMS = async (to, body) => {
         : { from: process.env.TWILIO_PHONE_NUMBER }),
     });
 
-    console.log(`✅ SMS sent to ${to}`);
-    return { success: true, provider: "twilio" };
+    console.log(`✅ SMS sent to ${to} (${parts} segment${parts === 1 ? "" : "s"})`);
+    return { success: true, provider: "twilio", segments: parts };
   } catch (err) {
     console.error(`❌ Failed to send SMS to ${to}:`, err.message);
     return { success: false, error: err && err.message ? err.message : err };

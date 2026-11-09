@@ -9,6 +9,8 @@ const hqKlaviyo = require("./utils/hq/klaviyo");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
+const { sendMorningSummaries } = require("./utils/morningSummaryJobs");
+const { sendNextWaves } = require("./utils/callouts");
 const { closeOutPastShifts } = require("./utils/closeOutShifts");
 const { sendWeeklyLaborReports } = require("./utils/laborReportJobs");
 
@@ -146,6 +148,26 @@ cron.schedule("5 * * * *", async () => {
     if (sent) console.log(`⏰ Sent ${sent} shift reminder(s)`);
   } catch (err) {
     console.error("🚫 Error sending shift reminders:", err);
+  }
+});
+
+// ✅ Cron job: call-out offer waves (every 5 minutes; next few people while a shift is still open)
+cron.schedule("*/5 * * * *", async () => {
+  try {
+    const { sent } = await sendNextWaves();
+    if (sent) console.log(`📣 Sent the next call-out wave to ${sent}`);
+  } catch (err) {
+    console.error("🚫 Error sending call-out waves:", err);
+  }
+});
+
+// ✅ Cron job: managers' morning summary (hourly at :10; sends at 6 a.m. facility time)
+cron.schedule("10 * * * *", async () => {
+  try {
+    const { sent } = await sendMorningSummaries();
+    if (sent) console.log(`☀️ Sent ${sent} morning summar${sent === 1 ? "y" : "ies"}`);
+  } catch (err) {
+    console.error("🚫 Error sending morning summaries:", err);
   }
 });
 

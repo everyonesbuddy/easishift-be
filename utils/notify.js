@@ -23,6 +23,10 @@ const { normalizeZone } = require("./timezoneUtils");
 const optInText = (facilityName) =>
   `${facilityName} uses WiserShifts to send your work schedule. Reply START to get schedule texts. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
 
+// Managers get their own opt-in: what they'll be texted about.
+const managerOptInText = (facilityName) =>
+  `${facilityName} uses WiserShifts. Reply START to get texts when someone calls out or asks for time off, plus a short morning summary. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+
 const firstName = (name) => String(name || "").trim().split(/\s+/)[0] || "there";
 
 const escapeHtml = (value) =>
@@ -51,6 +55,30 @@ const shortWeek = (startKey) => {
     : `${s.toFormat("LLL d")}–${e.toFormat("LLL d")}`;
 };
 
+/**
+ * A safety cap on texting per workspace per month, in segments
+ * (SMS_MONTHLY_SEGMENT_CAP, default 4000; 0 = no cap). Over it, messages go by
+ * email instead until the month turns over. Counted from the logs, cached
+ * for 10 minutes per workspace.
+ */
+const capCache = new Map(); // tenantId → { at, over }
+async function overSmsCap(tenantId, now = new Date()) {
+  const cap = Number(process.env.SMS_MONTHLY_SEGMENT_CAP ?? 4000);
+  if (!cap || !tenantId) return false;
+  const key = String(tenantId);
+  const hit = capCache.get(key);
+  if (hit && now - hit.at < 10 * 60 * 1000) return hit.over;
+  const monthStart = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
+  const [row] = await OutboundMessage.aggregate([
+    { $match: { tenantId: tenantId, channel: "sms", status: "sent", createdAt: { $gte: monthStart } } },
+    { $group: { _id: null, n: { $sum: { $ifNull: ["$segments", 1] } } } },
+  ]);
+  const over = (row?.n || 0) >= cap;
+  if (over && !hit?.over) console.warn(`⚠️ Workspace ${key} reached its monthly texting cap (${cap} segments); sending by email until next month.`);
+  capCache.set(key, { at: now, over });
+  return over;
+}
+
 const logMessage = (entry) =>
   OutboundMessage.create(entry).catch((err) =>
     console.error("Failed to log outbound message:", err.message),
@@ -71,6 +99,7 @@ async function sendToStaff({
   emailHtml,
   refId = null,
   preferences, // optional pre-loaded Preferences doc
+  optInMessage = null, // the opt-in text to ask with (managers get their own)
 }) {
   try {
     const tenantId = tenant._id;
@@ -88,9 +117,9 @@ async function sendToStaff({
     const consent = staff.smsConsent?.status || "none";
     const base = { tenantId, staffId: staff._id, kind, refId };
 
-    if (planHasSms && phone && consent === "opted_in" && smsAllowedByStaff && sms) {
+    if (planHasSms && phone && consent === "opted_in" && smsAllowedByStaff && sms && !(await overSmsCap(tenantId))) {
       const result = await sendSMS(phone, sms);
-      await logMessage({ ...base, channel: "sms", to: phone, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
+      await logMessage({ ...base, channel: "sms", to: phone, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
       if (result?.success) return { delivered: true, channel: "sms" };
       // Fall through to email if the text failed.
     }
@@ -100,8 +129,8 @@ async function sendToStaff({
     const canAskOptIn =
       planHasSms && phone && consent === "none" && smsAllowedByStaff;
     const askOptIn = async () => {
-      const result = await sendSMS(phone, optInText(tenant.name));
-      await logMessage({ ...base, kind: "opt_in", channel: "sms", to: phone, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
+      const result = await sendSMS(phone, optInMessage || optInText(tenant.name));
+      await logMessage({ ...base, kind: "opt_in", channel: "sms", to: phone, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
       if (result?.success) {
         await User.updateOne(
           { _id: staff._id },
@@ -135,6 +164,28 @@ async function sendToStaff({
 }
 
 /** Email the owner and schedulers (best-effort). */
+/**
+ * Ask someone to opt in to texts now (HQ's button, or a manager's phone just
+ * added). Only when they haven't answered STOP. Returns { sent, reason }.
+ */
+async function requestOptIn({ tenant, planKey, person, manager = false }) {
+  const phone = person.phoneE164 || null;
+  if (!phone) return { sent: false, reason: "no_phone" };
+  if (!hasFeature(planKey, "sms")) return { sent: false, reason: "sms_needs_upgrade" };
+  const consent = person.smsConsent?.status || "none";
+  if (consent === "opted_in") return { sent: false, reason: "already_opted_in" };
+  if (consent === "opted_out") return { sent: false, reason: "opted_out" };
+  const result = await sendSMS(phone, manager ? managerOptInText(tenant.name) : optInText(tenant.name));
+  await logMessage({ tenantId: tenant._id, staffId: person._id, kind: "opt_in", refId: null, channel: "sms", to: phone, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
+  if (!result?.success) return { sent: false, reason: "send_failed" };
+  await User.updateOne({ _id: person._id }, { $set: { smsConsent: { status: "pending", updatedAt: new Date() } } });
+  return { sent: true };
+}
+
+/** After someone opts in from inside the app: the confirmation carriers expect, with how to stop. */
+const managerConfirmText = (facilityName) =>
+  `You're set: ${facilityName} will text you from WiserShifts when someone calls out or asks for time off, plus a short morning summary. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+
 async function notifySchedulers({ tenantId, subject, html, excludeUserIds = [] }) {
   try {
     const schedulers = await findSchedulers(tenantId, excludeUserIds)
@@ -153,6 +204,11 @@ module.exports = {
   sendToStaff,
   notifySchedulers,
   optInText,
+  managerOptInText,
+  managerConfirmText,
+  requestOptIn,
+  logMessage,
+  overSmsCap,
   shortShift,
   shortWeek,
   firstName,

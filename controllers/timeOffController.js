@@ -3,9 +3,9 @@ const TimeOff = require("../models/timeOffModel");
 const { DateTime } = require("luxon");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
+const { alertManagers, appUrl } = require("../utils/managerAlerts");
 const {
   sendToStaff,
-  notifySchedulers,
   escapeHtml,
   firstName,
 } = require("../utils/notify");
@@ -71,7 +71,7 @@ exports.requestTimeOff = async (req, res, next) => {
       reason: reason ? String(reason).slice(0, 500) : undefined,
     });
 
-    // Tell the schedulers (email; best-effort).
+    // Tell the managers (a text if they've opted in, else email; best-effort).
     try {
       const facilityTimezone = await getFacilityTimezone(req.tenantId);
       const timeOffWindow = formatRangeInFacilityZone(
@@ -80,17 +80,21 @@ exports.requestTimeOff = async (req, res, next) => {
         facilityTimezone,
       );
       const staffName = escapeHtml(req.user.name || "A staff member");
-      await notifySchedulers({
+      await alertManagers({
         tenantId: req.tenantId,
-        subject: `Time-off request: ${req.user.name || "staff member"}`,
-        html: (person) => `
+        kind: "timeoff_alert",
+        refId: timeOffRequest._id,
+        // Email only: not urgent, and the morning summary lists requests still waiting.
+        sms: null,
+        emailSubject: `Time-off request: ${req.user.name || "staff member"}`,
+        emailHtml: (person) => `
           <p>Hi ${escapeHtml(firstName(person.name))},</p>
           <p>${staffName} requested time off:</p>
           <ul>
             <li><strong>When:</strong> ${escapeHtml(timeOffWindow)}</li>
             <li><strong>Reason:</strong> ${escapeHtml(reason || "(none)")}</li>
           </ul>
-          <p>Review it under Requests in WiserShifts.</p>`,
+          <p><a href="${appUrl("/timeoff-decisions")}">Review it in WiserShifts</a>.</p>`,
       });
     } catch (err) {
       console.error(

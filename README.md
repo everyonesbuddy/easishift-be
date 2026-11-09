@@ -16,13 +16,15 @@ Node.js + Express · MongoDB + Mongoose · Stripe · Postmark/SMTP · Twilio · 
 ### People
 | Kind | `User.loginEnabled` | Roles | Signs in with |
 |---|---|---|---|
-| **Accounts** | `true` | `owner` (one per workspace), `scheduler`, `viewer` (read-only, free) | email + password (JWT) |
+| **Accounts** (team members) | `true` | `owner` (one per workspace), `administrator`, `scheduler`, `viewer` (read-only, free) | email + password (JWT) |
 | **Staff contacts** | `false` | facility roles only: `cna`, `rn`, `caregiver`, … | their personal link `/s/<token>` |
 
 - Staff need a name plus a phone **or** an email.
 - Phone numbers are stored in E.164 (`phoneE164`).
 - Contacts are unique per workspace by phone/email, so the same nurse can work at two facilities.
 - `admin` is a legacy alias of `scheduler`.
+- **Managers** = owner, administrators and schedulers (`utils/schedulers.js`). They get the alerts, the morning summary and the next-step nudges (below).
+- Team members can have a phone too (Members page: invite, **Edit**, or `PATCH /members/me` for yourself). It's only used to text them alerts.
 
 ### Plans (`config/plans.js`)
 | Plan | Monthly | Yearly | Active staff | Schedulers | Support |
@@ -87,31 +89,94 @@ Node.js + Express · MongoDB + Mongoose · Stripe · Postmark/SMTP · Twilio · 
 - `middleware/staffLinkMiddleware.js` turns the token into `req.user` / `req.tenantId` / `req.plan` with staff permissions only, so the normal controllers serve link requests unchanged.
 - Links are revoked on archive and can be rotated (`POST /staff/:id/rotate-link`).
 
-### Notifications (`utils/notify.js`)
-| Situation | Channel |
+### Messages: text or email
+Every message goes through `sendToStaff` in `utils/notify.js` (managers too, via `alertManagers` in `utils/managerAlerts.js`), which picks the channel:
+
+| Situation | What happens |
 |---|---|
-| Paid plan, has a phone, opted in to texts | SMS |
-| otherwise, has email | email |
-| Paid plan, phone, hasn't answered yet | one opt-in text ("Reply START…") |
-| Free with phone only / opted out / no contact | not reached (`sms_needs_upgrade`, `opted_out`, `no_contact`) |
+| Texting plan, has a phone, said yes to texts, under the monthly cap, and the message has a text version | **Text** |
+| Otherwise, has an email | **Email** |
+| Texting plan, has a phone, hasn't answered yet | Email (if any), plus **one opt-in text** asking them to reply START |
+| Free plan with only a phone, said STOP, or no phone and no email | Not reached (`sms_needs_upgrade`, `opted_out`, `no_contact`) |
 
-Every send is logged in `OutboundMessage`. Schedulers get email (`notifySchedulers`).
+Some messages are email-only on purpose (no text version), to save texts. See **When we text and when we email** below.
 
-### Texting (`POST /sms/inbound`, Twilio webhook)
-- `START` opts in and replies with their link; `STOP`-family opts out; `HELP` replies with help.
-- `YES` takes the open call-out shift we texted them about.
-- **Call-outs:**
-  - `POST /schedules/:id/call-out` marks someone out and returns who can cover.
-  - `POST /coverage/:id/fill-by-text` texts eligible staff. It skips people the shift would push into overtime, and the first YES wins.
-  - Everyone else is told it's filled, and schedulers are emailed.
-- Pickups and YES replies share `claimCoverage`, which re-counts after creating the shift so a slot can't be overfilled even when two people answer at once.
+**Saying yes to texts (`User.smsConsent`)**
+- `status`: `none` → `pending` (we sent the opt-in text) → `opted_in` or `opted_out`.
+- `method`: `reply` (they texted START or YES) or `in_app` (a team member added **their own** number and ticked "Text me…"; they get a confirmation text).
+- Nobody can say yes for someone else. A number an owner types in for someone gets the opt-in text, and they reply.
+- Staff and managers get different opt-in wording: `optInText` and `managerOptInText`.
+- A new phone number starts over at `none`.
+
+**Keeping texts cheap**
+- **Plain characters only** (`utils/smsText.js`): one `–`, `·`, curly quote or emoji makes the whole text cost per 70 characters instead of 160. `sendSMS` swaps them for plain ones (`7a-3p`), keeps accents GSM supports, drops the rest, and counts segments.
+- **Monthly cap per workspace:** `SMS_MONTHLY_SEGMENT_CAP` segments (default 4000; `0` = no cap). Over it, messages go by email until the month turns over.
+- **Call-out offers go in waves** and **reminders are smart** (below).
+- Every send is logged in `OutboundMessage` (kind, channel, status, segments). HQ → Customer messages shows texting this month and its estimated cost (`SMS_COST_PER_SEGMENT`).
+
+### When we text and when we email
+| Message | Who | Text when | Otherwise |
+|---|---|---|---|
+| Schedule published (`week_published`) | each staff member on it | always (one per person, all their shifts and their link) | email |
+| Changes to a published week (`shift_added/changed/removed`) | the people affected | always, once the scheduler presses **Send changes** (edits wait and go out together) | email |
+| Shift reminder (`reminder`) | staff | paid plans. **Smart** (default): only the first shift back after a day off. Or every shift, or off (Settings → Notifications) | email |
+| Open-shift offer (`callout_offer`) | eligible staff, not into overtime | always, **in waves**: the 5 most likely to say yes first, then 5 more every 10 minutes while it's open. All at once if it starts within 3 hours, or the scheduler picks people or **Text everyone now** | email |
+| "It's filled" (`callout_filled`) | people who were texted the offer | always | none |
+| Time-off answer (`timeoff`) | the staff member | always | email |
+| Staff link re-sent (`link`) | the staff member | always | email |
+| Call-out alert (`callout_alert`) | managers | the shift starts within 24 hours | email |
+| Time-off request (`timeoff_alert`) | managers | never | email (the morning summary also lists waiting requests) |
+| Morning summary, 6 a.m. (`morning_summary`) | managers | something needs them (an open slot, an uncovered call-out, a request, a next step) | email; skipped on quiet days |
+| Next-step nudge, 10 a.m. Mon/Wed/Fri (`morning_summary`) | managers | only "publish next week" | email |
+| "Someone took the shift", time-off and swap notices, trial and billing emails, the Monday labor email | owners / managers | never | email |
+| Opt-in text (`opt_in`) | anyone with a phone who hasn't answered | once (again only from HQ's button) | none |
+
+HQ → Settings → **Customer messages** sends the morning summary, a nudge, a sample call-out alert or the opt-in text to a workspace's managers on demand. Those test sends always text when they can.
+
+### Texting replies (`POST /sms/inbound`, Twilio webhook)
+- Matches the sender to **any active person with that phone**: staff and team members.
+- `START` (or `YES` with no offer waiting) opts in. `STOP`-family opts out. `HELP` replies with help.
+- `YES` takes the open shift **we offered them**. Someone in a later wave who hasn't been sent the offer can't claim it.
+- Without this webhook set on the Twilio number, no replies reach the app: no opt-ins, no STOPs, no YES to shifts.
+
+**Call-outs**
+- `POST /schedules/:id/call-out` marks someone out and returns who can cover.
+- When staff call out themselves (their link or a text), managers get the call-out alert with a **Fill it** link to `/schedule?callout=<id>`, plus how many can cover without overtime.
+- `POST /coverage/:id/fill-by-text`:
+  - ranks eligible staff with `rankForOffer`: their yes-rate on past offers, then fewest hours this week;
+  - skips anyone it would put into overtime;
+  - sends the first wave. `sendNextWaves` sends the rest only while the shift is still open, rechecking eligibility each time.
+- The first YES wins. Pickups and YES replies share `claimCoverage`, which re-counts after creating the shift, so a slot can't be overfilled even when two people answer at once.
+
+### Managers' alerts, morning summary and nudges
+- **Alerts** (`utils/managerAlerts.js`) go to every manager with a login: call-outs and time-off requests, by the rules above.
+- **Morning summary** (`utils/morningSummary.js` builds it, `utils/morningSummaryJobs.js` sends it):
+  - **When:** 6 a.m. facility time.
+  - **What:** today's shifts, slots still open, call-outs in the last 24 hours and who's covering, time-off and swaps waiting, who's at or over the overtime line this week, and the **next step**.
+  - **Once a day per workspace:** `ManagerDigest` is claimed before sending.
+  - **Off switch:** `Preferences.morningSummaryEnabled` (Staff → Edit → Morning summary).
+- **Next step** (`utils/setupNudge.js`): the one thing the workspace should do next, earliest first:
+  1. finish setup
+  2. add staff
+  3. add phone numbers
+  4. publish the schedule
+  5. publish next week (from Thursday)
+  6. get staff to say yes to texts (when under half have)
+  - The first two stop 45 days after signup.
+  - On quiet days the step goes out on its own at **10 a.m. on Mondays, Wednesdays and Fridays**.
 
 ### Background jobs (`app.js`)
 | When | Job |
 |---|---|
-| hourly at :05 | shift reminders (`utils/reminderJobs.js`, paid plans) |
-| daily 14:00 UTC | trial ending / ended emails (`utils/trialJobs.js`) |
+| every 5 minutes | next wave of open-shift offers, while still open (`utils/callouts.js` `sendNextWaves`) |
+| hourly at :05 | shift reminders, paid plans, smart by default (`utils/reminderJobs.js`) |
+| hourly at :10 | managers' morning summary at 6 a.m. facility time; next-step nudges at 10 a.m. Mon/Wed/Fri (`utils/morningSummaryJobs.js`) |
+| hourly at :20 | Monday labor email, 7 a.m. local on Mondays (`utils/laborReportJobs.js`, paid plans) |
+| hourly at :40 | HQ: email signals from Klaviyo (no-op without `KLAVIYO_PRIVATE_KEY`) |
 | every 2 hours | close out past shifts (`completed`, or `no_show` when the time clock is on) |
+| daily 14:00 UTC | trial ending / ended emails (`utils/trialJobs.js`) |
+
+**Testing locally against the live database:** these jobs send real messages to real customers while your local server runs.
 
 ### Timezones
 - Every instant (`startTime`, `endTime`, `clockInAt`, …) is a UTC `Date`. Calendar days (`Coverage.date`, `ScheduleWeek.weekStart`) are the facility-local day stored at `00:00Z`.
@@ -119,6 +184,18 @@ Every send is logged in `OutboundMessage`. Schedulers get email (`notifySchedule
 
 ### Auto-fill (Facility plan)
 `POST /schedules/auto-generate` with coverage ids builds a draft using role/area/shift/certification compatibility, time off, conflicts, staff preferences, the facility's scheduling pattern, fairness and overtime. Publishing a draft puts the shifts on the schedule; they stay silent drafts until the week is published.
+
+### HQ (WiserShifts' own back office, `/api/v1/hq/...`)
+- **Who:** WiserShifts' own team, separate from workspace accounts. It has its own sign-in (`HqUser`, `HQ_JWT_SECRET`). Create a user with `node scripts/create-hq-user.js`.
+- **What's in it** (controllers `hq*Controller.js`, helpers `utils/hq/`):
+  - **This week and History:** the weekly to-do list from the campaigns, ticked off with outcomes, and a look back at any period.
+  - **Campaigns (playbook):** scripts and templates. Seeded and versioned in `hqPlaybookController.js` (`SEED_VERSION`); your edits are never overwritten.
+  - **Facilities, contacts and Facebook:** the facilities and people we reach out to, and Facebook groups.
+  - **Content calendar and blog:** the blog reads Contentful.
+  - **Results:** signups, funnel, web and search (GA4, Search Console, YouTube), email (Klaviyo).
+  - **Money:** profit and loss from Stripe (read only) plus expenses, and failed-payment nudges.
+  - **Customer messages:** test sends, and texting cost.
+  - **Connections:** Google Sheets sync and backups.
 
 ---
 
@@ -131,10 +208,14 @@ middleware/    authMiddleware (JWT), tenantMiddleware (+ plan), staffLinkMiddlew
                roleMiddleware (requirePermission), planMiddleware (requireFeature)
 models/        Tenant, User, FacilityPreferences, StaffingTemplate, ScheduleWeek,
                Coverage, Schedule, ShiftSwap, TimeOff, Preferences, TimeEntry,
-               StaffLink, CalloutOffer, OutboundMessage, Message, AutoScheduleDraft, TenantAsset
+               StaffLink, CalloutOffer, OutboundMessage, ManagerDigest, Message,
+               AutoScheduleDraft, TenantAsset, and the Hq* models for HQ
 routes/        mounted under /api/v1 in app.js
-utils/         notify, staffLinks, weekService, dateUtils, eligibility, callouts,
-               planLimits, phone, passwordLinks, reminderJobs, trialJobs, sendEmail, sendSMS, …
+utils/         notify, managerAlerts, morningSummary(+Jobs), setupNudge, smsText,
+               staffLinks, weekService, dateUtils, eligibility, callouts, planLimits,
+               phone, passwordLinks, reminderJobs, laborReport(+Jobs), trialJobs,
+               sendEmail, sendSMS, …
+utils/hq/      HQ helpers (week plan, playbook versions, money, blog, Klaviyo, Google, …)
 docs/          openapiSpec.js (API docs), PIVOT_PLAN.md
 tests/         node:test unit tests (npm test)
 ```
@@ -149,6 +230,8 @@ npm start                          # node server.js
 npm test                           # node --test tests/*.test.js
 ```
 `tests/openapiCoverage.test.js` fails if a route is added without documenting it in `docs/openapiSpec.js`.
+
+**`config.env` tip:** wrap values in double quotes, e.g. `DB_URL="mongodb+srv://..."`. dotenv treats an unquoted `#` as the start of a comment, so a password with `#` gets cut off (the error is "mongodb+srv URI cannot have port number"). dotenv also never overrides a variable that's already set in your shell or Windows environment.
 
 ## Environment variables (`config.env`)
 | Variable | Required | Notes |
@@ -168,7 +251,19 @@ npm test                           # node --test tests/*.test.js
 | `POSTMARK_API_TOKEN`, `POSTMARK_SENDER_EMAIL` | yes for email | or SMTP: `EMAIL_HOST`, `EMAIL_PORT`, `EMAIL_USER`, `EMAIL_PASS`, `EMAIL_SECURE`, `EMAIL_FALLBACK_TO_SMTP` |
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN` | yes for texting | |
 | `TWILIO_MESSAGING_SERVICE_SID` | recommended | A2P 10DLC messaging service (else `TWILIO_PHONE_NUMBER`) |
+| `TWILIO_PHONE_NUMBER` | if no messaging service | the number texts come from |
+| `SMS_MONTHLY_SEGMENT_CAP` | no | texting cap per workspace per month, in segments (default 4000; `0` = none). Over it, email instead |
+| `SMS_COST_PER_SEGMENT` | no | for HQ's cost estimate (default `0.0115`) |
 | `ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL` | no | AI form parsing / AI fill |
+| `API_BASE_URL` | no | server URL shown in the API docs |
+| `EMAIL_RATE_LIMIT_GLOBAL_MS`, `EMAIL_RATE_LIMIT_PER_DOMAIN_MS`, `EMAIL_RETRY_BASE_DELAY_MS`, `EMAIL_RETRY_MAX_ATTEMPTS` | no | email pacing and retries |
+| `HQ_JWT_SECRET` | yes for HQ | signs HQ sessions |
+| `HQ_TIMEZONE` | no | HQ's weeks and days (default `America/New_York`) |
+| `HQ_STRIPE_KEY` | no | a restricted read-only Stripe key for HQ Money; otherwise `STRIPE_SECRET_KEY` |
+| `KLAVIYO_PRIVATE_KEY`, `KLAVIYO_LIST_ID` | no | HQ email results and signals |
+| `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_ENVIRONMENT`, `CONTENTFUL_CONTENT_TYPE` | no | HQ's blog list; blog posts count toward the blog campaign |
+| `GOOGLE_SERVICE_ACCOUNT_JSON`, `GA4_PROPERTY_ID`, `GSC_SITE_URL` | no | HQ web and search results, and Google Sheets |
+| `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID` | no | HQ YouTube results |
 
 No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDING_COUPON_ID`, `TWILIO_SID`, `TENANT_ROOT_DOMAIN`, `TENANT_APP_URL_SCHEME`, `TENANT_APP_URL_PORT`, `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, `FRONTEND_BASE_URL`.
 
@@ -188,7 +283,10 @@ No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDIN
    - Enable the customer portal.
    - Webhook events: `checkout.session.completed`, `customer.subscription.updated`, `customer.subscription.deleted`, `invoice.paid`, `invoice.payment_failed`.
 4. **Twilio:**
-   - Register an A2P 10DLC brand and campaign, using `optInText` in `utils/notify.js` as the sample message.
-   - Create a Messaging Service (`TWILIO_MESSAGING_SERVICE_SID`).
+   - Use a paid account. Trial accounts can only send Twilio's own sample messages.
+   - **A number with approval:** either a toll-free number with **Toll-Free Verification**, or a local number with an **A2P 10DLC** brand and campaign. Unapproved numbers get blocked by carriers.
+   - **Opt-in methods to describe:** a reply START or YES to our opt-in text, and a consent checkbox in the app for your own number.
+   - **Sample messages:** `optInText`, `managerOptInText` and a call-out offer.
+   - Put the number in a Messaging Service and set `TWILIO_MESSAGING_SERVICE_SID`.
    - Point incoming messages to `POST {API_PUBLIC_URL}/api/v1/sms/inbound`.
 5. **Frontend:** serve the staff page at `/s/:token`.

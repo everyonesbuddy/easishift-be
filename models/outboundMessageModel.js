@@ -18,6 +18,7 @@ const outboundMessageSchema = new mongoose.Schema(
     },
     kind: { type: String, required: true },
     channel: { type: String, enum: ["sms", "email"], required: true },
+    segments: { type: Number, default: null }, // texts: what it cost, in segments
     to: { type: String, required: true },
     status: { type: String, enum: ["sent", "failed"], required: true },
     error: { type: String, default: null },

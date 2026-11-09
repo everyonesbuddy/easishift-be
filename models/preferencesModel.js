@@ -80,6 +80,12 @@ const preferencesSchema = new mongoose.Schema(
       type: Boolean,
       default: true,
     },
+
+    // Managers: the 6 a.m. text or email with today's shifts, open slots and overnight call-outs.
+    morningSummaryEnabled: {
+      type: Boolean,
+      default: true,
+    },
   },
   { timestamps: true },
 );

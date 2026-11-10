@@ -187,7 +187,7 @@ cron.schedule("40 * * * *", async () => {
 cron.schedule("35 11 * * *", async () => {
   if (!hqSamGov.isConfigured()) return;
   try {
-    const r = await hqSamGov.fetchNew();
+    const r = await hqSamGov.start();
     if (!r.ok) console.error("🚫 HQ SAM.gov:", r.error);
     else if (r.added) console.log(`🏛️ HQ: ${r.added} new government listing(s)`);
   } catch (err) {

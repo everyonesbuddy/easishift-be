@@ -16,16 +16,18 @@ const STATUSES = {
 const OPEN = new Set(["reviewing", "bidding"]);
 
 /**
- * What we ask SAM.gov for each day: our software industry codes, and titles
- * with the words buyers use. Kept short, since SAM.gov limits requests a day.
+ * What we ask SAM.gov for each day: software publishers, and titles with the
+ * words buyers use. Kept short and narrow: SAM.gov limits requests a day and
+ * is slow to send big result sets (the general software codes 541511 and
+ * 541512 are thousands of listings, nearly all off-topic, so we search by
+ * title instead and still catch the scheduling ones under any code).
  */
 const SEARCHES = [
-  { ncode: "513210", why: "Software publishers (513210)" },
-  { ncode: "541511", why: "Custom software (541511)" },
-  { ncode: "541512", why: "Computer systems design (541512)" },
   { title: "scheduling", why: "\"scheduling\" in the title" },
-  { title: "workforce management", why: "\"workforce management\" in the title" },
+  { title: "staffing", why: "\"staffing\" in the title" },
+  { title: "workforce", why: "\"workforce\" in the title" },
   { title: "timekeeping", why: "\"timekeeping\" in the title" },
+  { ncode: "513210", why: "Software publishers (513210)" },
 ];
 
 // A listing is worth a look when its title is about scheduling people.
@@ -83,9 +85,9 @@ function samDate(d) {
   return `${String(x.getUTCMonth() + 1).padStart(2, "0")}/${String(x.getUTCDate()).padStart(2, "0")}/${x.getUTCFullYear()}`;
 }
 
-/** The posted-date window for the next pull: from a day before the last one (or 60 days back), at most a year. */
+/** The posted-date window for the next pull: from a day before the last one (or 30 days back), at most a year. */
 function window(lastFetchAt, now = new Date()) {
-  const from = lastFetchAt ? new Date(new Date(lastFetchAt).getTime() - DAY) : new Date(now.getTime() - 60 * DAY);
+  const from = lastFetchAt ? new Date(new Date(lastFetchAt).getTime() - DAY) : new Date(now.getTime() - 30 * DAY);
   const earliest = new Date(now.getTime() - 364 * DAY);
   return { postedFrom: samDate(from < earliest ? earliest : from), postedTo: samDate(now) };
 }

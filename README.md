@@ -265,7 +265,7 @@ npm test                           # node --test tests/*.test.js
 | `EMAIL_RATE_LIMIT_GLOBAL_MS`, `EMAIL_RATE_LIMIT_PER_DOMAIN_MS`, `EMAIL_RETRY_BASE_DELAY_MS`, `EMAIL_RETRY_MAX_ATTEMPTS` | no | email pacing and retries |
 | `HQ_JWT_SECRET` | yes for HQ | signs HQ sessions |
 | `HQ_TIMEZONE` | no | HQ's weeks and days (default `America/New_York`) |
-| `HQ_STRIPE_KEY` | no | a restricted read-only Stripe key for HQ Money; otherwise `STRIPE_SECRET_KEY` |
+| `HQ_STRIPE_KEY` | no | a restricted read-only Stripe key for HQ Money (read on Balance, Balance transactions, Charges, Customers, Invoices, Payouts, Products, Subscriptions); otherwise `STRIPE_SECRET_KEY` |
 | `KLAVIYO_PRIVATE_KEY`, `KLAVIYO_LIST_ID` | no | HQ email results and signals |
 | `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_ENVIRONMENT`, `CONTENTFUL_CONTENT_TYPE` | no | HQ's blog list; blog posts count toward the blog campaign |
 | `GOOGLE_SERVICE_ACCOUNT_JSON`, `GA4_PROPERTY_ID`, `GSC_SITE_URL` | no | HQ web and search results, and Google Sheets |

@@ -74,13 +74,26 @@ async function stripeYear(year, refresh) {
       if (t.source?.object === "refund") return chargeCustomer.get(money.customerId(t.source.charge));
       return null; // account-level fees and anything else can't be tied to WiserShifts
     };
-    const income = money.incomeByMonth(txs, year, (t) => customers.has(ownerOf(t)));
+    const ours = (t) => customers.has(ownerOf(t));
+    const income = money.incomeByMonth(txs, year, ours);
+
+    // Read only, and each on its own: a restricted key without Balance, Payouts or Invoices read still loads the rest.
+    const soft = (fn) => Promise.resolve().then(fn).catch(() => null);
+    const [balance, payouts, invoices] = await Promise.all([
+      soft(() => s.balance.retrieve()),
+      soft(() => s.payouts.list({ created: { gte: from, lt: to }, limit: 100 }).autoPagingToArray({ limit: 1000 })),
+      soft(() => s.invoices.list({ created: { gte: from - 90 * 86400 }, limit: 100 }).autoPagingToArray({ limit: 3000 })),
+    ]);
+    const cash = money.cashSummary({ txs, keep: ours, balance, payouts });
+    const timing = invoices ? money.paymentTiming(invoices.filter((inv) => customers.has(money.customerId(inv.customer)))) : null;
     const data = {
       configured: true,
       live: !stripeKey().startsWith("sk_test") && !stripeKey().startsWith("rk_test"),
       income,
       left: { ...income.left, subscriptions: allSubs.length - subs.length },
       subs: money.subscriptionSummary(subs, year),
+      cash,
+      timing,
       hidden: hidden.map((h) => ({ customerId: h.customerId, label: h.label, subscriptions: hiddenSubs.filter((x) => money.customerId(x.customer) === h.customerId).length })),
       at: new Date(),
     };
@@ -123,7 +136,9 @@ exports.getMoney = async (req, res) => {
       failing: st.subs?.failing || 0,
       atRisk: st.subs?.atRisk || 0,
       hidden: st.hidden || [],
-      subscriptions: (st.subs?.list || []).map((x) => (lastNudge[x.id] ? { ...x, lastNudge: lastNudge[x.id] } : x)),
+      subscriptions: (st.subs?.list || []).map((x) => ({ ...x, ...(lastNudge[x.id] ? { lastNudge: lastNudge[x.id] } : {}), ...(st.timing ? { payments: st.timing[x.id] || { lastPaid: null, open: null, latePaid: 0, paidCount: 0 } } : {}) })),
+      cash: st.cash || null,
+      overdue: st.timing ? Object.values(st.timing).filter((t) => t.open && t.open.daysOverdue > 0).length : null,
       expenses: list,
       burn: Math.round(usualMonthly * 100) / 100, // what we usually spend a month now
       covered: mrr > 0 && mrr >= usualMonthly,

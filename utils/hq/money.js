@@ -181,6 +181,7 @@ function subscriptionSummary(subs, year) {
       trialEnd: s.trial_end ? new Date(s.trial_end * 1000) : null,
       ended: s.ended_at ? new Date(s.ended_at * 1000) : s.canceled_at ? new Date(s.canceled_at * 1000) : null,
       cancelAtPeriodEnd: Boolean(s.cancel_at_period_end),
+      ...billing(s),
     };
   });
   // Only subscriptions that are paid up count. A failed payment isn't money yet.
@@ -235,4 +236,109 @@ function profitAndLoss({ year, income, expenses, now = new Date() }) {
   };
 }
 
-module.exports = { MONTHS, wiserShifts, customerId, money, parseExpenseSheet, sheetCsvUrl, costFor, incomeByMonth, monthlyValue, subscriptionSummary, profitAndLoss, keyOfDate };
+const at = (unix) => (unix ? new Date(unix * 1000) : null);
+const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * What a subscription bills: the period it's in now, the next charge (date
+ * and amount), and how it's collected. Newer Stripe API versions keep the
+ * period on each item rather than the subscription, so both are read.
+ */
+function billing(s) {
+  const item = s.items?.data?.[0] || {};
+  const start = s.current_period_start ?? item.current_period_start;
+  const end = s.current_period_end ?? item.current_period_end;
+  let amount = 0;
+  for (const it of s.items?.data || []) amount += ((it.price || it.plan || {}).unit_amount ?? (it.plan || {}).amount ?? 0) * (it.quantity || 1);
+  const p = item.price || item.plan || {};
+  const interval = p.recurring?.interval || p.interval || "month";
+  const every = p.recurring?.interval_count || p.interval_count || 1;
+  const renews = !["canceled", "incomplete_expired"].includes(s.status) && !s.cancel_at_period_end;
+  return {
+    periodStart: at(start),
+    periodEnd: at(end),
+    nextCharge: renews ? at(s.status === "trialing" && s.trial_end ? s.trial_end : end) : null,
+    amount: cents(amount / 100),
+    every: every === 1 ? interval : `${every} ${interval}s`,
+    collection: s.collection_method === "send_invoice" ? "invoice" : "card",
+  };
+}
+
+/** The subscription an invoice belongs to (older and newer Stripe API versions). */
+const invoiceSub = (inv) => {
+  const s = inv.subscription ?? inv.parent?.subscription_details?.subscription ?? null;
+  return typeof s === "object" && s ? s.id : s;
+};
+
+/**
+ * How each subscription pays: its last paid invoice (when, and how many
+ * days after the invoice went out) and any invoice still open (overdue or
+ * not). Late means paid more than 7 days after it was due.
+ */
+function paymentTiming(invoices, now = new Date()) {
+  const out = {};
+  const sorted = [...invoices].sort((a, b) => (b.created || 0) - (a.created || 0));
+  for (const inv of sorted) {
+    const sub = invoiceSub(inv);
+    if (!sub || inv.status === "draft" || inv.status === "void") continue;
+    const o = (out[sub] ||= { lastPaid: null, open: null, latePaid: 0, paidCount: 0 });
+    const sent = at(inv.status_transitions?.finalized_at || inv.created);
+    const due = at(inv.due_date) || sent;
+    if (inv.status === "paid" && (inv.amount_paid || 0) > 0) {
+      const paidAt = at(inv.status_transitions?.paid_at) || sent;
+      const daysAfter = Math.max(0, Math.round((paidAt - sent) / DAY));
+      const daysLate = Math.max(0, Math.round((paidAt - due) / DAY));
+      o.paidCount += 1;
+      if (daysLate > 7) o.latePaid += 1;
+      if (!o.lastPaid) o.lastPaid = { paidAt, sent, due, daysAfter, daysLate, amount: cents(inv.amount_paid / 100) };
+    } else if ((inv.status === "open" || inv.status === "uncollectible") && !o.open) {
+      o.open = {
+        sent,
+        due,
+        amount: cents((inv.amount_remaining ?? inv.amount_due ?? 0) / 100),
+        daysOverdue: due && now > due ? Math.floor((now - due) / DAY) : 0,
+        url: inv.hosted_invoice_url || "",
+      };
+    }
+  }
+  return out;
+}
+
+/**
+ * Where the money is. WiserShifts' own payments: earned this year (net of
+ * fees) and how much of it is still settling (paid, not yet available, with
+ * when it lands). The Stripe account as a whole: its balance and payouts to
+ * the bank, which can't be split by business.
+ */
+function cashSummary({ txs = [], keep = () => true, balance = null, payouts = null, now = new Date() }) {
+  let earned = 0;
+  let settling = 0;
+  let landsOn = null;
+  for (const t of txs) {
+    if (!keep(t) || !(IN.has(t.type) || BACK.has(t.type))) continue;
+    earned += (t.net ?? t.amount - (t.fee || 0)) / 100;
+    if (t.status === "pending") {
+      settling += (t.net ?? t.amount) / 100;
+      const d = at(t.available_on);
+      if (d && d > now && (!landsOn || d > landsOn)) landsOn = d;
+    }
+  }
+  const usd = (arr) => cents((arr || []).filter((x) => !x.currency || x.currency === "usd").reduce((a, x) => a + (x.amount || 0), 0) / 100);
+  const paid = (payouts || []).filter((p) => p.status === "paid" || p.status === "in_transit");
+  const last = [...(payouts || [])].sort((a, b) => (b.arrival_date || 0) - (a.arrival_date || 0))[0];
+  return {
+    earned: cents(earned),
+    settling: cents(settling),
+    landsOn,
+    account: balance ? { available: usd(balance.available), pending: usd(balance.pending) } : null,
+    payouts: payouts
+      ? {
+          total: cents(paid.reduce((a, p) => a + p.amount, 0) / 100),
+          count: paid.length,
+          last: last ? { amount: cents(last.amount / 100), arrives: at(last.arrival_date), status: last.status } : null,
+        }
+      : null,
+  };
+}
+
+module.exports = { billing, paymentTiming, cashSummary, invoiceSub, MONTHS, wiserShifts, customerId, money, parseExpenseSheet, sheetCsvUrl, costFor, incomeByMonth, monthlyValue, subscriptionSummary, profitAndLoss, keyOfDate };

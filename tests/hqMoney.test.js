@@ -133,3 +133,68 @@ test("money: payment nudge draft and email put the pay button in and escape the 
   assert.ok(html.indexOf("Use the button") < html.indexOf("Pay $800") && html.indexOf("Pay $800") < html.indexOf("Thanks"));
   assert.match(n.nudgeText({ message: "Hi", payUrl: "u" }), /Pay or update your card: u/);
 });
+
+test("money: billing dates, from the subscription or (newer Stripe) its items", () => {
+  const money = require("../utils/hq/money");
+  const oct15 = Date.UTC(2026, 9, 15) / 1000;
+  const nov15 = Date.UTC(2026, 10, 15) / 1000;
+  const price = { unit_amount: 80000, recurring: { interval: "month", interval_count: 1 } };
+  const old = money.billing({ status: "active", current_period_start: oct15, current_period_end: nov15, items: { data: [{ price, quantity: 1 }] }, collection_method: "send_invoice" });
+  assert.equal(old.periodStart.toISOString().slice(0, 10), "2026-10-15");
+  assert.equal(old.nextCharge.toISOString().slice(0, 10), "2026-11-15");
+  assert.equal(old.amount, 800);
+  assert.equal(old.every, "month");
+  assert.equal(old.collection, "invoice");
+  const fresh = money.billing({ status: "active", items: { data: [{ price, quantity: 1, current_period_start: oct15, current_period_end: nov15 }] } });
+  assert.equal(fresh.periodEnd.toISOString().slice(0, 10), "2026-11-15", "newer API: period on the item");
+  assert.equal(money.billing({ status: "active", cancel_at_period_end: true, current_period_end: nov15, items: { data: [{ price }] } }).nextCharge, null, "canceling: no next charge");
+});
+
+test("money: when each subscription paid, and what's still open", () => {
+  const money = require("../utils/hq/money");
+  const t = (s) => Date.parse(s) / 1000;
+  const now = new Date("2026-11-10T12:00:00Z");
+  const timing = money.paymentTiming(
+    [
+      // Silver Comet: invoiced Oct 15, due Oct 15, paid Nov 7 (newer API shape for the subscription).
+      { parent: { subscription_details: { subscription: "sub_sc" } }, status: "paid", amount_paid: 80000, created: t("2026-10-15"), due_date: t("2026-10-15"), status_transitions: { finalized_at: t("2026-10-15T19:19:00Z"), paid_at: t("2026-11-07T18:43:00Z") } },
+      // On time, by card.
+      { subscription: "sub_ok", status: "paid", amount_paid: 50000, created: t("2026-11-01"), status_transitions: { finalized_at: t("2026-11-01"), paid_at: t("2026-11-01T00:05:00Z") } },
+      // Open and overdue.
+      { subscription: "sub_late", status: "open", amount_due: 40000, amount_remaining: 40000, created: t("2026-10-20"), due_date: t("2026-10-30"), hosted_invoice_url: "https://invoice", status_transitions: { finalized_at: t("2026-10-20") } },
+      { subscription: "sub_late", status: "draft", amount_due: 1, created: t("2026-11-09") },
+    ],
+    now,
+  );
+  assert.equal(timing.sub_sc.lastPaid.daysAfter, 23);
+  assert.equal(timing.sub_sc.latePaid, 1, "more than a week after it was due");
+  assert.equal(timing.sub_ok.lastPaid.daysAfter, 0);
+  assert.equal(timing.sub_ok.latePaid, 0);
+  assert.equal(timing.sub_late.open.daysOverdue, 11);
+  assert.equal(timing.sub_late.open.amount, 400);
+  assert.equal(timing.sub_late.lastPaid, null, "drafts don't count");
+});
+
+test("money: earned, settling (with when it lands), and the account's balance and payouts", () => {
+  const money = require("../utils/hq/money");
+  const now = new Date("2026-11-10T12:00:00Z");
+  const t = (s) => Date.parse(s) / 1000;
+  const txs = [
+    { type: "payment", amount: 80000, fee: 2350, net: 77650, status: "pending", available_on: t("2026-11-12"), mine: true },
+    { type: "charge", amount: 10000, fee: 320, net: 9680, status: "available", available_on: t("2026-10-01"), mine: true },
+    { type: "charge", amount: 242720, fee: 0, net: 242720, status: "available", mine: false },
+  ];
+  const c = money.cashSummary({
+    txs,
+    keep: (x) => x.mine,
+    balance: { available: [{ amount: -9527, currency: "usd" }], pending: [{ amount: 77650, currency: "usd" }] },
+    payouts: [{ amount: 200000, status: "paid", arrival_date: t("2026-02-01") }, { amount: 5000, status: "failed", arrival_date: t("2026-03-01") }],
+    now,
+  });
+  assert.equal(c.earned, 873.3);
+  assert.equal(c.settling, 776.5);
+  assert.equal(c.landsOn.toISOString().slice(0, 10), "2026-11-12");
+  assert.deepEqual(c.account, { available: -95.27, pending: 776.5 });
+  assert.equal(c.payouts.total, 2000, "failed payouts don't count");
+  assert.equal(c.payouts.last.status, "failed");
+});

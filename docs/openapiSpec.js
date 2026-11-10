@@ -223,7 +223,7 @@ const ROUTES = [
   ["delete", "/hq/week/items/{itemId}", "HQ", "Take a to-do off this week's list"],
   ["get", "/hq/gov", "HQ", "Government contract listings (SAM.gov feed and added by hand), the feed's state, and deadlines coming up"],
   ["post", "/hq/gov", "HQ", "Add a government listing by hand (state, county, city, or federal)"],
-  ["post", "/hq/gov/refresh", "HQ", "Pull new federal listings from SAM.gov now (needs SAM_GOV_API_KEY)"],
+  ["post", "/hq/gov/refresh", "HQ", "Start pulling new federal listings from SAM.gov (needs SAM_GOV_API_KEY); answers 202 straight away and the pull runs in the background"],
   ["patch", "/hq/gov/{id}", "HQ", "Update a government listing: status, dates, notes, checklist"],
   ["delete", "/hq/gov/{id}", "HQ", "Remove a listing added by hand (feed listings are marked Not for us instead)"],
   ["get", "/hq/facebook", "HQ", "Facebook groups (with where we stand and the next step in each) and the people to message, with totals"],

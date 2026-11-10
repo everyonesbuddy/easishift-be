@@ -31,7 +31,7 @@ test("gov feed: keeps listings about scheduling people, drops the rest", () => {
 
 test("gov feed: the date window starts a day before the last pull, or 60 days back", () => {
   const now = new Date("2026-11-10T12:00:00Z");
-  assert.deepEqual(gov.window(null, now), { postedFrom: "09/11/2026", postedTo: "11/10/2026" });
+  assert.deepEqual(gov.window(null, now), { postedFrom: "10/11/2026", postedTo: "11/10/2026" });
   assert.deepEqual(gov.window(new Date("2026-11-09T11:35:00Z"), now), { postedFrom: "11/08/2026", postedTo: "11/10/2026" });
   assert.equal(gov.window(new Date("2024-01-01"), now).postedFrom, "11/11/2025", "never more than a year");
 });
@@ -73,7 +73,7 @@ test("SAM.gov pull: saves new matches as New, keeps what you set on old ones", a
   };
   try {
     const r = await sam.fetchNew({ now: new Date("2026-11-10T11:35:00Z"), get });
-    assert.deepEqual(r, { ok: true, found: 2, added: 1 });
+    assert.deepEqual(r, { ok: true, found: 2, added: 1, failed: [] });
     assert.equal(calls.length, gov.SEARCHES.length, "one request per search");
     assert.equal(calls[0].postedFrom, "11/08/2026");
     const w = writes.find((x) => x.f.noticeId === "abc123").u;
@@ -101,6 +101,40 @@ test("SAM.gov pull: a refused key is reported in plain words, without the key", 
     assert.doesNotMatch(r.error, /secret-key/);
   } finally {
     [HqSync.findOne, HqSync.updateOne] = orig;
+    delete process.env.SAM_GOV_API_KEY;
+  }
+});
+
+test("SAM.gov pull: a slow search is skipped, the rest are saved, and the window waits for it", async () => {
+  process.env.SAM_GOV_API_KEY = "test-key";
+  const HqGovListing = require("../models/hqGovListingModel");
+  const HqSync = require("../models/hqSyncModel");
+  const sam = require("../utils/hq/samGov");
+  const orig = [HqGovListing.updateOne, HqSync.findOne, HqSync.updateOne];
+  const lastFetchAt = new Date("2026-11-09T11:35:00Z");
+  let synced = null;
+  HqGovListing.updateOne = async () => ({ upsertedCount: 1 });
+  HqSync.findOne = () => ({ lean: async () => ({ data: { lastFetchAt } }) });
+  HqSync.updateOne = async (f, u) => (synced = u);
+  let staffingTries = 0;
+  const get = async (url, { params }) => {
+    if (params.title === "staffing") {
+      staffingTries += 1;
+      throw Object.assign(new Error("timeout"), { code: "ECONNABORTED" });
+    }
+    const data = params.title === "scheduling" ? [opp()] : [];
+    return { data: { totalRecords: data.length, opportunitiesData: data } };
+  };
+  try {
+    const r = await sam.fetchNew({ now: new Date("2026-11-10T11:35:00Z"), get });
+    assert.equal(r.ok, true);
+    assert.equal(r.added, 1, "the other searches still count");
+    assert.equal(staffingTries, 2, "a timeout gets one more try");
+    assert.deepEqual(r.failed.map((f) => f.label), ['"staffing" in the title']);
+    assert.match(synced.$set.data.lastError, /1 of 5 searches didn't finish .*too slow/);
+    assert.equal(synced.$set.data.lastFetchAt, lastFetchAt, "the window doesn't move, so the skipped search is covered next time");
+  } finally {
+    [HqGovListing.updateOne, HqSync.findOne, HqSync.updateOne] = orig;
     delete process.env.SAM_GOV_API_KEY;
   }
 });

@@ -42,7 +42,7 @@ const shape = (l) => ({ ...l, _id: String(l._id), statusLabel: gov.STATUSES[l.st
 
 async function feedState() {
   const s = await sam.state();
-  return { on: sam.isConfigured(), lastFetchAt: s.lastFetchAt || null, lastError: s.lastError || "", lastAdded: s.lastAdded ?? null };
+  return { on: sam.isConfigured(), running: sam.isRunning(), lastFetchAt: s.lastFetchAt || null, lastTriedAt: s.lastTriedAt || null, lastError: s.lastError || "", lastAdded: s.lastAdded ?? null };
 }
 
 /** GET /hq/gov: everything, newest first within each status, plus the feed's state and the deadlines. */
@@ -101,11 +101,16 @@ exports.remove = async (req, res, next) => {
   }
 };
 
-/** POST /hq/gov/refresh: pull from SAM.gov now. */
+/**
+ * POST /hq/gov/refresh: start a pull from SAM.gov and answer straight away
+ * (it can take a few minutes, longer than a web request may last). The page
+ * checks back until the feed's lastTriedAt moves.
+ */
 exports.refresh = async (req, res, next) => {
   try {
-    const r = await sam.fetchNew();
-    res.status(r.ok ? 200 : 400).json({ ...r, ...(r.ok ? {} : { message: r.error }), feed: await feedState() });
+    if (!sam.isConfigured()) return fail(res, 400, "Add SAM_GOV_API_KEY to turn on the federal feed.");
+    sam.start().catch((err) => console.error("🚫 HQ SAM.gov pull failed:", err));
+    res.status(202).json({ started: true, feed: await feedState() });
   } catch (err) {
     next(err);
   }

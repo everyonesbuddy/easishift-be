@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 18;
+const SEED_VERSION = 19;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -105,6 +105,7 @@ async function runSeed() {
   if (version < 16) await migrateV16();
   if (version < 17) await migrateV17();
   if (version < 18) await migrateV18();
+  if (version < 19) await migrateV19();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -123,7 +124,31 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookCallsV11").CALL_SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
+  walk(require("../utils/hq/playbookFacebookV19").SCRIPTS);
   return { keys, key };
+}
+
+/**
+ * Version 19: Facebook groups as one play that fits every group's rules
+ * (give, don't pitch; never DM first; offer only with the admin's yes), at
+ * 2 touches a week. Scripts we seeded and you never edited are replaced;
+ * yours stay after them. Other fields change only if they're still ours.
+ */
+async function migrateV19() {
+  const v19 = require("../utils/hq/playbookFacebookV19");
+  const { keys, key } = seededScriptKeys();
+  const orig = seed.PLAYS.find((p) => p.seedKey === "facebook-groups") || {};
+  const p = (await HqPlaybookPlay.find({ seedKey: "facebook-groups" }).select("seedKey scripts steps goal who volume weeklyTarget").lean()).find((x) => x.seedKey === "facebook-groups");
+  if (!p) return; // deleted plays stay deleted
+  const freshKeys = new Set(v19.SCRIPTS.map(key));
+  const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+  const set = { scripts: [...v19.SCRIPTS, ...yours] };
+  if (!(p.steps || []).length || JSON.stringify(p.steps) === JSON.stringify(orig.steps || [])) set.steps = v19.STEPS;
+  if (!p.goal || p.goal === orig.goal) set.goal = v19.GOAL;
+  if (!p.who || p.who === orig.who) set.who = v19.WHO;
+  if (!p.volume || p.volume === orig.volume) set.volume = v19.VOLUME;
+  if (p.weeklyTarget == null || p.weeklyTarget === orig.weeklyTarget) set.weeklyTarget = v19.WEEKLY_TARGET;
+  await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
 }
 
 /** Version 18: the blog is one post a week. Target, volume and steps change only if they're still ours. */

@@ -253,7 +253,9 @@ exports.getWeek = async (req, res, next) => {
     const doc = await loadWeek(ctx);
     // New Facebook groups and people to message, and follow-ups as they come due, join the week on their own.
     if (fill(doc, ctx, "facebook") + fill(doc, ctx, "followups")) await doc.save();
-    res.json(await view(doc, ctx));
+    // Government contract deadlines (questions and responses due soon), worked out fresh each time.
+    const gov = await require("./hqGovController").deadlines(ctx.now, require("../utils/hq/weeks").zone());
+    res.json({ ...(await view(doc, ctx)), gov });
   } catch (err) {
     next(err);
   }

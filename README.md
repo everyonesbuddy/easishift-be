@@ -173,6 +173,7 @@ HQ → Settings → **Customer messages** sends the morning summary, a nudge, a 
 | hourly at :10 | managers' morning summary at 6 a.m. facility time; next-step nudges at 10 a.m. Mon/Wed/Fri (`utils/morningSummaryJobs.js`) |
 | hourly at :20 | Monday labor email, 7 a.m. local on Mondays (`utils/laborReportJobs.js`, paid plans) |
 | hourly at :40 | HQ: email signals from Klaviyo (no-op without `KLAVIYO_PRIVATE_KEY`) |
+| daily 11:35 UTC | HQ: new federal listings from SAM.gov (no-op without `SAM_GOV_API_KEY`) |
 | every 2 hours | close out past shifts (`completed`, or `no_show` when the time clock is on) |
 | daily 14:00 UTC | trial ending / ended emails (`utils/trialJobs.js`) |
 
@@ -194,6 +195,11 @@ HQ → Settings → **Customer messages** sends the morning summary, a nudge, a 
   - **Content calendar and blog:** the blog reads Contentful.
   - **Results:** signups, funnel, web and search (GA4, Search Console, YouTube), email (Klaviyo).
   - **Money:** profit and loss from Stripe (read only) plus expenses, and failed-payment nudges.
+  - **Government contracts:**
+    - **Federal listings:** pulled from SAM.gov daily (`utils/hq/samGov.js`). The search covers our software industry codes, plus titles about scheduling, workforce management and timekeeping, filtered to ones about scheduling people.
+    - **State, county and city listings:** added by hand.
+    - **Tracking:** each listing goes new → reviewing → bidding (with a checklist) → submitted → won or lost.
+    - **Deadlines:** questions and responses due soon show at the top of This week.
   - **Customer messages:** test sends, and texting cost.
   - **Connections:** Google Sheets sync and backups.
 
@@ -264,6 +270,7 @@ npm test                           # node --test tests/*.test.js
 | `CONTENTFUL_SPACE_ID`, `CONTENTFUL_DELIVERY_TOKEN`, `CONTENTFUL_ENVIRONMENT`, `CONTENTFUL_CONTENT_TYPE` | no | HQ's blog list; blog posts count toward the blog campaign |
 | `GOOGLE_SERVICE_ACCOUNT_JSON`, `GA4_PROPERTY_ID`, `GSC_SITE_URL` | no | HQ web and search results, and Google Sheets |
 | `YOUTUBE_API_KEY`, `YOUTUBE_CHANNEL_ID` | no | HQ YouTube results |
+| `SAM_GOV_API_KEY` | no | HQ's federal listings feed (Public API Key, from Account Details on SAM.gov) |
 
 No longer used: `STRIPE_PRICE_PRO_*`, `STRIPE_PRICE_FACILITY_*`, `STRIPE_FOUNDING_COUPON_ID`, `TWILIO_SID`, `TENANT_ROOT_DOMAIN`, `TENANT_APP_URL_SCHEME`, `TENANT_APP_URL_PORT`, `NETLIFY_SITE_ID`, `NETLIFY_AUTH_TOKEN`, `FRONTEND_BASE_URL`.
 

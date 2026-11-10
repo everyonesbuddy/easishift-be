@@ -6,6 +6,7 @@ const morgan = require("morgan");
 const compression = require("compression");
 const cron = require("node-cron");
 const hqKlaviyo = require("./utils/hq/klaviyo");
+const hqSamGov = require("./utils/hq/samGov");
 const errorHandler = require("./middleware/errorMiddleware");
 const { sendTrialEmails } = require("./utils/trialJobs");
 const { sendShiftReminders } = require("./utils/reminderJobs");
@@ -179,6 +180,18 @@ cron.schedule("40 * * * *", async () => {
     if (!r.ok) console.error("🚫 HQ Klaviyo sync:", r.error);
   } catch (err) {
     console.error("🚫 HQ Klaviyo sync failed:", err);
+  }
+});
+
+// ✅ Cron job: HQ government listings from SAM.gov (daily 11:35 UTC; no-op without SAM_GOV_API_KEY)
+cron.schedule("35 11 * * *", async () => {
+  if (!hqSamGov.isConfigured()) return;
+  try {
+    const r = await hqSamGov.fetchNew();
+    if (!r.ok) console.error("🚫 HQ SAM.gov:", r.error);
+    else if (r.added) console.log(`🏛️ HQ: ${r.added} new government listing(s)`);
+  } catch (err) {
+    console.error("🚫 HQ SAM.gov pull failed:", err);
   }
 });
 

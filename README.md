@@ -195,6 +195,13 @@ HQ → Settings → **Customer messages** sends the morning summary, a nudge, a 
   - **Content calendar and blog:** the blog reads Contentful.
   - **Results:** signups, funnel, web and search (GA4, Search Console, YouTube), email (Klaviyo).
   - **Money:** profit and loss from Stripe (read only) plus expenses, and failed-payment nudges.
+  - **Customer success** (`hqSuccessController.js`, `utils/hq/success.js`):
+    - **Who's on it:** every paying workspace is added automatically, and you can add trials or pilots by hand.
+    - **Health:** green, yellow or red, with the reasons in plain words.
+      - **Red:** a failed payment, this week not published, or no manager login for 10 days.
+      - **Yellow:** next week not published by Thursday, few phones or text opt-ins, quiet managers, or staff not opening their schedules.
+    - **Checklists by stage:** onboarding (several items tick themselves from the data), running smoothly, at risk and renewal.
+    - **Check-ins:** a call, visit or meeting sets the next one (weekly for 90 days, then every two weeks; every 3 days when at risk). Due check-ins and red customers show in This week.
   - **Government contracts:**
     - **Federal listings:** pulled from SAM.gov daily (`utils/hq/samGov.js`). The search covers our software industry codes, plus titles about scheduling, workforce management and timekeeping, filtered to ones about scheduling people.
     - **State, county and city listings:** added by hand.

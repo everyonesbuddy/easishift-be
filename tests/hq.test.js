@@ -1362,3 +1362,37 @@ test("week plan: a weekly blog gets the next idea, skipping one that's already o
   const out = plan.todosFor(play, { items, posts, now: new Date("2026-11-09T15:00:00Z"), weekStart: new Date("2026-11-09T05:00:00Z") });
   assert.deepEqual(out.map((t) => t.refId), ["i2"]);
 });
+
+test("playbook v19: Facebook groups is one play that fits every group's rules", async () => {
+  const seed = require("../utils/hq/playbookSeed");
+  const v19 = require("../utils/hq/playbookFacebookV19");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const fbPlay = seed.FB_GROUPS_PLAY;
+  const mine = { label: "My own script", body: "Something I wrote." };
+  let set = null;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 18 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "f", seedKey: "facebook-groups", ...fbPlay, scripts: [...fbPlay.scripts, mine] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.weeklyTarget, 2);
+  assert.deepEqual(set.steps, v19.STEPS);
+  assert.deepEqual(set.scripts.at(-1), mine, "your own script stays, after ours");
+  assert.equal(set.scripts.length, v19.SCRIPTS.length + 1, "the old seeded scripts are gone");
+  const all = set.scripts.map((s) => s.body).join("\n");
+  assert.doesNotMatch(all, /message us|DM me|contact (me|us) directly/i, "nothing that gets a Page banned");
+});
+
+test("Facebook hints: never DM someone who just commented", () => {
+  const fb = require("../utils/hq/facebook");
+  const step = fb.nextPersonStep({ name: "Ann", status: "to_message" });
+  assert.match(step.why, /Only if they asked/);
+  assert.match(fb.nextGroupStep({ name: "G", status: "joined", promo: "none" }).why, /no links/);
+});

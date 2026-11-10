@@ -75,15 +75,15 @@ function nextGroupStep(g, now = new Date()) {
   if (g.status === "requested") return { action: "joined", title: `See if ${name} let the Page in`, why: g.requestedAt ? `Asked ${agoText(g.requestedAt, now)}. Check the group, or your Page's notifications.` : "" };
   if (g.status === "joined" && (g.promo === "ask" || g.promo === "unknown" || !g.promo) && !g.askedAt) return { action: "admin", title: `Message the admin of ${name}`, why: "Ask before posting the offer. Use the admin script." };
   if (g.status === "asked" && daysSince(g.askedAt, now) >= FOLLOW_UP_DAYS.admin && !g.adminFollowedUpAt) return { action: "admin_followup", title: `Follow up with the admin of ${name}`, why: `No answer in ${Math.floor(daysSince(g.askedAt, now))} days. One polite nudge, then let it go.` };
-  if (offerOk(g) && !g.offerAt) return { action: "offer", title: `Post the offer in ${name}`, why: g.promo === "thread" ? "Only in their promo thread." : "The admin said yes. Plain text, as the Page." };
-  return { action: "answer", title: `Answer a question in ${name}`, why: "Real help, no pitch. Share a template if it answers the question." };
+  if (offerOk(g) && !g.offerAt) return { action: "offer", title: `Post the offer in ${name}`, why: g.promo === "thread" ? "Only in their promo thread. Ask people to comment, not to message you." : "Allowed here. Plain text, as the Page; ask people to comment, never \"message us\"." };
+  return { action: "answer", title: `Answer a question in ${name}`, why: "Real help, no pitch, no links. Write the answer in the post, or attach the template as a picture or PDF." };
 }
 
 /** A person's next step, or null. */
 function nextPersonStep(p, now = new Date()) {
   const name = p.name || "them";
   const where = p.groupName ? ` (from ${p.groupName})` : "";
-  if (p.status === "to_message") return { action: "message", title: `Message ${name}${where}`, why: p.said ? `They said: "${String(p.said).slice(0, 120)}"` : "Use the commenter script." };
+  if (p.status === "to_message") return { action: "message", title: `Message ${name}${where}`, why: p.said ? `They said: "${String(p.said).slice(0, 120)}"` : "Only if they asked (commented yes on an approved offer, or messaged the Page). Never DM someone who just commented." };
   if (p.status === "messaged" && daysSince(p.followedUpAt || p.messagedAt, now) >= FOLLOW_UP_DAYS.person && !p.followedUpAt) return { action: "followup", title: `Follow up with ${name}${where}`, why: `No reply in ${Math.floor(daysSince(p.messagedAt, now))} days.` };
   if (p.status === "replied") return { action: "call_booked", title: `Book the 30-minute setup with ${name}`, why: "They replied. Pick a time and build their first week together." };
   return null;

@@ -17,6 +17,7 @@ const funnel = require("../controllers/hqFunnelController");
 const email = require("../controllers/hqEmailController");
 const week = require("../controllers/hqWeekController");
 const facebook = require("../controllers/hqFacebookController");
+const govContracts = require("../controllers/hqGovController");
 const moneyPage = require("../controllers/hqMoneyController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
@@ -81,6 +82,11 @@ router.post("/week/items/:itemId/check", week.check);
 router.post("/week/items/:itemId/outcome", week.setOutcome);
 router.delete("/week/items/:itemId", week.removeItem);
 
+router.get("/gov", govContracts.list);
+router.post("/gov", govContracts.create);
+router.post("/gov/refresh", govContracts.refresh);
+router.patch("/gov/:id", govContracts.update);
+router.delete("/gov/:id", govContracts.remove);
 router.get("/facebook", facebook.getAll);
 router.post("/facebook/groups", facebook.createGroup);
 router.patch("/facebook/groups/:id", facebook.updateGroup);

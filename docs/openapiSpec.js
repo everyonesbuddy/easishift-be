@@ -62,7 +62,7 @@ const ROUTES = [
 
   // ── Settings ──────────────────────────────────────────────────────────────
   ["get", "/facility-preferences", "Settings", "Facility settings (timezone, roles, shift times, rules)"],
-  ["post", "/facility-preferences", "Settings", "Update facility settings", { body: { facilityTimezone: "America/New_York", weekStartsOn: 0, roleFamilies: ["cna", "lpn", "rn"] } }],
+  ["post", "/facility-preferences", "Settings", "Update facility settings", { body: { facilityTimezone: "America/New_York", weekStartsOn: 0, roleFamilies: ["cna", "lpn", "rn"], roleWeekStarts: [{ roles: ["cook", "server"], weekStartsOn: 4 }] } }],
   ["delete", "/facility-preferences/reset", "Settings", "Reset to defaults"],
   ["get", "/staffing-template", "Schedule", "What a normal week needs"],
   ["put", "/staffing-template", "Schedule", "Save the template and re-apply it to upcoming weeks", { body: { applyTo: "unpublished", rules: [{ shiftType: "day", shiftTag: "day_1", role: "cna", unitArea: "memory care", requiredCertificationTags: ["med pass"], countsByWeekday: [5, 6, 6, 6, 6, 6, 5] }] } }],

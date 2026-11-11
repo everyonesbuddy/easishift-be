@@ -6,6 +6,7 @@
  * Routes: /api/v1/labor
  */
 const mongoose = require("mongoose");
+const workweek = require("../utils/workweek");
 const { DateTime } = require("luxon");
 const Schedule = require("../models/scheduleModel");
 const TimeEntry = require("../models/timeEntryModel");
@@ -64,9 +65,10 @@ const weeksCovering = (days, weekStartsOn) => {
 };
 
 /** Everything the report needs for a run of whole payroll weeks. */
-async function loadLaborData({ tenantId, weekKeys, days, timezone }) {
-  const from = weekBounds(weekKeys[0], timezone).start;
-  const to = weekBounds(weekKeys[weekKeys.length - 1], timezone).end;
+async function loadLaborData({ tenantId, weekKeys, days, timezone, margin = 0 }) {
+  // margin: extra days each way, so roles with their own workweek have every shift of theirs.
+  const from = new Date(weekBounds(weekKeys[0], timezone).start.getTime() - margin * DAY_MS);
+  const to = new Date(weekBounds(weekKeys[weekKeys.length - 1], timezone).end.getTime() + margin * DAY_MS);
   // 8 weeks back from the end for the turnover watch.
   const lookback = new Date(Math.min(from.getTime(), to.getTime() - 56 * DAY_MS));
   const [prefs, settings, schedules, timeEntries, coverageRows, staff] = await Promise.all([
@@ -95,7 +97,8 @@ async function loadLaborData({ tenantId, weekKeys, days, timezone }) {
  * (month: "YYYY-MM") and builds the report.
  */
 async function loadLaborReport({ tenantId, weekStart, month, includeCosts, now = new Date() }) {
-  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  const { timezone, weekStartsOn, roleWeekStarts } = await getWeekSettings(tenantId);
+  const ww = { timezone, weekStartsOn, roleWeekStarts };
   let days;
   let start;
   if (month) {
@@ -112,13 +115,16 @@ async function loadLaborReport({ tenantId, weekStart, month, includeCosts, now =
     days = weekDays(start);
   }
   const weekKeys = month ? weeksCovering(days, weekStartsOn) : [start];
-  const data = await loadLaborData({ tenantId, weekKeys, days, timezone });
+  const roleWeeks = workweek.hasRoleWeeks(ww);
+  const data = await loadLaborData({ tenantId, weekKeys, days, timezone, margin: roleWeeks ? 7 : 0 });
+  const weekdayOf = roleWeeks ? await workweek.weekdaysByStaff(tenantId, ww) : null;
 
   return buildLaborReport({
     period: month ? "month" : "week",
     weekStart: start,
     days,
     weekStarts: weekKeys,
+    weekdayOf,
     timezone,
     thresholdHours: Number(data.prefs?.weeklyOvertimeThresholdHours) || 40,
     schedules: data.schedules,
@@ -252,21 +258,24 @@ exports.getOvertimeOptions = async (req, res, next) => {
   try {
     const { staffId } = req.params;
     if (!mongoose.isValidObjectId(staffId)) return res.status(400).json({ message: "Invalid staffId" });
-    const { timezone, weekStartsOn } = await getWeekSettings(req.tenantId);
+    const { timezone, weekStartsOn, roleWeekStarts } = await getWeekSettings(req.tenantId);
     const now = new Date();
     const weekStart = req.query.weekStart ? String(req.query.weekStart) : weekStartFor(now, timezone, weekStartsOn);
     assertWeekStart(weekStart, weekStartsOn);
-    const { start, end } = weekBounds(weekStart, timezone);
+    let { start, end } = weekBounds(weekStart, timezone);
 
     const [prefs, person, staffList] = await Promise.all([
       FacilityPreferences.findOne({ tenantId: req.tenantId }).lean(),
-      User.findOne({ _id: staffId, tenantId: req.tenantId, loginEnabled: false }).select("name").lean(),
+      User.findOne({ _id: staffId, tenantId: req.tenantId, loginEnabled: false }).select("name role roles").lean(),
       User.find({ tenantId: req.tenantId, loginEnabled: false, status: "active" })
         .select("tenantId name role roles allowedAreas allowedShiftTypes certificationTags phoneE164 email smsConsent")
         .lean(),
     ]);
     if (!person) return res.status(404).json({ message: "Staff not found" });
     const thresholdHours = Number(prefs?.weeklyOvertimeThresholdHours) || 40;
+    // Their own workweek if their role has one: the one covering most of this building week.
+    const ww = { timezone, weekStartsOn, roleWeekStarts };
+    if (workweek.hasRoleWeeks(ww)) ({ start, end } = workweek.weekRangeFor(person, new Date(start.getTime() + 3.5 * DAY_MS), ww));
 
     const weekShifts = await Schedule.find({
       tenantId: req.tenantId,

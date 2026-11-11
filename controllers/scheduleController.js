@@ -2,6 +2,7 @@
 const Schedule = require("../models/scheduleModel");
 const { buildE164Number } = require("../utils/phone");
 const { findSchedulers } = require("../utils/schedulers");
+const workweekUtil = require("../utils/workweek");
 const { alertManagers, appUrl } = require("../utils/managerAlerts");
 const {
   sendToStaff,
@@ -113,13 +114,15 @@ const getWeekdayIndex = (dateLike, timezone) =>
   toZoned(dateLike, timezone).weekday % 7;
 
 // Weeks start on Sunday.
-const getWeekStart = (dateLike, timezone) => {
+// weekStartsOn: 0 = Sunday … 6 = Saturday. Auto-fill counts each person's
+// hours over their own workweek (the building's, or their role's; utils/workweek.js).
+const getWeekStart = (dateLike, timezone, weekStartsOn = 0) => {
   const zoned = toZoned(dateLike, timezone).startOf("day");
-  return zoned.minus({ days: zoned.weekday % 7 }).toJSDate();
+  return zoned.minus({ days: ((zoned.weekday % 7) - weekStartsOn + 7) % 7 }).toJSDate();
 };
 
-const buildWeekKey = (staffId, dateLike, timezone) =>
-  `${staffId.toString()}|${getWeekStart(dateLike, timezone).toISOString()}`;
+const buildWeekKey = (staffId, dateLike, timezone, weekStartsOn = 0) =>
+  `${staffId.toString()}|${getWeekStart(dateLike, timezone, weekStartsOn).toISOString()}`;
 
 const stableHash = (value) => {
   const text = String(value);
@@ -208,12 +211,13 @@ const countAssignedDaysInWeekIfAssigned = (
   assignedDaySet,
   dateLike,
   timezone,
+  weekStartsOn = 0,
 ) => {
   const dayKeys = new Set(assignedDaySet || []);
   dayKeys.add(getDayKey(dateLike, timezone));
 
   let total = 0;
-  const weekStart = getWeekStart(dateLike, timezone);
+  const weekStart = getWeekStart(dateLike, timezone, weekStartsOn);
   for (let offset = 0; offset < 7; offset += 1) {
     if (
       dayKeys.has(getDayKey(addDays(weekStart, offset, timezone), timezone))
@@ -455,13 +459,15 @@ const buildRankingMetrics = ({
   nightShiftCounts,
   staffAssignedDaySets,
   timezone,
+  weekStartsOn = 0,
 }) => {
-  const weekKey = buildWeekKey(staffId, coverage.startTime, timezone);
+  const weekKey = buildWeekKey(staffId, coverage.startTime, timezone, weekStartsOn);
   const projectedWeekMinutes = (weeklyWorkload[weekKey] || 0) + coverageMinutes;
   const projectedAssignedDaysThisWeek = countAssignedDaysInWeekIfAssigned(
     staffAssignedDaySets[staffId],
     coverage.startTime,
     timezone,
+    weekStartsOn,
   );
   const effectiveOvertimeThresholdMinutes =
     getEffectiveOvertimeThresholdMinutes({
@@ -1327,10 +1333,16 @@ exports.autoGenerateSchedule = async (req, res, next) => {
     fairnessWindowStart.setUTCDate(
       fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
     );
-    const firstCoverageWeekStart = getWeekStart(start, facilityTimezone);
-    const lastCoverageWeekStart = getWeekStart(end, facilityTimezone);
+    // Each person's hours count over their own workweek; when some roles have
+    // their own, the window widens a week each way so every one is covered.
+    const workweekSettings = workweekUtil.settingsFrom(facilityPreferences, facilityTimezone);
+    const weekdayOf = await workweekUtil.weekdaysByStaff(tenantId, workweekSettings);
+    const weekMargin = workweekUtil.hasRoleWeeks(workweekSettings) ? 7 : 0;
+    const firstCoverageWeekStart = getWeekStart(start, facilityTimezone, workweekSettings.weekStartsOn);
+    firstCoverageWeekStart.setUTCDate(firstCoverageWeekStart.getUTCDate() - weekMargin);
+    const lastCoverageWeekStart = getWeekStart(end, facilityTimezone, workweekSettings.weekStartsOn);
     const weeklyWindowEnd = new Date(lastCoverageWeekStart);
-    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
+    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7 + weekMargin);
 
     const timeOff = await TimeOff.find({
       tenantId,
@@ -1385,12 +1397,13 @@ exports.autoGenerateSchedule = async (req, res, next) => {
       const scheduleWeekStart = getWeekStart(
         schedule.startTime,
         facilityTimezone,
+        weekdayOf(staffId),
       );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
         scheduleWeekStart < weeklyWindowEnd
       ) {
-        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone);
+        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone, weekdayOf(staffId));
         weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
       }
 
@@ -1626,6 +1639,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
               nightShiftCounts,
               staffAssignedDaySets,
               timezone: facilityTimezone,
+              weekStartsOn: weekdayOf(staffId),
             }),
           };
         })
@@ -1680,7 +1694,7 @@ exports.autoGenerateSchedule = async (req, res, next) => {
         const staffId = staff._id.toString();
         recentWorkload[staffId] =
           (recentWorkload[staffId] || 0) + coverageMinutes;
-        const weekKey = buildWeekKey(staffId, cov.startTime, facilityTimezone);
+        const weekKey = buildWeekKey(staffId, cov.startTime, facilityTimezone, weekdayOf(staffId));
         weeklyWorkload[weekKey] =
           (weeklyWorkload[weekKey] || 0) + coverageMinutes;
 
@@ -2225,10 +2239,15 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
     fairnessWindowStart.setUTCDate(
       fairnessWindowStart.getUTCDate() - facilityPolicy.fairnessLookbackDays,
     );
-    const firstCoverageWeekStart = getWeekStart(targetStart, facilityTimezone);
-    const lastCoverageWeekStart = getWeekStart(targetEnd, facilityTimezone);
+    // Each person's hours count over their own workweek (see above).
+    const workweekSettings = workweekUtil.settingsFrom(facilityPreferences, facilityTimezone);
+    const weekdayOf = await workweekUtil.weekdaysByStaff(tenantId, workweekSettings);
+    const weekMargin = workweekUtil.hasRoleWeeks(workweekSettings) ? 7 : 0;
+    const firstCoverageWeekStart = getWeekStart(targetStart, facilityTimezone, workweekSettings.weekStartsOn);
+    firstCoverageWeekStart.setUTCDate(firstCoverageWeekStart.getUTCDate() - weekMargin);
+    const lastCoverageWeekStart = getWeekStart(targetEnd, facilityTimezone, workweekSettings.weekStartsOn);
     const weeklyWindowEnd = new Date(lastCoverageWeekStart);
-    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7);
+    weeklyWindowEnd.setUTCDate(weeklyWindowEnd.getUTCDate() + 7 + weekMargin);
 
     const [timeOffDocs, existingSchedules, fairnessSchedules, tenantUsers] =
       await Promise.all([
@@ -2287,12 +2306,13 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
       const scheduleWeekStart = getWeekStart(
         schedule.startTime,
         facilityTimezone,
+        weekdayOf(staffId),
       );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
         scheduleWeekStart < weeklyWindowEnd
       ) {
-        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone);
+        const key = buildWeekKey(staffId, schedule.startTime, facilityTimezone, weekdayOf(staffId));
         weeklyWorkload[key] = (weeklyWorkload[key] || 0) + minutes;
       }
 
@@ -2342,6 +2362,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
       const scheduleWeekStart = getWeekStart(
         schedule.startTime,
         facilityTimezone,
+        weekdayOf(staffId),
       );
       if (
         scheduleWeekStart >= firstCoverageWeekStart &&
@@ -2351,6 +2372,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
           staffId,
           schedule.startTime,
           facilityTimezone,
+          weekdayOf(staffId),
         );
         weeklyWorkload[weekKey] = (weeklyWorkload[weekKey] || 0) + minutes;
       }
@@ -2470,6 +2492,7 @@ exports.fillAutoScheduleDraftAssignmentWithAI = async (req, res, next) => {
             nightShiftCounts,
             staffAssignedDaySets,
             timezone: facilityTimezone,
+            weekStartsOn: weekdayOf(staffId),
           }),
         };
       })

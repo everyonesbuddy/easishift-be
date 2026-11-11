@@ -132,6 +132,23 @@ const facilityPreferencesSchema = new mongoose.Schema(
     },
 
     /**
+     * Roles whose overtime week starts on a different day than the building's,
+     * e.g. [{ roles: ["cook", "server"], weekStartsOn: 4 }] for dining
+     * Thursday to Wednesday. The schedule still shows the building's week;
+     * hours and overtime for these roles follow their own week.
+     */
+    roleWeekStarts: {
+      type: [
+        {
+          _id: false,
+          roles: { type: [String], default: [] },
+          weekStartsOn: { type: Number, min: 0, max: 6, required: true },
+        },
+      ],
+      default: [],
+    },
+
+    /**
      * Call-out texts skip people the extra shift would push into overtime.
      */
     excludeOvertimeOnCallout: {

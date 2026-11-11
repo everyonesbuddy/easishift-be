@@ -37,12 +37,14 @@ const weekError = (statusCode, errorCode, message) => {
 
 const getWeekSettings = async (tenantId) => {
   const prefs = await FacilityPreferences.findOne({ tenantId })
-    .select("facilityTimezone weekStartsOn shiftTypeDefinitions")
+    .select("facilityTimezone weekStartsOn roleWeekStarts shiftTypeDefinitions")
     .lean();
   return {
     prefs,
     timezone: normalizeFacilityTimezone(prefs?.facilityTimezone),
     weekStartsOn: Number.isInteger(prefs?.weekStartsOn) ? prefs.weekStartsOn : 0,
+    // Roles that count overtime over their own week (utils/workweek.js).
+    roleWeekStarts: require("./workweek").cleanRoleWeekStarts(prefs?.roleWeekStarts),
   };
 };
 

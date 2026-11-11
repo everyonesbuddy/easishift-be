@@ -5,6 +5,7 @@
  * eligibleStaffForCoverage, which also checks conflicts and time off.
  */
 const User = require("../models/userModel");
+const workweek = require("./workweek");
 const TimeOff = require("../models/timeOffModel");
 const Schedule = require("../models/scheduleModel");
 const {
@@ -203,6 +204,8 @@ const getCompatibleFacilityConfig = (facilityPreferences) => ({
   areas: (facilityPreferences?.unitAreas || []).map(normalizeAreaTag),
   shiftTypes: getFacilityShiftTypes(facilityPreferences),
   certificationTags: dedupeStrings(facilityPreferences?.certificationTags),
+  // Each person's overtime week (some roles can have their own; utils/workweek.js).
+  workweek: require("./workweek").settingsFrom(facilityPreferences, require("./dateUtils").normalizeFacilityTimezone(facilityPreferences?.facilityTimezone)),
 });
 
 const isEnabledScheduleRole = (role, facilityConfig) => {
@@ -275,6 +278,17 @@ async function eligibleStaffForCoverage({
   if (!staff.length) return [];
 
   const staffIds = staff.map((person) => person._id);
+  // When some roles count overtime over their own week, each person's hours
+  // are summed over their own week containing this shift (utils/workweek.js);
+  // the query spans every week that could be.
+  const ww = facilityConfig?.workweek;
+  const perPersonWeeks = Boolean(weekStart && weekEnd && workweek.hasRoleWeeks(ww));
+  const rangeOf = new Map();
+  if (perPersonWeeks) {
+    for (const person of staff) rangeOf.set(String(person._id), workweek.weekRangeFor(person, coverage.startTime, ww));
+  }
+  const queryFrom = perPersonWeeks ? new Date(Math.min(...[...rangeOf.values()].map((r) => r.start.getTime()))) : weekStart;
+  const queryTo = perPersonWeeks ? new Date(Math.max(...[...rangeOf.values()].map((r) => r.end.getTime()))) : weekEnd;
   const [overlapping, timeOff, weekSchedules] = await Promise.all([
     Schedule.find({
       tenantId,
@@ -299,7 +313,7 @@ async function eligibleStaffForCoverage({
           tenantId,
           staffId: { $in: staffIds },
           status: { $nin: ["call_out", "no_show"] },
-          startTime: { $gte: weekStart, $lt: weekEnd },
+          startTime: { $gte: queryFrom, $lt: queryTo },
         })
           .select("staffId startTime endTime")
           .lean()
@@ -324,6 +338,8 @@ async function eligibleStaffForCoverage({
   const minutesByStaff = new Map();
   for (const row of weekSchedules) {
     const key = String(row.staffId);
+    const own = rangeOf.get(key);
+    if (own && (new Date(row.startTime) < own.start || new Date(row.startTime) >= own.end)) continue;
     minutesByStaff.set(
       key,
       (minutesByStaff.get(key) || 0) + minutesBetween(row.startTime, row.endTime),

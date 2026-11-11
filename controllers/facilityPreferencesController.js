@@ -120,6 +120,49 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
         .json({ message: "weekStartsOn must be 0 (Sunday) to 6 (Saturday)" });
     }
 
+    // Role workweeks: check the list whenever it's sent.
+    if (updates.roleWeekStarts !== undefined) {
+      if (!Array.isArray(updates.roleWeekStarts) || updates.roleWeekStarts.length > 10) {
+        return res.status(400).json({ message: "roleWeekStarts must be a list of up to 10 groups" });
+      }
+      for (const g of updates.roleWeekStarts) {
+        const day = Number(g?.weekStartsOn);
+        if (!Number.isInteger(day) || day < 0 || day > 6) return res.status(400).json({ message: "Each group's weekStartsOn must be 0 (Sunday) to 6 (Saturday)" });
+        if (!Array.isArray(g.roles) || !g.roles.some((r) => String(r || "").trim())) return res.status(400).json({ message: "Each group needs at least one role" });
+      }
+      const all = updates.roleWeekStarts.flatMap((g) => g.roles.map((r) => String(r || "").trim().toLowerCase()).filter(Boolean));
+      const dup = all.find((r, i) => all.indexOf(r) !== i);
+      if (dup) return res.status(400).json({ message: `"${dup}" is in two groups. Each role can only have one workweek.` });
+    }
+
+    // Workweeks decide how overtime is counted for everyone, so only owners
+    // and administrators change them (not schedulers).
+    const current = await FacilityPreferences.findOne({ tenantId: req.tenantId }).select("weekStartsOn roleWeekStarts").lean();
+    const changesWeek = updates.weekStartsOn !== undefined && updates.weekStartsOn !== (current?.weekStartsOn ?? 0);
+    if (updates.weekStartsOn !== undefined && !changesWeek) delete updates.weekStartsOn;
+    // The settings page sends everything on every save, so only a real change counts.
+    const { cleanRoleWeekStarts } = require("../utils/workweek");
+    const changesRoleWeeks =
+      updates.roleWeekStarts !== undefined &&
+      (!Array.isArray(updates.roleWeekStarts) || JSON.stringify(cleanRoleWeekStarts(updates.roleWeekStarts)) !== JSON.stringify(cleanRoleWeekStarts(current?.roleWeekStarts)));
+    if (updates.roleWeekStarts !== undefined && !changesRoleWeeks) delete updates.roleWeekStarts;
+    if ((changesWeek || changesRoleWeeks) && !hasPermission(req.user, "tenant.settings")) {
+      return res.status(403).json({ message: "Only the owner or an administrator can change workweeks." });
+    }
+    // Moving the building's week once weeks are published would split them (published
+    // weeks are stored by their start day), so that needs a hand from us for now.
+    if (changesWeek) {
+      const ScheduleWeek = require("../models/scheduleWeekModel");
+      const published = await ScheduleWeek.countDocuments({ tenantId: req.tenantId, status: "published" });
+      if (published) {
+        return res.status(409).json({
+          message: "Your schedule already has published weeks, so the building's week can't be moved here yet. Ask us and we'll move it with you. To count overtime over a different week for some roles, use role workweeks instead.",
+          errorCode: "WEEK_START_LOCKED",
+        });
+      }
+    }
+    if (changesRoleWeeks) updates.roleWeekStarts = cleanRoleWeekStarts(updates.roleWeekStarts);
+
     if (hasNestedTimeTrackingUpdate) {
       updates.timeTracking = {
         ...updates.timeTracking,

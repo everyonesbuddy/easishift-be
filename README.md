@@ -179,6 +179,20 @@ HQ → Settings → **Customer messages** sends the morning summary, a nudge, a 
 
 **Testing locally against the live database:** these jobs send real messages to real customers while your local server runs.
 
+### Workweeks (`utils/workweek.js`)
+- **The building's week** (`FacilityPreferences.weekStartsOn`, Sunday by default) lays out and publishes the schedule, and is the overtime week for everyone by default.
+- **Role workweeks** (`roleWeekStarts`): some roles can count overtime over a different 7 days, e.g. `[{ roles: ["cook", "server"], weekStartsOn: 4 }]` for dining Thursday to Wednesday.
+  - The overtime law allows different workweeks for different groups of employees.
+  - The schedule screen still shows the building's week. Only hours and overtime follow each person's own week.
+- **Where each person's own week is used:**
+  - the call-out overtime check
+  - the "who can cover" and fill lists
+  - auto-fill
+  - the labor report, the Monday email and the overtime fix list
+  - the morning summary's overtime line
+- **Who can change it:** only owners and administrators (`tenant.settings`) can change either setting.
+- **Moving the building's week once weeks are published is blocked** (409 `WEEK_START_LOCKED`), because published weeks are stored by their start day and would split.
+
 ### Timezones
 - Every instant (`startTime`, `endTime`, `clockInAt`, …) is a UTC `Date`. Calendar days (`Coverage.date`, `ScheduleWeek.weekStart`) are the facility-local day stored at `00:00Z`.
 - `FacilityPreferences.facilityTimezone` (IANA, e.g. `America/New_York`) is used to turn shift times into instants, to work out weeks, and to format messages. `utils/dateUtils.js` holds the helpers.

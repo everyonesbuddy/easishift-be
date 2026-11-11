@@ -88,37 +88,61 @@ test("eligibility: each person's hours are summed over their own week", async ()
   }
 });
 
-test("settings: schedulers can save other settings, but not change workweeks", async () => {
+test("settings: schedulers can change role workweeks; every change is recorded and emailed", async () => {
   const FacilityPreferences = require("../models/facilityPreferencesModel");
   const ScheduleWeek = require("../models/scheduleWeekModel");
   const ctrl = require("../controllers/facilityPreferencesController");
-  const current = { weekStartsOn: 0, roleWeekStarts: [{ roles: ["cook"], weekStartsOn: 4 }] };
-  const orig = [FacilityPreferences.findOne, FacilityPreferences.findOneAndUpdate, ScheduleWeek.countDocuments];
-  let saved = null;
+  const current = { weekStartsOn: 0, roleWeekStarts: [{ roles: ["cook"], weekStartsOn: 0 }] };
+  const orig = [FacilityPreferences.findOne, FacilityPreferences.findOneAndUpdate, ScheduleWeek.countDocuments, workweek.notifyWorkweekChange];
+  let update = null;
+  let emailed = null;
   FacilityPreferences.findOne = () => ({ select: () => ({ lean: async () => current }), lean: async () => current });
-  FacilityPreferences.findOneAndUpdate = async (f, u) => ((saved = u), { toObject: () => ({}), ...u });
+  FacilityPreferences.findOneAndUpdate = async (f, u) => ((update = u), {});
   ScheduleWeek.countDocuments = async () => 3;
+  workweek.notifyWorkweekChange = async (args) => (emailed = args);
   const run = async (user, body) => {
     const out = {};
+    update = null;
+    emailed = null;
     const res = { status(c) { out.status = c; return this; }, json(b) { out.body = b; out.status ??= 200; return this; } };
     await ctrl.upsertFacilityPreferences({ tenantId: "t", user, body, plan: { key: "growth" } }, res, (e) => { out.error = e; });
     return out;
   };
-  const scheduler = { role: "scheduler", roles: [] };
-  const owner = { role: "owner", roles: [] };
-  // The page sends everything back unchanged: fine for a scheduler.
-  const same = await run(scheduler, { weekStartsOn: 0, roleWeekStarts: [{ roles: ["Cook"], weekStartsOn: 4 }], shiftReminderLeadHours: 12 });
-  assert.notEqual(same.status, 403);
-  // A scheduler changing a role workweek: refused.
-  assert.equal((await run(scheduler, { roleWeekStarts: [{ roles: ["cook"], weekStartsOn: 5 }] })).status, 403);
-  // The owner can, and duplicates are caught.
-  assert.equal((await run(owner, { roleWeekStarts: [{ roles: ["cook"], weekStartsOn: 4 }, { roles: ["Cook"], weekStartsOn: 5 }] })).status, 400);
-  // Moving the building's week with published weeks: locked, even for the owner.
-  const moved = await run(owner, { weekStartsOn: 5 });
-  assert.equal(moved.status, 409);
-  assert.equal(moved.body.errorCode, "WEEK_START_LOCKED");
-  [FacilityPreferences.findOne, FacilityPreferences.findOneAndUpdate, ScheduleWeek.countDocuments] = orig;
-  void saved;
+  const william = { _id: "u-william", name: "William Smith", role: "scheduler", roles: [] };
+  const owner = { _id: "u-owner", name: "Melanie Hendrix", role: "owner", roles: [] };
+  try {
+    // The page sends everything back unchanged: nothing recorded, nobody emailed.
+    const same = await run(william, { weekStartsOn: 0, roleWeekStarts: [{ roles: ["Cook"], weekStartsOn: 0 }], shiftReminderLeadHours: 12 });
+    assert.equal(same.status, 200);
+    assert.equal(update.$push, undefined);
+    assert.equal(emailed, null);
+
+    // William moves dining to Thursday: saved, recorded with his name, owner and admins emailed (not him).
+    const moved = await run(william, { roleWeekStarts: [{ roles: ["cook", "server"], weekStartsOn: 4 }] });
+    assert.equal(moved.status, 200);
+    const entry = update.$push.roleWeekStartsHistory.$each[0];
+    assert.equal(entry.byName, "William Smith");
+    assert.deepEqual(entry.from, [{ roles: ["cook"], weekStartsOn: 0 }]);
+    assert.deepEqual(entry.to, [{ roles: ["cook", "server"], weekStartsOn: 4 }]);
+    assert.equal(update.$push.roleWeekStartsHistory.$slice, -50);
+    await new Promise((r) => setImmediate(r));
+    assert.deepEqual(emailed.excludeUserIds, ["u-william"]);
+    assert.equal(workweek.describe(entry.to), "Cook, Server: Thursday to Wednesday");
+
+    // The page can't write the history itself.
+    await run(owner, { roleWeekStartsHistory: [{ byName: "fake" }] });
+    assert.equal(update.$set.roleWeekStartsHistory, undefined);
+
+    // Duplicates are caught.
+    assert.equal((await run(owner, { roleWeekStarts: [{ roles: ["cook"], weekStartsOn: 4 }, { roles: ["Cook"], weekStartsOn: 5 }] })).status, 400);
+    // The building's week: owner or admin only, and locked once weeks are published.
+    assert.equal((await run(william, { weekStartsOn: 5 })).status, 403);
+    const locked = await run(owner, { weekStartsOn: 5 });
+    assert.equal(locked.status, 409);
+    assert.equal(locked.body.errorCode, "WEEK_START_LOCKED");
+  } finally {
+    [FacilityPreferences.findOne, FacilityPreferences.findOneAndUpdate, ScheduleWeek.countDocuments, workweek.notifyWorkweekChange] = orig;
+  }
 });
 
 test("workweeks: role names match however they're written", () => {

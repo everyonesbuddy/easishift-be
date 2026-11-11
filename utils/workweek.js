@@ -67,4 +67,25 @@ async function weekdaysByStaff(tenantId, ww) {
 
 const DAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 
-module.exports = { settingsFrom, cleanRoleWeekStarts, hasRoleWeeks, weekdayFor, weekRangeFor, weekdaysByStaff, DAYS };
+const label = (role) => String(role).split("_").map((w) => (w.length <= 3 ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1))).join(" ");
+
+/** Plain words for a set of role workweeks: "Cook, Server: Thursday to Wednesday". */
+function describe(groups) {
+  const g = cleanRoleWeekStarts(groups);
+  if (!g.length) return "None (every role uses the building's week)";
+  return g.map((x) => `${x.roles.map(label).join(", ")}: ${DAYS[x.weekStartsOn]} to ${DAYS[(x.weekStartsOn + 6) % 7]}`).join("; ");
+}
+
+/** Email the owner and administrators that role workweeks changed, and by whom. */
+async function notifyWorkweekChange({ tenantId, change, excludeUserIds = [] }) {
+  const { alertManagers, appUrl } = require("./managerAlerts");
+  const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+  const who = change.byName || "Someone";
+  const html = `<p>${esc(who)} changed which roles count overtime over their own week.</p>
+<p><strong>Before:</strong> ${esc(describe(change.from))}<br><strong>Now:</strong> ${esc(describe(change.to))}</p>
+<p>This changes how overtime is counted for those roles from now on. If it wasn't meant to happen, change it back in <a href="${appUrl("/facility-preferences#workweeks")}">Settings → Workweeks</a>.</p>`;
+  const isOwnerOrAdmin = (m) => [m.role, ...(m.roles || [])].some((r) => r === "owner" || r === "administrator");
+  return alertManagers({ tenantId, kind: "workweek_changed", sms: null, emailSubject: `${who} changed role workweeks`, emailHtml: html, excludeUserIds, only: isOwnerOrAdmin });
+}
+
+module.exports = { settingsFrom, cleanRoleWeekStarts, hasRoleWeeks, weekdayFor, weekRangeFor, weekdaysByStaff, describe, notifyWorkweekChange, DAYS };

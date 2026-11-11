@@ -148,6 +148,21 @@ const facilityPreferencesSchema = new mongoose.Schema(
       default: [],
     },
 
+    /** Every change to role workweeks: who, when, before and after (newest last; the last 50 are kept). */
+    roleWeekStartsHistory: {
+      type: [
+        {
+          _id: false,
+          at: { type: Date, default: Date.now },
+          byId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          byName: { type: String, default: "" },
+          from: { type: mongoose.Schema.Types.Mixed, default: [] },
+          to: { type: mongoose.Schema.Types.Mixed, default: [] },
+        },
+      ],
+      default: [],
+    },
+
     /**
      * Call-out texts skip people the extra shift would push into overtime.
      */

@@ -22,7 +22,7 @@ async function alertManagers({ tenantId, kind, sms, emailSubject, emailHtml, ref
     const tenant = await Tenant.findById(tenantId).lean();
     if (!tenant) return out;
     const planKey = getEffectivePlanKey(tenant);
-    const managers = (await findSchedulers(tenantId, excludeUserIds).select("name email phoneE164 smsConsent loginEnabled").lean()).filter(
+    const managers = (await findSchedulers(tenantId, excludeUserIds).select("name email role roles phoneE164 smsConsent loginEnabled").lean()).filter(
       (m) => m.loginEnabled !== false && (!only || only(m)),
     );
     const prefs = await Preferences.find({ tenantId, staffId: { $in: managers.map((m) => m._id) } })

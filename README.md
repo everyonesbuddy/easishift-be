@@ -190,7 +190,9 @@ HQ → Settings → **Customer messages** sends the morning summary, a nudge, a 
   - auto-fill
   - the labor report, the Monday email and the overtime fix list
   - the morning summary's overtime line
-- **Who can change it:** only owners and administrators (`tenant.settings`) can change either setting.
+- **Who can change it:**
+  - **Role workweeks:** anyone who manages settings, schedulers included. Every change is recorded in `roleWeekStartsHistory` (who, when, before and after; the last 50 are kept) and emailed to the owner and administrators.
+  - **The building's week:** owners and administrators only (`tenant.settings`).
 - **Moving the building's week once weeks are published is blocked** (409 `WEEK_START_LOCKED`), because published weeks are stored by their start day and would split.
 
 ### Timezones

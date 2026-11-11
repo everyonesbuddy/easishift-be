@@ -146,8 +146,11 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       updates.roleWeekStarts !== undefined &&
       (!Array.isArray(updates.roleWeekStarts) || JSON.stringify(cleanRoleWeekStarts(updates.roleWeekStarts)) !== JSON.stringify(cleanRoleWeekStarts(current?.roleWeekStarts)));
     if (updates.roleWeekStarts !== undefined && !changesRoleWeeks) delete updates.roleWeekStarts;
-    if ((changesWeek || changesRoleWeeks) && !hasPermission(req.user, "tenant.settings")) {
-      return res.status(403).json({ message: "Only the owner or an administrator can change workweeks." });
+    // Moving the building's week is the owner's or an administrator's call. Role
+    // workweeks anyone who manages settings can change (schedulers too), and every
+    // change is recorded and emailed to the owner and administrators.
+    if (changesWeek && !hasPermission(req.user, "tenant.settings")) {
+      return res.status(403).json({ message: "Only the owner or an administrator can change the building's week." });
     }
     // Moving the building's week once weeks are published would split them (published
     // weeks are stored by their start day), so that needs a hand from us for now.
@@ -162,6 +165,8 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       }
     }
     if (changesRoleWeeks) updates.roleWeekStarts = cleanRoleWeekStarts(updates.roleWeekStarts);
+    // The history is ours to write, never the page's.
+    delete updates.roleWeekStartsHistory;
 
     if (hasNestedTimeTrackingUpdate) {
       updates.timeTracking = {
@@ -227,11 +232,21 @@ exports.upsertFacilityPreferences = async (req, res, next) => {
       updates.facilityTimezoneConfirmed = true;
     }
 
+    const before = cleanRoleWeekStarts(current?.roleWeekStarts);
+    const change = changesRoleWeeks
+      ? { at: new Date(), byId: req.user?._id || null, byName: req.user?.name || req.user?.email || "", from: before, to: updates.roleWeekStarts }
+      : null;
     const prefs = await FacilityPreferences.findOneAndUpdate(
       { tenantId: req.tenantId },
-      { $set: updates },
+      { $set: updates, ...(change ? { $push: { roleWeekStartsHistory: { $each: [change], $slice: -50 } } } : {}) },
       { new: true, upsert: true, runValidators: true },
     );
+    if (change) {
+      // Tell the owner and administrators (not whoever made the change), by email.
+      require("../utils/workweek")
+        .notifyWorkweekChange({ tenantId: req.tenantId, change, excludeUserIds: change.byId ? [change.byId] : [] })
+        .catch((e) => console.error("workweek change email failed:", e.message));
+    }
 
     res.json(prefs);
   } catch (err) {

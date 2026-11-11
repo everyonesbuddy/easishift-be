@@ -16,6 +16,7 @@ const FacilityPreferences = require("../models/facilityPreferencesModel");
 const ManagerDigest = require("../models/managerDigestModel");
 const { getWeekSettings } = require("./weekService");
 const { weekStartFor, weekBounds, dateKeyToCoverageDate } = require("./dateUtils");
+const workweek = require("./workweek");
 const ScheduleWeek = require("../models/scheduleWeekModel");
 const { findSchedulers } = require("./schedulers");
 const { nextStep, buildNudge } = require("./setupNudge");
@@ -32,7 +33,7 @@ const WORKING = ["scheduled", "in_progress", "completed", "left_early"];
 /** What happened and what's coming, for one workspace's day. */
 async function factsFor(tenant, now = new Date()) {
   const tenantId = tenant._id;
-  const { timezone, weekStartsOn } = await getWeekSettings(tenantId);
+  const { timezone, weekStartsOn, roleWeekStarts } = await getWeekSettings(tenantId);
   const local = DateTime.fromJSDate(now, { zone: timezone });
   const dayStart = local.startOf("day").toJSDate();
   const dayEnd = local.endOf("day").toJSDate();
@@ -71,10 +72,28 @@ async function factsFor(tenant, now = new Date()) {
   }
 
   // This week's scheduled hours per person, at or over the overtime line.
+  // Each person's own workweek when some roles have one (utils/workweek.js).
+  const ww = { timezone, weekStartsOn, roleWeekStarts };
+  const roleWeeks = workweek.hasRoleWeeks(ww);
   const { start, end } = weekBounds(weekStartFor(now, timezone, weekStartsOn), timezone);
-  const week = await Schedule.find({ tenantId, state: "published", status: { $in: WORKING }, startTime: { $gte: start, $lt: end } }).select("staffId startTime endTime").lean();
+  const margin = roleWeeks ? 7 * 86400000 : 0;
+  const week = await Schedule.find({ tenantId, state: "published", status: { $in: WORKING }, startTime: { $gte: new Date(start.getTime() - margin), $lt: new Date(end.getTime() + margin) } })
+    .select("staffId startTime endTime")
+    .lean();
+  const weekdayOf = roleWeeks ? await workweek.weekdaysByStaff(tenantId, ww) : null;
+  const ownWeek = new Map(); // staffId → { start, end }
+  const inOwnWeek = (s) => {
+    if (!weekdayOf) return true;
+    const id = String(s.staffId);
+    if (!ownWeek.has(id)) ownWeek.set(id, weekBounds(weekStartFor(now, timezone, weekdayOf(id)), timezone));
+    const w = ownWeek.get(id);
+    return new Date(s.startTime) >= w.start && new Date(s.startTime) < w.end;
+  };
   const minutes = new Map();
-  for (const s of week) minutes.set(String(s.staffId), (minutes.get(String(s.staffId)) || 0) + (new Date(s.endTime) - new Date(s.startTime)) / 60000);
+  for (const s of week) {
+    if (!inOwnWeek(s)) continue;
+    minutes.set(String(s.staffId), (minutes.get(String(s.staffId)) || 0) + (new Date(s.endTime) - new Date(s.startTime)) / 60000);
+  }
   const overIds = [...minutes].filter(([, m]) => m >= otMinutes).map(([id]) => id);
   const names = overIds.length ? new Map((await User.find({ _id: { $in: overIds } }).select("name").lean()).map((u) => [String(u._id), u.name])) : new Map();
   const overtime = overIds

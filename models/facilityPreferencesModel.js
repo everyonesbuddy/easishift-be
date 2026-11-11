@@ -132,6 +132,38 @@ const facilityPreferencesSchema = new mongoose.Schema(
     },
 
     /**
+     * Roles whose overtime week starts on a different day than the building's,
+     * e.g. [{ roles: ["cook", "server"], weekStartsOn: 4 }] for dining
+     * Thursday to Wednesday. The schedule still shows the building's week;
+     * hours and overtime for these roles follow their own week.
+     */
+    roleWeekStarts: {
+      type: [
+        {
+          _id: false,
+          roles: { type: [String], default: [] },
+          weekStartsOn: { type: Number, min: 0, max: 6, required: true },
+        },
+      ],
+      default: [],
+    },
+
+    /** Every change to role workweeks: who, when, before and after (newest last; the last 50 are kept). */
+    roleWeekStartsHistory: {
+      type: [
+        {
+          _id: false,
+          at: { type: Date, default: Date.now },
+          byId: { type: mongoose.Schema.Types.ObjectId, ref: "User", default: null },
+          byName: { type: String, default: "" },
+          from: { type: mongoose.Schema.Types.Mixed, default: [] },
+          to: { type: mongoose.Schema.Types.Mixed, default: [] },
+        },
+      ],
+      default: [],
+    },
+
+    /**
      * Call-out texts skip people the extra shift would push into overtime.
      */
     excludeOvertimeOnCallout: {

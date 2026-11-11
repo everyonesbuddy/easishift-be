@@ -24,6 +24,7 @@
  *   page says so.
  */
 const { DateTime } = require("luxon");
+const { weekStartFor } = require("./dateUtils");
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -55,6 +56,8 @@ function buildLaborReport({
   weekStart,
   days,
   weekStarts = null,
+  // staffId → the day their workweek starts, when some roles have their own (utils/workweek.js).
+  weekdayOf = null,
   period = "week",
   timezone = "UTC",
   thresholdHours = 40,
@@ -181,9 +184,13 @@ function buildLaborReport({
     if (!perPerson.has(id)) perPerson.set(id, { weeks: new Map(), roles: new Map() });
     return perPerson.get(id);
   };
-  const weekOf = (t) => payWeeks.find((w) => new Date(t) >= w.from && new Date(t) < w.to);
+  const weekOf = (t, staffId) => {
+    // Each person's own workweek, when some roles have one.
+    if (weekdayOf) return { key: weekStartFor(new Date(t), zone, weekdayOf(staffId)) };
+    return payWeeks.find((w) => new Date(t) >= w.from && new Date(t) < w.to);
+  };
   const addEvent = (staffId, at, hours, role, draft = false) => {
-    const w = weekOf(at);
+    const w = weekOf(at, staffId);
     if (!w) return;
     const p = personRow(staffId);
     if (!p.weeks.has(w.key)) p.weeks.set(w.key, []);

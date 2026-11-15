@@ -1,6 +1,6 @@
 # WiserShifts Backend
 
-Scheduling for care facilities: assisted living, memory care, skilled nursing and home care.
+Scheduling and time tracking for 24/7 care teams: senior living, nursing homes, group homes and IDD residences, behavioral health residential and hospice houses (plus home care).
 
 **One scheduler signs up free, builds the week from a staffing template, and publishes it. Every staff member gets one text or email with a personal link.** Staff never download an app or create an account; they use their link to see shifts, swap, pick up open shifts, call out and request time off.
 

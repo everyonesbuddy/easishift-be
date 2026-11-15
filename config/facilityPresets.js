@@ -83,6 +83,48 @@ const PRESETS = Object.freeze({
       rule("night", "night_1", "rn", 1, 1),
     ],
   },
+  // Other 24/7 care teams: same scheduling problem, different roles.
+  group_home: {
+    label: "Group home / IDD residence",
+    roleFamilies: ["dsp", "house_manager", "lpn"],
+    shiftTypeDefinitions: [
+      { key: "day", label: "Day", timeSlots: [slot("day_1", "07:00", "15:00", "Day 7a–3p")] },
+      { key: "evening", label: "Evening", timeSlots: [slot("evening_1", "15:00", "23:00", "Evening 3p–11p")] },
+      { key: "night", label: "Overnight (awake)", timeSlots: [slot("night_1", "23:00", "07:00", "Overnight 11p–7a")] },
+    ],
+    templateRules: [
+      rule("day", "day_1", "dsp", 2, 2),
+      rule("day", "day_1", "house_manager", 1, 0),
+      rule("evening", "evening_1", "dsp", 2, 2),
+      rule("night", "night_1", "dsp", 1, 1),
+    ],
+  },
+  behavioral_health: {
+    label: "Behavioral health residential",
+    roleFamilies: ["bht", "rn", "counselor"],
+    shiftTypeDefinitions: EIGHT_HOUR_SHIFTS,
+    templateRules: [
+      rule("day", "day_1", "bht", 3, 3),
+      rule("day", "day_1", "rn", 1, 1),
+      rule("day", "day_1", "counselor", 1, 0),
+      rule("evening", "evening_1", "bht", 3, 3),
+      rule("evening", "evening_1", "rn", 1, 1),
+      rule("night", "night_1", "bht", 2, 2),
+    ],
+  },
+  hospice_house: {
+    label: "Hospice house",
+    roleFamilies: ["rn", "hospice_aide", "lpn"],
+    shiftTypeDefinitions: EIGHT_HOUR_SHIFTS,
+    templateRules: [
+      rule("day", "day_1", "rn", 2, 2),
+      rule("day", "day_1", "hospice_aide", 2, 2),
+      rule("evening", "evening_1", "rn", 1, 1),
+      rule("evening", "evening_1", "hospice_aide", 2, 2),
+      rule("night", "night_1", "rn", 1, 1),
+      rule("night", "night_1", "hospice_aide", 1, 1),
+    ],
+  },
   home_care: {
     label: "Home care",
     roleFamilies: ["caregiver"],

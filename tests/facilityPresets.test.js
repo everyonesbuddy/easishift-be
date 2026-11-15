@@ -41,3 +41,20 @@ test("presets are copies, not shared objects", () => {
   a[0].countsByWeekday[0] = 99;
   assert.notEqual(getPresetTemplateRules("assisted_living")[0].countsByWeekday[0], 99);
 });
+
+test("presets: other 24/7 care teams (group homes, behavioral health, hospice houses)", () => {
+  for (const type of ["group_home", "behavioral_health", "hospice_house"]) {
+    assert.ok(FACILITY_TYPES.includes(type), type);
+    const prefs = getPresetPreferences(type);
+    assert.ok(prefs.roleFamilies.length >= 2, `${type} has roles`);
+    // Every rule's role is one of the preset's roles, and every shift it uses exists.
+    const shifts = new Set(prefs.shiftTypeDefinitions.map((d) => d.key));
+    for (const r of getPresetTemplateRules(type)) {
+      assert.ok(prefs.roleFamilies.includes(r.role), `${type}: ${r.role}`);
+      assert.ok(shifts.has(r.shiftType), `${type}: ${r.shiftType}`);
+    }
+  }
+  const Tenant = require("../models/tenantModel");
+  const allowed = Tenant.schema.path("facilityType").enumValues;
+  for (const type of FACILITY_TYPES) assert.ok(allowed.includes(type), `tenant accepts ${type}`);
+});

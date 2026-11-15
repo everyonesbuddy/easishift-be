@@ -14,13 +14,13 @@ const OutboundMessage = require("../models/outboundMessageModel");
 const { getEffectivePlanKey } = require("../config/plans");
 const { sendSMS } = require("./sendSMS");
 const {
-  sendToStaff,
   notifySchedulers,
   shortShift,
   escapeHtml,
   firstName,
 } = require("./notify");
-const { getStaffLinkUrl } = require("./staffLinks");
+const staffLinks = require("./staffLinks");
+const notify = require("./notify");
 const { COVERAGE_OCCUPYING_STATUSES } = require("./scheduleUtils");
 const { getWeekSettings } = require("./weekService");
 
@@ -64,8 +64,8 @@ async function sendTo({ tenant, coverage, offer, people, recipients, timezone })
   for (const recipient of recipients) {
     const person = people.find((p) => String(p._id) === String(recipient.staffId));
     if (!person) continue;
-    const link = await getStaffLinkUrl(person);
-    const result = await sendToStaff({
+    const link = await staffLinks.getStaffLinkUrl(person);
+    const result = await notify.sendToStaff({
       tenant,
       planKey,
       staff: person,
@@ -116,6 +116,35 @@ async function sendCalloutOffer({ tenant, coverage, people, createdBy, timezone,
  * people in it who can still take the shift. Near the shift's start, everyone
  * left goes at once.
  */
+/**
+ * Send an open offer to people still waiting: the next wave, or everyone
+ * left (all: true, or when the shift starts within ALL_AT_ONCE_HOURS).
+ * Rechecks who can still take it. Saves the offer; returns how many were sent.
+ */
+async function sendWaiting(offer, { now = new Date(), all = false } = {}) {
+  const coverage = await Coverage.findById(offer.coverageId).lean();
+  if (!coverage || (await remainingFor(coverage)) <= 0) return 0;
+  const tenant = await Tenant.findById(offer.tenantId).lean();
+  const { timezone } = await getWeekSettings(offer.tenantId);
+  const waiting = offer.recipients.filter((r) => !r.sentAt && !r.notReachedReason);
+  if (!waiting.length) return 0;
+  const soon = new Date(coverage.startTime) - now < ALL_AT_ONCE_HOURS * 3600e3;
+  const nextWave = Math.min(...waiting.map((r) => r.wave || 1));
+  let batch = all || soon ? waiting : waiting.filter((r) => (r.wave || 1) === nextWave);
+  // Only people who can still take it (someone may have picked up other shifts since).
+  const stillOk = await require("../controllers/calloutController").eligibleNow(offer.tenantId, coverage);
+  if (stillOk) {
+    for (const r of batch) if (!stillOk.has(String(r.staffId))) r.notReachedReason = "no_longer_eligible";
+    batch = batch.filter((r) => stillOk.has(String(r.staffId)));
+  }
+  const people = await User.find({ _id: { $in: batch.map((r) => r.staffId) } }).lean();
+  await sendTo({ tenant, coverage, offer, people, recipients: batch, timezone });
+  const left = offer.recipients.some((r) => !r.sentAt && !r.notReachedReason);
+  offer.nextWaveAt = left ? new Date(now.getTime() + WAVE_MINUTES * 60e3) : null;
+  await offer.save();
+  return batch.filter((r) => r.sentAt).length;
+}
+
 async function sendNextWaves(now = new Date()) {
   let sent = 0;
   const due = await CalloutOffer.find({ status: "open", nextWaveAt: { $ne: null, $lte: now }, expiresAt: { $gt: now } });
@@ -124,27 +153,7 @@ async function sendNextWaves(now = new Date()) {
       // Claim it so two servers don't both send the wave.
       const claimed = await CalloutOffer.updateOne({ _id: offer._id, nextWaveAt: offer.nextWaveAt }, { $set: { nextWaveAt: null } });
       if (!claimed.modifiedCount) continue;
-      const coverage = await Coverage.findById(offer.coverageId).lean();
-      if (!coverage || (await remainingFor(coverage)) <= 0) continue;
-      const tenant = await Tenant.findById(offer.tenantId).lean();
-      const { timezone } = await getWeekSettings(offer.tenantId);
-      const waiting = offer.recipients.filter((r) => !r.sentAt && !r.notReachedReason);
-      if (!waiting.length) continue;
-      const soon = new Date(coverage.startTime) - now < ALL_AT_ONCE_HOURS * 3600e3;
-      const nextWave = Math.min(...waiting.map((r) => r.wave || 1));
-      let batch = soon ? waiting : waiting.filter((r) => (r.wave || 1) === nextWave);
-      // Only people who can still take it (someone may have picked up other shifts since).
-      const stillOk = await require("../controllers/calloutController").eligibleNow(offer.tenantId, coverage);
-      if (stillOk) {
-        for (const r of batch) if (!stillOk.has(String(r.staffId))) r.notReachedReason = "no_longer_eligible";
-        batch = batch.filter((r) => stillOk.has(String(r.staffId)));
-      }
-      const people = await User.find({ _id: { $in: batch.map((r) => r.staffId) } }).lean();
-      await sendTo({ tenant, coverage, offer, people, recipients: batch, timezone });
-      sent += batch.filter((r) => r.sentAt).length;
-      const left = offer.recipients.some((r) => !r.sentAt && !r.notReachedReason);
-      offer.nextWaveAt = left ? new Date(now.getTime() + WAVE_MINUTES * 60e3) : null;
-      await offer.save();
+      sent += await sendWaiting(offer, { now });
     } catch (err) {
       console.error(`call-out wave failed for ${offer._id}:`, err.message);
     }
@@ -244,6 +253,7 @@ const findRecentOfferForPhone = (phoneE164) =>
 module.exports = {
   sendCalloutOffer,
   sendNextWaves,
+  sendWaiting,
   rankForOffer,
   WAVE_SIZE,
   WAVE_MINUTES,

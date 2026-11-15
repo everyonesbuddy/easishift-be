@@ -39,7 +39,7 @@ function buildLaborEmail({ facilityName, last, current }) {
     row("Hours scheduled", hrs(last.hours.scheduled),
       last.hours.needed ? `of ${hrs(last.hours.needed)} needed${last.hours.open ? `, ${hrs(last.hours.open)} unfilled` : ""}` : ""),
     last.hours.worked !== null ? row("Hours worked (time clock)", hrs(last.hours.worked)) : "",
-    last.budget ? row("Hours per resident day", last.budget.scheduledPPD,
+    last.budget ? row("Staff hours per resident per day", last.budget.scheduledPPD,
       `${hrs(last.hours.scheduled)} ÷ ${last.budget.residentDays.toLocaleString("en-US")} resident days` +
       (last.budget.targetPPD !== null
         ? `; target ${last.budget.targetPPD} = ${hrs(last.budget.budgetHours)} (${last.budget.varianceHours >= 0 ? "+" : ""}${last.budget.varianceHours} h)`

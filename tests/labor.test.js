@@ -168,7 +168,7 @@ test("Monday email reads well and escapes names", () => {
   const current = base({ schedules, staff: [{ ...STAFF[0], name: "<Maria>" }, STAFF[1], STAFF[2]] });
   const html = buildLaborEmail({ facilityName: "Palm & Grove", last, current });
   assert.match(html, /Palm &amp; Grove: labor for Oct 19 – Oct 25/);
-  assert.match(html, /Hours per resident day/);
+  assert.match(html, /Staff hours per resident per day/);
   assert.match(html, /Hours scheduled/);
   assert.match(html, /÷ 280 resident days/);
   assert.match(html, /\$1,400/); // 60h*20 + 20h OT*20*0.5

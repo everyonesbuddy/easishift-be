@@ -6,7 +6,7 @@
 const { DateTime } = require("luxon");
 
 // "cna" → "CNA", "med_tech" → "Med Tech": care-role acronyms stay in capitals.
-const ACRONYMS = new Set(["cna", "rn", "lpn", "lvn", "cma", "qma", "don", "adon", "ed", "np", "pt", "ot", "hha", "pca", "stna", "gna"]);
+const ACRONYMS = new Set(["cna", "rn", "lpn", "lvn", "cma", "qma", "don", "adon", "ed", "np", "pt", "ot", "hha", "pca", "stna", "gna", "dsp", "bht", "idd"]);
 const role = (r) => String(r || "").split(/[_\s]+/).filter(Boolean).map((w) => (ACRONYMS.has(w.toLowerCase()) ? w.toUpperCase() : w[0].toUpperCase() + w.slice(1).toLowerCase())).join(" ");
 const first = (name) => String(name || "").trim().split(/\s+/)[0] || "there";
 const esc = (s) => String(s ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);

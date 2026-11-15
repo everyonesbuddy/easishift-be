@@ -22,6 +22,25 @@ const {
   dateKeyToCoverageDate,
 } = require("../utils/dateUtils");
 const { sendCalloutOffer, remainingFor, rankForOffer, WAVE_MINUTES } = require("../utils/callouts");
+const callouts = require("../utils/callouts");
+
+/** What the website and app show after texting: who got it, how, who's still to come, who wasn't reached. */
+function offerSummary(offer, { rest = false } = {}) {
+  return {
+    offerId: offer._id,
+    sentTo: offer.recipients.filter((r) => r.channel).length,
+    queued: offer.recipients.filter((r) => !r.sentAt && !r.notReachedReason).length,
+    waveSize: offer.waveSize || null,
+    waveMinutes: offer.waveSize ? WAVE_MINUTES : null,
+    bySms: offer.recipients.filter((r) => r.channel === "sms").length,
+    byEmail: offer.recipients.filter((r) => r.channel === "email").length,
+    notReached: offer.recipients
+      .filter((r) => !r.channel && r.notReachedReason)
+      .map((r) => ({ staffId: r.staffId, name: r.name, reason: r.notReachedReason })),
+    // true when "everyone now" sent the rest of an offer already going out
+    rest,
+  };
+}
 
 const loadCandidates = async ({ tenantId, coverage }) => {
   const [prefs, settings] = await Promise.all([
@@ -166,6 +185,17 @@ exports.fillByText = async (req, res, next) => {
       });
     }
 
+    // "Text everyone now" on an offer already going out in waves: send it to the
+    // people still waiting, instead of starting over and texting the first ones twice.
+    if (!requested && req.body?.everyone === true) {
+      const open = await CalloutOffer.findOne({ tenantId: req.tenantId, coverageId: coverage._id, status: "open", expiresAt: { $gt: new Date() } });
+      if (open && open.recipients.some((r) => !r.sentAt && !r.notReachedReason)) {
+        await CalloutOffer.updateOne({ _id: open._id }, { $set: { nextWaveAt: null } });
+        await callouts.sendWaiting(open, { all: true });
+        return res.status(201).json({ ...offerSummary(open, { rest: true }), skippedForOvertime: 0 });
+      }
+    }
+
     // One open offer per slot: close the old one.
     await CalloutOffer.updateMany(
       { tenantId: req.tenantId, coverageId: coverage._id, status: "open" },
@@ -185,16 +215,7 @@ exports.fillByText = async (req, res, next) => {
     });
 
     res.status(201).json({
-      offerId: offer._id,
-      sentTo: offer.recipients.filter((r) => r.channel).length,
-      queued: offer.recipients.filter((r) => !r.sentAt && !r.notReachedReason).length,
-      waveSize: offer.waveSize || null,
-      waveMinutes: offer.waveSize ? WAVE_MINUTES : null,
-      bySms: offer.recipients.filter((r) => r.channel === "sms").length,
-      byEmail: offer.recipients.filter((r) => r.channel === "email").length,
-      notReached: offer.recipients
-        .filter((r) => !r.channel && r.notReachedReason)
-        .map((r) => ({ staffId: r.staffId, name: r.name, reason: r.notReachedReason })),
+      ...offerSummary(offer),
       skippedForOvertime: skipOvertime
         ? candidates.filter((row) => row.eligible && row.overtimeIfAssigned).length
         : 0,

@@ -70,3 +70,49 @@ test("reminders: smart mode skips people who worked the day before", async () =>
     Schedule.exists = orig;
   }
 });
+
+test("call-out offers: \"text everyone now\" sends only to people still waiting (nobody twice)", async () => {
+  const Coverage = require("../models/coverageModel");
+  const Tenant = require("../models/tenantModel");
+  const User = require("../models/userModel");
+  const notify = require("../utils/notify");
+  const staffLinks = require("../utils/staffLinks");
+  const weekService = require("../utils/weekService");
+  const ctrl = require("../controllers/calloutController");
+  const Schedule = require("../models/scheduleModel");
+  const orig = [Coverage.findById, Tenant.findById, User.find, notify.sendToStaff, staffLinks.getStaffLinkUrl, weekService.getWeekSettings, ctrl.eligibleNow, Schedule.countDocuments];
+  Schedule.countDocuments = async () => 0; // the spot is still open
+  const texted = [];
+  const lean = (v) => ({ lean: async () => v });
+  Coverage.findById = () => lean({ _id: "c1", tenantId: "t1", role: "cna", startTime: new Date(Date.now() + 2 * 86400e3), endTime: new Date(Date.now() + 2 * 86400e3 + 8 * 3600e3), requiredCount: 1 });
+  Tenant.findById = () => lean({ _id: "t1", name: "Silver Comet" });
+  User.find = (q) => lean(q._id.$in.map((id) => ({ _id: id, name: `Person ${id}` })));
+  notify.sendToStaff = async ({ staff }) => (texted.push(String(staff._id)), { delivered: true, channel: "sms" });
+  staffLinks.getStaffLinkUrl = async () => "https://x/s/abc";
+  const FacilityPreferences = require("../models/facilityPreferencesModel");
+  const origPrefs = FacilityPreferences.findOne;
+  FacilityPreferences.findOne = () => ({ select: () => lean({ facilityTimezone: "America/New_York", weekStartsOn: 0 }) });
+  ctrl.eligibleNow = async () => null;
+  const sentAt = new Date();
+  const offer = {
+    _id: "o1",
+    tenantId: "t1",
+    coverageId: "c1",
+    recipients: [
+      ...["a", "b", "c", "d", "e"].map((id) => ({ staffId: id, name: id, wave: 1, sentAt, channel: "sms" })),
+      ...["f", "g"].map((id) => ({ staffId: id, name: id, wave: 2 })),
+      { staffId: "h", name: "h", wave: 3 },
+    ],
+    save: async () => {},
+  };
+  try {
+    const remaining = require("../utils/callouts");
+    const n = await remaining.sendWaiting(offer, { all: true });
+    assert.deepEqual(texted.sort(), ["f", "g", "h"], "only the people still waiting, all at once");
+    assert.equal(n, 3);
+    assert.equal(offer.nextWaveAt, null, "no more waves");
+  } finally {
+    [Coverage.findById, Tenant.findById, User.find, notify.sendToStaff, staffLinks.getStaffLinkUrl, weekService.getWeekSettings, ctrl.eligibleNow, Schedule.countDocuments] = orig;
+    FacilityPreferences.findOne = origPrefs;
+  }
+});

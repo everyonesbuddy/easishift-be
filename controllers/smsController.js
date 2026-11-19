@@ -88,9 +88,11 @@ const optInReply = async (contacts) => {
   for (const contact of contacts) {
     lines.push(`${nameOf(contact.tenantId)}: ${await getStaffLinkUrl(contact)}`);
   }
+  // Carriers expect the confirmation to say how often, that rates may apply, and STOP/HELP.
+  const terms = "Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help.";
   return contacts.length === 1
-    ? `You're subscribed to schedule texts from ${nameOf(contacts[0].tenantId)}. Your schedule: ${lines[0].split(": ").slice(1).join(": ")}`
-    : `You're subscribed to schedule texts. Your schedules:\n${lines.join("\n")}`;
+    ? `You're subscribed to WiserShifts schedule texts from ${nameOf(contacts[0].tenantId)}. Your schedule: ${lines[0].split(": ").slice(1).join(": ")} ${terms}`
+    : `You're subscribed to WiserShifts schedule texts. Your schedules:\n${lines.join("\n")}\n${terms}`;
 };
 
 exports.handleInbound = async (req, res, next) => {
@@ -120,7 +122,7 @@ exports.handleInbound = async (req, res, next) => {
     if (word === "HELP") {
       return twiml(
         res,
-        "WiserShifts schedule texts from your workplace. Reply STOP to opt out, START to opt back in. Questions about your schedule? Contact your scheduler.",
+        "WiserShifts schedule texts from your workplace. Questions about your schedule? Ask your scheduler. Help with texts: info@wisershifts.com. Msg & data rates may apply. Reply STOP to opt out, START to opt back in.",
       );
     }
 

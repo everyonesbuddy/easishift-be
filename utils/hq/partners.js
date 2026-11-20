@@ -35,14 +35,22 @@ const STATUSES = {
 
 /**
  * What a customer has paid: invoices marked paid with money in them (the
- * free month has none), oldest first.
+ * free month has none), oldest first. "months" counts the months paid for,
+ * so one yearly payment is 12 (a flat fee is due after 2).
  */
 function paidMonths(invoices) {
   const paid = (invoices || [])
     .filter((i) => i.status === "paid" && (i.amount_paid || 0) > 0)
     .sort((a, b) => a.created - b.created)
-    .map((i) => ({ at: new Date(i.created * 1000), amount: i.amount_paid / 100 }));
-  return { months: paid.length, firstPaidAt: paid[0]?.at || null, total: paid.reduce((n, p) => n + p.amount, 0), payments: paid };
+    .map((i) => ({ at: new Date(i.created * 1000), amount: i.amount_paid / 100, months: monthsCovered(i) }));
+  return { months: paid.reduce((n, p) => n + p.months, 0), firstPaidAt: paid[0]?.at || null, total: paid.reduce((n, p) => n + p.amount, 0), payments: paid };
+}
+
+/** How many months one paid invoice covers: 12 for a yearly plan, 1 for monthly (from its billing period). */
+function monthsCovered(invoice) {
+  const line = invoice?.lines?.data?.find((l) => l?.period?.start && l?.period?.end);
+  if (!line) return 1;
+  return Math.max(1, Math.round((line.period.end - line.period.start) / (30.44 * 86400)));
 }
 
 const round2 = (n) => Math.round(n * 100) / 100;

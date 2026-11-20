@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 20;
+const SEED_VERSION = 21;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -107,6 +107,7 @@ async function runSeed() {
   if (version < 18) await migrateV18();
   if (version < 19) await migrateV19();
   if (version < 20) await migrateV20();
+  if (version < 21) await migrateV21();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -127,7 +128,30 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   walk(require("../utils/hq/playbookFacebookV19").SCRIPTS);
   walk(require("../utils/hq/playbookReferralsV20").SCRIPTS);
+  walk(require("../utils/hq/playbookReferralsV21").SCRIPTS);
   return { keys, key };
+}
+
+/**
+ * Version 21: referral partners for anyone owners trust (customers,
+ * coaches, training schools, payroll firms, software vendors…), with one
+ * generic first email. Scripts we seeded and you never edited are replaced;
+ * yours stay after them. Title, who, goal and steps change only if still ours.
+ */
+async function migrateV21() {
+  const v20 = require("../utils/hq/playbookReferralsV20");
+  const v21 = require("../utils/hq/playbookReferralsV21");
+  const { keys, key } = seededScriptKeys();
+  const p = (await HqPlaybookPlay.find({ seedKey: v20.SEED_KEY }).select("seedKey title who goal steps scripts").lean()).find((x) => x.seedKey === v20.SEED_KEY);
+  if (!p) return; // deleted plays stay deleted
+  const freshKeys = new Set(v21.SCRIPTS.map(key));
+  const yours = (p.scripts || []).filter((x) => !keys.has(key(x)) && !freshKeys.has(key(x)));
+  const set = { scripts: [...v21.SCRIPTS, ...yours] };
+  if (!p.title || p.title === v20.PLAY.title) set.title = v21.TITLE;
+  if (!p.who || p.who === v20.PLAY.who) set.who = v21.WHO;
+  if (!p.goal || p.goal === v20.PLAY.goal) set.goal = v21.GOAL;
+  if (!(p.steps || []).length || JSON.stringify(p.steps) === JSON.stringify(v20.PLAY.steps)) set.steps = v21.STEPS;
+  await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: set });
 }
 
 /**

@@ -1424,3 +1424,29 @@ test("playbook v20: a Referral partners play is added once, at the end", async (
   assert.match(added[0].doc.scripts.map((s) => s.body).join(" "), /\$250/);
   assert.equal((await run([{ _id: "r", seedKey: "referral-partners", order: 2 }])).length, 0, "not added twice");
 });
+
+test("playbook v21: referral partners for anyone, one generic first email; your scripts stay", async () => {
+  const v20 = require("../utils/hq/playbookReferralsV20");
+  const v21 = require("../utils/hq/playbookReferralsV21");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  const mine = { label: "My Silver Comet ask", body: "Written by me." };
+  let set = null;
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 20 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqPlaybookPlay.find = () => q([{ _id: "r", seedKey: "referral-partners", ...v20.PLAY, scripts: [...v20.SCRIPTS, mine] }]);
+  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+  }
+  assert.equal(set.title, "Referral partners");
+  assert.deepEqual(set.steps, v21.STEPS);
+  assert.equal(set.scripts.length, v21.SCRIPTS.length + 1);
+  assert.deepEqual(set.scripts.at(-1), mine, "your own script stays, after ours");
+  assert.equal(set.scripts.filter((s) => /^First email · Any partner/.test(s.label)).length, 1);
+  assert.ok(!set.scripts.some((s) => s.label === "First email · Short version"), "the nurse-only versions are gone");
+});

@@ -9,10 +9,16 @@
 const MONTHS_FOR_FEE = 2;
 
 const TYPES = {
-  nurse: "Delegating nurse / RN consultant",
+  customer: "Happy customer",
+  nurse: "Nurse consultant (delegating nurse, RN)",
   pharmacy: "Pharmacy consultant",
-  consultant: "Licensing or startup consultant",
-  billing: "Billing or accounting firm",
+  coach: "Coach (how to open a group home or assisted living)",
+  consultant: "Licensing, startup or compliance consultant",
+  trainer: "Training school (CNA, CMT, DSP)",
+  billing: "Payroll, billing or accounting firm",
+  insurance: "Insurance broker",
+  software: "Software vendor (eMAR, EHR, billing)",
+  attorney: "Healthcare attorney",
   association: "Provider association",
   other: "Other",
 };

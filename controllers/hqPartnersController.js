@@ -1,5 +1,5 @@
 /**
- * HQ referral partners: nurses and consultants who introduce clients. No
+ * HQ referral partners: anyone owners trust who introduces clients. No
  * accounts for them; each gets a code (their Stripe promotion code). The
  * workspaces that signed up with it, what they've paid (read from Stripe,
  * never changed) and the fees due are worked out fresh. Calls and emails

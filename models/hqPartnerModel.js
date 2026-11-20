@@ -1,9 +1,9 @@
 const mongoose = require("mongoose");
 
 /**
- * HQ referral partner: someone already inside the homes we sell to (a
- * delegating nurse, a pharmacy or licensing consultant, a DDA billing
- * company) who introduces clients. They don't get an account; they get a
+ * HQ referral partner: anyone owners already trust who introduces clients
+ * (a happy customer, a nurse or pharmacy consultant, a coach, a training
+ * school, a payroll firm, a software vendor…). They don't get an account; they get a
  * code. Workspaces that sign up with the code are theirs (Tenant.referralCode),
  * and the fee is due once one of them has paid 2 months.
  */
@@ -31,7 +31,7 @@ const hqPartnerSchema = new mongoose.Schema(
   {
     name: { type: String, required: true, trim: true }, // the business, e.g. "Safe Hands Services"
     contactName: { type: String, trim: true, default: "" },
-    type: { type: String, enum: ["nurse", "pharmacy", "consultant", "billing", "association", "other"], default: "nurse" },
+    type: { type: String, enum: ["customer", "nurse", "pharmacy", "coach", "consultant", "trainer", "billing", "insurance", "software", "attorney", "association", "other"], default: "other" },
     email: { type: String, trim: true, lowercase: true, default: "" },
     phone: { type: String, trim: true, default: "" },
     website: { type: String, trim: true, default: "" },

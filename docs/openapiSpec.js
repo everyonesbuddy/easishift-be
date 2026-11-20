@@ -11,9 +11,10 @@
 
 const ROUTES = [
   // ── Auth (accounts: owner / schedulers / viewers) ─────────────────────────
-  ["post", "/auth/signup", "Auth", "Create a workspace (Free) and its owner", { auth: "none", body: { name: "Maria Okafor", facilityName: "Sunrise Care", email: "maria@example.com", password: "at-least-8", timezone: "America/New_York", termsAccepted: true, signupRole: "scheduler", heardAbout: "linkedin", signupSource: { utm_source: "linkedin", landingPage: "/for/schedulers", referrer: "https://www.linkedin.com/" } } }],
+  ["post", "/auth/signup", "Auth", "Create a workspace (Free) and its owner", { auth: "none", body: { name: "Maria Okafor", facilityName: "Sunrise Care", email: "maria@example.com", password: "at-least-8", timezone: "America/New_York", termsAccepted: true, signupRole: "scheduler", heardAbout: "linkedin", referralCode: "SAFEHANDS", signupSource: { utm_source: "linkedin", landingPage: "/for/schedulers", referrer: "https://www.linkedin.com/" } } }],
   ["post", "/auth/login", "Auth", "Log in (accounts only; staff use their link)", { auth: "none", body: { email: "maria@example.com", password: "..." } }],
   ["post", "/auth/signup/tenant", "Auth", "Old signup path (same as /auth/signup; also accepts the old body)", { auth: "none" }],
+  ["get", "/auth/referral-code/{code}", "Auth", "Is this a referral partner's code? Returns the partner's business name and the offer, for the signup form", { auth: "none" }],
   ["post", "/auth/login/staff", "Auth", "Old login path (same as /auth/login)", { auth: "none" }],
   ["get", "/auth/me", "Auth", "Current user, workspace, effective plan, limits and usage"],
   ["patch", "/auth/me", "Auth", "Update my name, phone, profile picture or saved view filters (roles/areas I see on the week view and Weekly Needs; only the kinds sent change)", { body: { name: "Maria Okafor", viewFilters: { schedule: { roles: ["cna"], areas: ["memory_care"] } } } }],
@@ -226,6 +227,13 @@ const ROUTES = [
   ["patch", "/hq/success/{id}", "HQ", "Update a customer: owner, stage, next check-in, renewal date, notes, or tick a checklist item"],
   ["post", "/hq/success/{id}/log", "HQ", "Log a call, visit, meeting, email, text or note; calls, visits and meetings set the next check-in"],
   ["delete", "/hq/success/{id}/log/{entryId}", "HQ", "Remove a log entry"],
+  ["get", "/hq/partners", "HQ", "Referral partners: each with their code, whether it's set up in Stripe, the workspaces that signed up with it, months paid and fees due; plus the Referral partners campaign scripts"],
+  ["post", "/hq/partners", "HQ", "Add a referral partner (name, contact, type, code, fee)"],
+  ["patch", "/hq/partners/{id}", "HQ", "Update a partner: details, code, status, fee, next date, notes"],
+  ["delete", "/hq/partners/{id}", "HQ", "Remove a partner (workspaces keep their code)"],
+  ["post", "/hq/partners/{id}/log", "HQ", "Log a call, email, meeting, text or note; calls, emails and meetings count toward the Referral partners campaign"],
+  ["delete", "/hq/partners/{id}/log/{entryId}", "HQ", "Remove a log entry"],
+  ["post", "/hq/partners/{id}/fees", "HQ", "Mark a referral fee paid for a workspace (or paid: false to take it back)"],
   ["get", "/hq/gov", "HQ", "Government contract listings (SAM.gov feed and added by hand), the feed's state, and deadlines coming up"],
   ["post", "/hq/gov", "HQ", "Add a government listing by hand (state, county, city, or federal)"],
   ["post", "/hq/gov/refresh", "HQ", "Start pulling new federal listings from SAM.gov (needs SAM_GOV_API_KEY); answers 202 straight away and the pull runs in the background"],

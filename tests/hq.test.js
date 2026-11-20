@@ -848,7 +848,7 @@ test("playbook v9: the cold email gets the overtime and one-building versions, o
   HqSync.findOne = (q) => lean(q.key === "playbook-seed" ? { data: { version: 8 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.findOne = (q) => lean(q.seedKey === "email-hprd" ? { _id: "e1", scripts: [{ label: "Email 1" }, { label: seed.EMAIL_HPRD_V9[0].label }] } : null);
-  HqPlaybookPlay.updateOne = async (q, u) => pushes.push(u.$push.scripts.$each.map((x) => x.label));
+  HqPlaybookPlay.updateOne = async (q, u) => u.$push && pushes.push(u.$push.scripts.$each.map((x) => x.label));
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -981,7 +981,7 @@ test("playbook v12: exact duplicate scripts are removed; one update at a time", 
   };
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "p1", scripts: [{ label: "With a setup", body: "a" }, v, { label: "No budget", body: "b" }, { ...v }, { label: "With a setup", body: "edited" }] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set[f._id] = u.$set.scripts);
+  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set[f._id] = u.$set.scripts);
   try {
     const pb = require("../controllers/hqPlaybookController");
     await Promise.all([pb.ensureSeeded(), pb.ensureSeeded(), pb.ensureSeeded()]);
@@ -1340,7 +1340,7 @@ test("playbook v18: the blog is one post a week", async () => {
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 17 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "s", seedKey: "search-templates", weeklyTarget: 0.5, volume: st.volume, steps: v16.BLOG_V17.steps }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set = u.$set); // v20 adds a play with $setOnInsert
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1376,7 +1376,7 @@ test("playbook v19: Facebook groups is one play that fits every group's rules", 
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 18 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "f", seedKey: "facebook-groups", ...fbPlay, scripts: [...fbPlay.scripts, mine] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => (set = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set = u.$set); // v20 adds a play with $setOnInsert
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1395,4 +1395,32 @@ test("Facebook hints: never DM someone who just commented", () => {
   const step = fb.nextPersonStep({ name: "Ann", status: "to_message" });
   assert.match(step.why, /Only if they asked/);
   assert.match(fb.nextGroupStep({ name: "G", status: "joined", promo: "none" }).why, /no links/);
+});
+
+test("playbook v20: a Referral partners play is added once, at the end", async () => {
+  const v20 = require("../utils/hq/playbookReferralsV20");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  const run = async (plays) => {
+    const inserts = [];
+    const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+    HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 19 } } : null);
+    HqSync.updateOne = async () => ({});
+    HqPlaybookPlay.find = () => q(plays);
+    HqPlaybookPlay.updateOne = async (f, u) => u.$setOnInsert && inserts.push({ f, doc: u.$setOnInsert });
+    try {
+      await require("../controllers/hqPlaybookController").ensureSeeded();
+    } finally {
+      [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+    }
+    return inserts;
+  };
+  const added = await run([{ _id: "a", seedKey: "calls-front-desk", order: 3 }, { _id: "b", seedKey: null, order: 7 }]);
+  assert.equal(added.length, 1);
+  assert.equal(added[0].f.seedKey, "referral-partners");
+  assert.equal(added[0].doc.order, 8, "after the last play");
+  assert.equal(added[0].doc.scripts.length, v20.SCRIPTS.length);
+  assert.match(added[0].doc.scripts.map((s) => s.body).join(" "), /\$250/);
+  assert.equal((await run([{ _id: "r", seedKey: "referral-partners", order: 2 }])).length, 0, "not added twice");
 });

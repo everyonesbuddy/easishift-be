@@ -332,4 +332,5 @@ exports.sendNudge = async (req, res) => {
   res.json({ ok: true, to, test });
 };
 
+exports.stripeClient = stripe; // read only; Partners uses it for promotion codes and paid invoices
 exports._test = { stripeYear, clean, cache };

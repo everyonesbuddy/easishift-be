@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 19;
+const SEED_VERSION = 20;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -106,6 +106,7 @@ async function runSeed() {
   if (version < 17) await migrateV17();
   if (version < 18) await migrateV18();
   if (version < 19) await migrateV19();
+  if (version < 20) await migrateV20();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -125,7 +126,22 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookScriptsV13").SCRIPTS);
   walk(require("../utils/hq/playbookScriptsV14").LEADERSHIP);
   walk(require("../utils/hq/playbookFacebookV19").SCRIPTS);
+  walk(require("../utils/hq/playbookReferralsV20").SCRIPTS);
   return { keys, key };
+}
+
+/**
+ * Version 20: a "Referral partners" play (delegating nurses and other
+ * consultants who are already inside the homes we sell to), with its
+ * emails, call questions and one-page deal. Added once, at the end; if you
+ * delete it, it stays deleted.
+ */
+async function migrateV20() {
+  const v20 = require("../utils/hq/playbookReferralsV20");
+  const plays = await HqPlaybookPlay.find({}).select("order seedKey").lean();
+  if ((plays || []).some((p) => p.seedKey === v20.SEED_KEY)) return;
+  const last = Math.max(-1, ...(plays || []).map((p) => (Number.isFinite(p.order) ? p.order : -1)));
+  await HqPlaybookPlay.updateOne({ seedKey: v20.SEED_KEY }, { $setOnInsert: { ...v20.PLAY, scripts: v20.SCRIPTS, order: last + 1 } }, { upsert: true });
 }
 
 /**

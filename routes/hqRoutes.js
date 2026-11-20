@@ -20,6 +20,7 @@ const facebook = require("../controllers/hqFacebookController");
 const govContracts = require("../controllers/hqGovController");
 const success = require("../controllers/hqSuccessController");
 const moneyPage = require("../controllers/hqMoneyController");
+const partners = require("../controllers/hqPartnersController");
 
 const upload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024, files: 1 } });
 
@@ -88,6 +89,13 @@ router.post("/success", success.add);
 router.patch("/success/:id", success.update);
 router.post("/success/:id/log", success.log);
 router.delete("/success/:id/log/:entryId", success.removeLog);
+router.get("/partners", partners.list);
+router.post("/partners", partners.create);
+router.patch("/partners/:id", partners.update);
+router.delete("/partners/:id", partners.remove);
+router.post("/partners/:id/log", partners.log);
+router.delete("/partners/:id/log/:entryId", partners.removeLog);
+router.post("/partners/:id/fees", partners.fee);
 router.get("/gov", govContracts.list);
 router.post("/gov", govContracts.create);
 router.post("/gov/refresh", govContracts.refresh);

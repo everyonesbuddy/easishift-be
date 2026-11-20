@@ -11,6 +11,7 @@ const {
   resetPassword,
   getMe,
   updateMe,
+  checkReferralCode,
 } = require("../controllers/authController");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -25,8 +26,17 @@ const signupLimiter = rateLimit({
   legacyHeaders: false,
   message: { message: "Too many signups from here. Try again in an hour." },
 });
+// Checking a partner code on the signup form; looser than signing up, but no guessing spree.
+const codeLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  limit: 30,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  message: { message: "Too many tries. Try again in a few minutes." },
+});
 router.post("/signup", signupLimiter, registerTenant);
 router.post("/signup/tenant", signupLimiter, registerTenant); // old path, kept for the current app
+router.get("/referral-code/:code", codeLimiter, checkReferralCode); // "Code from Safe Hands: an extra free month"
 
 // Login and password emails: enough for real people, not for guessing.
 const loginLimiter = rateLimit({

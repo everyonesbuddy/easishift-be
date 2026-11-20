@@ -45,6 +45,28 @@ async function codeOnSubscription(stripe, subscriptionId) {
   return null;
 }
 
+/**
+ * How a partner's code is used at checkout (pure; tested).
+ *
+ * The partner coupon is "100% off for 1 month". On a monthly plan that's
+ * the first month free. On a yearly plan it would make the whole first
+ * year free (the first invoice is the year), so a yearly plan gets the
+ * free month as 30 extra trial days instead, and Stripe's code box is
+ * off for yearly plans so a partner code can't be typed there either.
+ *
+ * Returns the checkout params for codes, the trial days, and metadata
+ * (referral: the code, when it was turned into trial days).
+ */
+const EXTRA_TRIAL_DAYS = 30;
+function checkoutCodeOptions({ interval, promo, code, trialDays = 0 }) {
+  if (interval === "year") {
+    if (promo && code) return { params: {}, trialDays: trialDays + EXTRA_TRIAL_DAYS, metadata: { referral: code } };
+    return { params: {}, trialDays, metadata: {} };
+  }
+  if (promo) return { params: { discounts: [{ promotion_code: promo.id }] }, trialDays, metadata: {} };
+  return { params: { allow_promotion_codes: true }, trialDays, metadata: {} };
+}
+
 /** Short words for a Stripe coupon: "100% off for 1 month", "$50 off once". */
 function couponWords(coupon) {
   if (!coupon) return "";
@@ -54,4 +76,4 @@ function couponWords(coupon) {
   return `${off} once`;
 }
 
-module.exports = { cleanCode, findPromotionCode, codeOnSubscription, couponWords };
+module.exports = { cleanCode, findPromotionCode, codeOnSubscription, checkoutCodeOptions, couponWords, EXTRA_TRIAL_DAYS };

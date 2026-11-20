@@ -97,3 +97,14 @@ test("signup: a partner's code is saved on the workspace, cleaned", () => {
   const src = require("fs").readFileSync(require.resolve("../controllers/authController"), "utf8");
   assert.match(src, /referralCode: cleanCode\(body\.referralCode\)/);
 });
+
+test("checkout: a partner code is a free month on monthly plans, 30 extra trial days on yearly (never a free year)", () => {
+  const { checkoutCodeOptions } = require("../utils/referrals");
+  const promo = { id: "promo_1" };
+  assert.deepEqual(checkoutCodeOptions({ interval: "month", promo, code: "SAFEHANDS", trialDays: 7 }), { params: { discounts: [{ promotion_code: "promo_1" }] }, trialDays: 7, metadata: {} });
+  assert.deepEqual(checkoutCodeOptions({ interval: "month", promo: null, code: null, trialDays: 7 }), { params: { allow_promotion_codes: true }, trialDays: 7, metadata: {} });
+  const year = checkoutCodeOptions({ interval: "year", promo, code: "SAFEHANDS", trialDays: 30 });
+  assert.deepEqual(year, { params: {}, trialDays: 60, metadata: { referral: "SAFEHANDS" } });
+  assert.ok(!("discounts" in year.params) && !("allow_promotion_codes" in year.params), "no coupon and no code box on a yearly plan");
+  assert.deepEqual(checkoutCodeOptions({ interval: "year", promo: null, code: null, trialDays: 0 }), { params: {}, trialDays: 0, metadata: {} });
+});

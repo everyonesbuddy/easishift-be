@@ -121,3 +121,25 @@ test("partners: a yearly payment counts as 12 paid months, so a flat fee is due 
   assert.equal(row.feeStatus, "due");
   assert.equal(row.owed, 250);
 });
+
+test("partners: the Stripe label reads the coupon on old and new Stripe API versions", async () => {
+  const money = require("../controllers/hqMoneyController");
+  const ctrl = require("../controllers/hqPartnersController");
+  const coupon = { percent_off: 100, duration: "repeating", duration_in_months: 1 };
+  const orig = money.stripeClient;
+  const fake = (promo) => () => ({ promotionCodes: { list: async () => ({ data: [promo] }) }, coupons: { retrieve: async () => coupon } });
+  try {
+    // New API: promotion.coupon is an ID.
+    require.cache[require.resolve("../controllers/hqMoneyController")].exports.stripeClient = fake({ active: true, times_redeemed: 0, promotion: { type: "coupon", coupon: "Fl8VY6AA" } });
+    delete require.cache[require.resolve("../controllers/hqPartnersController")];
+    const fresh = require("../controllers/hqPartnersController");
+    assert.deepEqual(await fresh._test.stripeCode("SAFEHANDS", true), { found: true, active: true, offer: "100% off for 1 month", timesRedeemed: 0 });
+    // Old API: the coupon object is on the code.
+    require.cache[require.resolve("../controllers/hqMoneyController")].exports.stripeClient = fake({ active: true, times_redeemed: 2, coupon });
+    assert.equal((await fresh._test.stripeCode("SAFEHANDS", true)).offer, "100% off for 1 month");
+  } finally {
+    require.cache[require.resolve("../controllers/hqMoneyController")].exports.stripeClient = orig;
+    delete require.cache[require.resolve("../controllers/hqPartnersController")];
+    void ctrl;
+  }
+});

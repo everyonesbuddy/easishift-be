@@ -321,17 +321,20 @@ exports.createCheckoutSession = async (req, res, next) => {
       await tenant.save();
     }
 
-    const trialDays = checkoutTrialDays(tenant, interval);
+    // A partner's code from signup is applied for them (once); otherwise
+    // they can type one on Stripe's page (monthly plans only). On a yearly
+    // plan the partner's free month is 30 extra trial days instead, so the
+    // "1 month free" coupon can't make a whole year free.
+    const promo = tenant.referralCode && !tenant.referralRedeemedAt ? await referrals.findPromotionCode(stripe, tenant.referralCode) : null;
+    const codes = referrals.checkoutCodeOptions({ interval, promo, code: tenant.referralCode, trialDays: checkoutTrialDays(tenant, interval) });
+    const trialDays = codes.trialDays;
     const metadata = {
       tenantId,
       plan,
       interval,
       ...(trialDays ? { cardTrial: String(trialDays) } : {}),
+      ...codes.metadata,
     };
-
-    // A partner's code from signup is applied for them (once); otherwise
-    // they can type one on Stripe's page. Stripe allows one or the other.
-    const promo = tenant.referralCode && !tenant.referralRedeemedAt ? await referrals.findPromotionCode(stripe, tenant.referralCode) : null;
 
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
@@ -344,7 +347,7 @@ exports.createCheckoutSession = async (req, res, next) => {
         : tenant.billingEmail || tenant.email
           ? { customer_email: tenant.billingEmail || tenant.email }
           : {}),
-      ...(promo ? { discounts: [{ promotion_code: promo.id }] } : { allow_promotion_codes: true }),
+      ...codes.params,
       subscription_data: {
         metadata,
         ...(trialDays ? { trial_period_days: trialDays } : {}),
@@ -549,8 +552,9 @@ exports.handleWebhook = async (req, res) => {
         }
         if (meta.cardTrial) update.cardTrialUsedAt = new Date();
 
-        // Which partner code paid for this (applied from signup, or typed on Stripe's page).
-        const used = await referrals.codeOnSubscription(stripe, session.subscription);
+        // Which partner code paid for this: given as extra trial days (yearly),
+        // applied from signup, or typed on Stripe's page.
+        const used = referrals.cleanCode(meta.referral) || (await referrals.codeOnSubscription(stripe, session.subscription));
         if (used) {
           update.referralRedeemedAt = new Date();
           const current = await Tenant.findById(tenantId).select("referralCode").lean();

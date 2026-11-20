@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 21;
+const SEED_VERSION = 22;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -108,6 +108,7 @@ async function runSeed() {
   if (version < 19) await migrateV19();
   if (version < 20) await migrateV20();
   if (version < 21) await migrateV21();
+  if (version < 22) await migrateV22();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -129,7 +130,30 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookFacebookV19").SCRIPTS);
   walk(require("../utils/hq/playbookReferralsV20").SCRIPTS);
   walk(require("../utils/hq/playbookReferralsV21").SCRIPTS);
+  walk(require("../utils/hq/playbookReferralsV22"));
   return { keys, key };
+}
+
+/**
+ * Version 22: the one-page deal says "monthly or yearly", and a percentage
+ * version is added after it. The flat one is replaced only if you never
+ * edited it; the percentage one is added once.
+ */
+async function migrateV22() {
+  const v20 = require("../utils/hq/playbookReferralsV20");
+  const v21 = require("../utils/hq/playbookReferralsV21");
+  const v22 = require("../utils/hq/playbookReferralsV22");
+  const p = (await HqPlaybookPlay.find({ seedKey: v20.SEED_KEY }).select("seedKey scripts").lean()).find((x) => x.seedKey === v20.SEED_KEY);
+  if (!p) return;
+  const oldDeals = new Set([...v20.SCRIPTS, ...v21.SCRIPTS].filter((x) => x.label.startsWith("The deal")).map((x) => x.body.trim()));
+  const scripts = [...(p.scripts || [])];
+  const at = scripts.findIndex((x) => oldDeals.has(String(x.body || "").trim()));
+  if (at >= 0) scripts[at] = v22.FLAT;
+  if (!scripts.some((x) => x.label === v22.PERCENT.label)) {
+    const flatAt = scripts.findIndex((x) => x.label === v22.FLAT.label);
+    scripts.splice(flatAt >= 0 ? flatAt + 1 : scripts.length, 0, v22.PERCENT);
+  }
+  await HqPlaybookPlay.updateOne({ _id: p._id }, { $set: { scripts } });
 }
 
 /**

@@ -108,3 +108,16 @@ test("checkout: a partner code is a free month on monthly plans, 30 extra trial 
   assert.ok(!("discounts" in year.params) && !("allow_promotion_codes" in year.params), "no coupon and no code box on a yearly plan");
   assert.deepEqual(checkoutCodeOptions({ interval: "year", promo: null, code: null, trialDays: 0 }), { params: {}, trialDays: 0, metadata: {} });
 });
+
+test("partners: a yearly payment counts as 12 paid months, so a flat fee is due right away", () => {
+  const P = require("../utils/hq/partners");
+  const start = 1767225600; // Jan 1 2026
+  const yearly = { status: "paid", amount_paid: 199000, created: start, lines: { data: [{ period: { start, end: start + 365 * 86400 } }] } };
+  const monthly = { status: "paid", amount_paid: 19900, created: start, lines: { data: [{ period: { start, end: start + 31 * 86400 } }] } };
+  assert.equal(P.paidMonths([yearly]).months, 12);
+  assert.equal(P.paidMonths([monthly]).months, 1);
+  assert.equal(P.paidMonths([{ status: "paid", amount_paid: 100, created: start }]).months, 1, "no billing period: counts as one month");
+  const [row] = P.referralRows({ dealType: "flat", fee: 250 }, [{ _id: "t", name: "Yearly", createdAt: new Date() }], new Map([["t", P.paidMonths([yearly])]]));
+  assert.equal(row.feeStatus, "due");
+  assert.equal(row.owed, 250);
+});

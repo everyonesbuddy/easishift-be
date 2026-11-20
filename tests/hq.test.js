@@ -1437,7 +1437,7 @@ test("playbook v21: referral partners for anyone, one generic first email; your 
   HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 20 } } : null);
   HqSync.updateOne = async () => ({});
   HqPlaybookPlay.find = () => q([{ _id: "r", seedKey: "referral-partners", ...v20.PLAY, scripts: [...v20.SCRIPTS, mine] }]);
-  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set = u.$set);
+  HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set ??= u.$set); // v21's own update; v22 runs after it
   try {
     await require("../controllers/hqPlaybookController").ensureSeeded();
   } finally {
@@ -1449,4 +1449,35 @@ test("playbook v21: referral partners for anyone, one generic first email; your 
   assert.deepEqual(set.scripts.at(-1), mine, "your own script stays, after ours");
   assert.equal(set.scripts.filter((s) => /^First email · Any partner/.test(s.label)).length, 1);
   assert.ok(!set.scripts.some((s) => s.label === "First email · Short version"), "the nurse-only versions are gone");
+});
+
+test("playbook v22: the flat deal says monthly or yearly; a percentage deal is added once", async () => {
+  const v21 = require("../utils/hq/playbookReferralsV21");
+  const v22 = require("../utils/hq/playbookReferralsV22");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const q = (x) => ({ select: () => ({ lean: async () => x }), lean: async () => x });
+  const run = async (scripts) => {
+    let set = null;
+    const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne];
+    HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 21 } } : null);
+    HqSync.updateOne = async () => ({});
+    HqPlaybookPlay.find = () => q([{ _id: "r", seedKey: "referral-partners", scripts }]);
+    HqPlaybookPlay.updateOne = async (f, u) => u.$set && (set = u.$set);
+    try {
+      await require("../controllers/hqPlaybookController").ensureSeeded();
+    } finally {
+      [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne] = orig;
+    }
+    return set.scripts;
+  };
+  const out = await run(v21.SCRIPTS);
+  const labels = out.map((s) => s.label);
+  assert.equal(labels.filter((l) => l.startsWith("The deal")).length, 2);
+  assert.equal(labels.indexOf(v22.PERCENT.label), labels.indexOf(v22.FLAT.label) + 1, "percentage right after flat");
+  assert.match(out.find((s) => s.label === v22.FLAT.label).body, /monthly or yearly/);
+  const edited = v21.SCRIPTS.map((s) => (s.label.startsWith("The deal") ? { ...s, body: "My own deal terms." } : s));
+  const kept = await run(edited);
+  assert.ok(kept.some((s) => s.body === "My own deal terms."), "an edited deal stays");
+  assert.ok(kept.some((s) => s.label === v22.PERCENT.label));
 });

@@ -1,5 +1,5 @@
 /**
- * HQ referral partners: nurses and consultants who introduce clients. No
+ * HQ referral partners: anyone owners trust who introduces clients. No
  * accounts for them; each gets a code (their Stripe promotion code). The
  * workspaces that signed up with it, what they've paid (read from Stripe,
  * never changed) and the fees due are worked out fresh. Calls and emails
@@ -18,7 +18,7 @@ const fail = (res, status, message) => res.status(status).json({ message });
 const isId = (v) => mongoose.isValidObjectId(String(v || ""));
 const by = (req) => req.hqUser?.name || req.hqUser?.email || "";
 const PLAY_KEY = "referral-partners";
-const FIELDS = ["name", "contactName", "type", "email", "phone", "website", "area", "fee", "notes", "nextDate"];
+const FIELDS = ["name", "contactName", "type", "email", "phone", "website", "area", "notes", "nextDate"];
 const signupLink = (code) => `${(process.env.FRONTEND_URL || "https://wisershifts.com").replace(/\/$/, "")}/signup-tenant?code=${encodeURIComponent(code)}`;
 
 // Stripe reads are kept 10 minutes: paid invoices per customer, and each code's promotion.
@@ -52,13 +52,13 @@ async function stripeCode(code, refresh) {
 /** What a customer has paid, from their Stripe invoices. */
 async function paidFor(customerId, refresh) {
   const s = stripeClient();
-  if (!s || !customerId) return { months: 0, firstPaidAt: null, total: 0 };
+  if (!s || !customerId) return { months: 0, firstPaidAt: null, total: 0, payments: [] };
   return cached(`paid:${customerId}`, refresh, async () => {
     try {
       const invoices = await s.invoices.list({ customer: customerId, status: "paid", limit: 100 }).autoPagingToArray({ limit: 200 });
       return P.paidMonths(invoices);
     } catch {
-      return { months: 0, firstPaidAt: null, total: 0, error: true };
+      return { months: 0, firstPaidAt: null, total: 0, payments: [], error: true };
     }
   });
 }
@@ -74,11 +74,13 @@ async function shape(partner, refresh) {
     ...partner,
     _id: String(partner._id),
     typeLabel: P.TYPES[partner.type] || "Other",
+    deal: P.dealWords(partner),
+    dealHistory: [...(partner.dealHistory || [])].sort((a, b) => new Date(b.at) - new Date(a.at)),
     statusLabel: P.STATUSES[partner.status] || partner.status,
     link: partner.code ? signupLink(partner.code) : "",
     stripe: await stripeCode(partner.code, refresh),
     referrals,
-    totals: P.totals(referrals, partner.fee ?? 250),
+    totals: P.totals(referrals),
     log: [...(partner.log || [])].sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 100),
   };
 }
@@ -108,12 +110,45 @@ exports.list = async (req, res, next) => {
   }
 };
 
+/**
+ * The deal: flat fee, or percent for a number of months. Any change is
+ * recorded (from, to, who, when), since partners renegotiate.
+ */
+function applyDeal(p, b, who) {
+  if (!["dealType", "fee", "percent", "percentMonths", "dealNote"].some((k) => b[k] !== undefined)) return null;
+  const before = P.dealWords(p);
+  const beforeNote = p.dealNote || "";
+  if (b.dealType !== undefined) p.dealType = b.dealType === "percent" ? "percent" : "flat";
+  if (b.fee !== undefined) {
+    const fee = Number(b.fee);
+    if (!Number.isFinite(fee) || fee < 0 || fee > 10000) return "The flat fee should be between $0 and $10,000.";
+    p.fee = Math.round(fee * 100) / 100;
+  }
+  if (b.percent !== undefined) {
+    const pct = Number(b.percent);
+    if (!Number.isFinite(pct) || pct <= 0 || pct > 50) return "The percentage should be between 1 and 50.";
+    p.percent = Math.round(pct * 10) / 10;
+  }
+  if (b.percentMonths !== undefined) {
+    const m = Math.round(Number(b.percentMonths));
+    if (!Number.isFinite(m) || m < 1 || m > 60) return "The number of months should be between 1 and 60.";
+    p.percentMonths = m;
+  }
+  if (b.dealNote !== undefined) p.dealNote = String(b.dealNote || "").trim().slice(0, 500);
+  const after = P.dealWords(p);
+  if (after !== before || (p.dealNote || "") !== beforeNote) {
+    p.dealHistory = [...(p.dealHistory || []), { at: new Date(), by: who, from: before + (beforeNote ? ` (${beforeNote})` : ""), to: after + (p.dealNote ? ` (${p.dealNote})` : "") }];
+  }
+  return null;
+}
+
 /** Check and set fields from the body; returns an error message or null. */
-async function apply(p, b) {
+async function apply(p, b, who = "") {
+  const dealError = applyDeal(p, b, who);
+  if (dealError) return dealError;
   for (const k of FIELDS) {
     if (b[k] === undefined) continue;
-    if (k === "fee") p.fee = Math.max(0, Math.min(10000, Number(b.fee) || 0));
-    else if (k === "nextDate") p.nextDate = b.nextDate && !Number.isNaN(new Date(b.nextDate).getTime()) ? new Date(b.nextDate) : null;
+    if (k === "nextDate") p.nextDate = b.nextDate && !Number.isNaN(new Date(b.nextDate).getTime()) ? new Date(b.nextDate) : null;
     else if (k === "type") p.type = P.TYPES[b.type] ? b.type : "other";
     else p[k] = String(b[k] || "").trim().slice(0, k === "notes" ? 8000 : 200);
   }
@@ -137,7 +172,7 @@ async function apply(p, b) {
 exports.create = async (req, res, next) => {
   try {
     const p = new HqPartner({});
-    const error = await apply(p, req.body || {});
+    const error = await apply(p, req.body || {}, by(req));
     if (error) return fail(res, 400, error);
     await p.save();
     res.status(201).json(await shape(p.toObject()));
@@ -157,7 +192,7 @@ exports.update = async (req, res, next) => {
   try {
     const p = await find(req, res);
     if (!p) return;
-    const error = await apply(p, req.body || {});
+    const error = await apply(p, req.body || {}, by(req));
     if (error) return fail(res, 400, error);
     await p.save();
     res.json(await shape(p.toObject()));
@@ -221,15 +256,30 @@ exports.removeLog = async (req, res, next) => {
   }
 };
 
-/** POST /hq/partners/:id/fees { tenantId, paid } : mark a fee paid (or take it back). */
+/**
+ * POST /hq/partners/:id/fees { tenantId, amount } : record a payout to the
+ * partner for one client (amount defaults to what's owed now).
+ * { tenantId, paid: false } takes back the most recent payout.
+ */
 exports.fee = async (req, res, next) => {
   try {
     const p = await find(req, res);
     if (!p) return;
     const tenantId = String(req.body?.tenantId || "");
     if (!isId(tenantId)) return fail(res, 400, "Which workspace?");
-    p.feesPaid = (p.feesPaid || []).filter((f) => String(f.tenantId) !== tenantId);
-    if (req.body?.paid !== false) p.feesPaid.push({ tenantId, paidAt: new Date(), amount: Number(req.body?.amount) || p.fee || 250, by: by(req) });
+    const mine = (p.feesPaid || []).filter((f) => String(f.tenantId) === tenantId);
+    if (req.body?.paid === false) {
+      const last = mine.sort((a, b) => new Date(b.paidAt) - new Date(a.paidAt))[0];
+      if (last) p.feesPaid = p.feesPaid.filter((f) => f !== last);
+    } else {
+      let amount = Number(req.body?.amount);
+      if (!Number.isFinite(amount) || amount <= 0) {
+        const row = (await shape(p.toObject())).referrals.find((r) => r.tenantId === tenantId);
+        amount = row?.owed || 0;
+      }
+      if (!(amount > 0)) return fail(res, 400, "Nothing is owed for this client right now.");
+      p.feesPaid.push({ tenantId, paidAt: new Date(), amount: Math.round(amount * 100) / 100, by: by(req) });
+    }
     await p.save();
     res.json(await shape(p.toObject()));
   } catch (err) {

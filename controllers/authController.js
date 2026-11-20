@@ -6,6 +6,7 @@ const bcrypt = require("bcryptjs");
 const { DateTime } = require("luxon");
 const User = require("../models/userModel");
 const Tenant = require("../models/tenantModel");
+const { cleanCode } = require("../utils/referrals");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { sendEmail } = require("../utils/sendEmail");
 const {
@@ -188,6 +189,8 @@ exports.registerTenant = async (req, res, next) => {
       heardAbout: HEARD_ABOUT.includes(body.heardAbout) ? body.heardAbout : null,
       heardAboutOther: short(body.heardAboutOther, 120) || null,
       signupSource: cleanSignupSource(body.signupSource),
+      // A partner's code (typed, or from ?code= in their link); applied at checkout.
+      referralCode: cleanCode(body.referralCode),
     });
 
     let owner;
@@ -622,6 +625,24 @@ exports.updateMe = async (req, res, next) => {
 
     await user.save();
     res.status(200).json({ user: getUserResponse(user) });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * GET /auth/referral-code/:code (public): is this a partner's code?
+ * Says only the partner's business name and the offer, so signup can show
+ * "Code from Safe Hands: an extra free month".
+ */
+exports.checkReferralCode = async (req, res, next) => {
+  try {
+    const code = cleanCode(req.params.code);
+    if (!code) return res.json({ valid: false });
+    const HqPartner = require("../models/hqPartnerModel");
+    const partner = await HqPartner.findOne({ code, status: { $ne: "quiet" } }).select("name").lean();
+    if (!partner) return res.json({ valid: false, code });
+    res.json({ valid: true, code, partner: partner.name, offer: "An extra free month when you start your plan" });
   } catch (err) {
     next(err);
   }

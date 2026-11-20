@@ -194,6 +194,11 @@ const tenantSchema = new mongoose.Schema(
     heardAbout: { type: String, trim: true, default: null },
     heardAboutOther: { type: String, trim: true, maxlength: 120, default: null },
     signupSource: { type: Object, default: null },
+    // A referral partner's code (HQ → Partners), e.g. "SAFEHANDS": typed or
+    // linked at signup, or typed at checkout. The matching Stripe promotion
+    // code is applied at checkout; referralRedeemedAt is when it was used.
+    referralCode: { type: String, trim: true, uppercase: true, default: null },
+    referralRedeemedAt: { type: Date, default: null },
 
     branding: {
       displayName: { type: String, trim: true, maxlength: 80, default: null },

@@ -13,6 +13,7 @@
  */
 const Stripe = require("stripe");
 const Tenant = require("../models/tenantModel");
+const referrals = require("../utils/referrals");
 const {
   PLANS,
   PAID_PLAN_KEYS,
@@ -328,6 +329,10 @@ exports.createCheckoutSession = async (req, res, next) => {
       ...(trialDays ? { cardTrial: String(trialDays) } : {}),
     };
 
+    // A partner's code from signup is applied for them (once); otherwise
+    // they can type one on Stripe's page. Stripe allows one or the other.
+    const promo = tenant.referralCode && !tenant.referralRedeemedAt ? await referrals.findPromotionCode(stripe, tenant.referralCode) : null;
+
     const session = await stripe.checkout.sessions.create({
       mode: "subscription",
       line_items: [{ ...priceSpecFor(plan, interval), quantity: 1 }],
@@ -339,7 +344,7 @@ exports.createCheckoutSession = async (req, res, next) => {
         : tenant.billingEmail || tenant.email
           ? { customer_email: tenant.billingEmail || tenant.email }
           : {}),
-      allow_promotion_codes: true,
+      ...(promo ? { discounts: [{ promotion_code: promo.id }] } : { allow_promotion_codes: true }),
       subscription_data: {
         metadata,
         ...(trialDays ? { trial_period_days: trialDays } : {}),
@@ -543,6 +548,14 @@ exports.handleWebhook = async (req, res) => {
           update.billingInterval = meta.interval || null;
         }
         if (meta.cardTrial) update.cardTrialUsedAt = new Date();
+
+        // Which partner code paid for this (applied from signup, or typed on Stripe's page).
+        const used = await referrals.codeOnSubscription(stripe, session.subscription);
+        if (used) {
+          update.referralRedeemedAt = new Date();
+          const current = await Tenant.findById(tenantId).select("referralCode").lean();
+          if (!current?.referralCode) update.referralCode = used;
+        }
 
         await Tenant.findByIdAndUpdate(tenantId, update);
         console.log(`✅ Tenant ${tenantId} subscribed (${update.plan})`);

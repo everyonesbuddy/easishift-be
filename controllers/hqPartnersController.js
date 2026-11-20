@@ -38,11 +38,14 @@ async function stripeCode(code, refresh) {
   if (!s || !code) return null;
   return cached(`code:${code}`, refresh, async () => {
     try {
-      const { data } = await s.promotionCodes.list({ code, limit: 1, expand: ["data.coupon"] });
+      const { data } = await s.promotionCodes.list({ code, limit: 1 });
       const p = data?.[0];
       if (!p) return { found: false };
-      const coupon = p.coupon || p.promotion?.coupon || null;
-      return { found: true, active: Boolean(p.active), offer: couponWords(typeof coupon === "object" ? coupon : null), timesRedeemed: p.times_redeemed || 0 };
+      // Older Stripe API versions put the coupon on the code; newer ones put
+      // its ID under promotion.coupon. Either way, read the coupon itself.
+      let coupon = p.coupon || p.promotion?.coupon || null;
+      if (typeof coupon === "string") coupon = await s.coupons.retrieve(coupon).catch(() => null);
+      return { found: true, active: Boolean(p.active), offer: couponWords(coupon), timesRedeemed: p.times_redeemed || 0 };
     } catch (e) {
       return { found: false, error: "Couldn't check Stripe." };
     }
@@ -287,4 +290,4 @@ exports.fee = async (req, res, next) => {
   }
 };
 
-exports._test = { shape, apply, cache };
+exports._test = { shape, apply, cache, stripeCode };

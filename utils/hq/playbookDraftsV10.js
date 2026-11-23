@@ -14,6 +14,8 @@
  * This week; [square brackets] are for you to fill.
  */
 
+// Version 23 replaced the poll posts and the poll formula with tips.
+const V23 = require("./playbookNoPollsV23");
 const D = (s) => s.replace(/^\n/, "").replace(/\n\s+$/, "");
 
 const DRAFTS = {
@@ -322,18 +324,7 @@ Only in groups that allow links, and only when someone is talking about call-out
 
 "We worked this out for a few buildings: a 12-hour call-out covered with overtime at $18/hr costs about $108 more than straight time. Four a month is over $400. There's a free calculator if you want to run your own numbers, no signup: {call-out calculator}"
 `),
-  "fb-poll-longest": D(`
-Same poll as Post 3; bring the answers back for Post 14.
-
-Schedulers: what takes the longest when you build next week's schedule?
-
-A) Getting every shift covered
-B) Call-outs and last-minute changes
-C) Requests off and availability
-D) Something else (tell us!)
-
-Drop a letter below. We'll pull together tips for whatever comes up most.
-`),
+  "fb-poll-longest": V23.FACEBOOK["fb-poll-longest"].notes,
   "fb-template": D(`
 Answer a "does anyone have a template?" question with it, as the Page.
 
@@ -362,18 +353,7 @@ Same cut as the YouTube Short (see "Short: the 5 a.m. call-out").
 
 Caption: 5:04 a.m. "Can't make it today." Covering a call-out shouldn't take an hour. 👇 How do you cover yours?
 `),
-  "fbp-question": D(`
-Turn the best answers into a tip post.
-
-Schedulers: what takes the longest when you build next week's schedule?
-
-A) Getting every shift covered
-B) Call-outs and last-minute changes
-C) Requests off and availability
-D) Something else (tell us!)
-
-Drop a letter below. We'll share tips for whatever comes up most.
-`),
+  "fbp-question": V23.FACEBOOK["fbp-question"].notes,
   "fbp-before-after": D(`
 Two screenshots side by side: a messy spreadsheet on top, the published week below.
 
@@ -458,19 +438,8 @@ WiserShifts
 /** Scripts added to each play (after yours, skipping any with the same name). */
 const SCRIPTS = {
   "linkedin-posts": [
-    { label: "Post formula", body: D(`
-Line 1: the number or the moment ("5:04 a.m." / "$36,500").
-Lines 2–4: the math or the story, three short lines.
-Line 5: one thing to do about it this week.
-Last line: a question people can answer in a comment.
-First comment: the calculator or template link (not in the post).
-No hashtags in the middle; two or three at the end, at most.
-`) },
-    { label: "Poll formula", body: D(`
-Question: one thing schedulers or leaders argue about ("How do you cover a call-out?").
-Options: four real answers, one of them "Something else (comment)".
-Follow-up post a week later: "Here's what [X] of you said", plus one tip for the top answer.
-`) },
+    V23.POST_FORMULA,
+    V23.TIP_FORMULA,
     { label: "Reply to a comment", body: "Thanks, {First name}! [Answer their point in one or two lines.] What does it look like at your building?" },
   ],
   newsletter: [

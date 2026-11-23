@@ -83,7 +83,7 @@ const FB_CHANNEL = {
 const FB_PAGE_IDEAS = [
   ["fbp-pinned", "Pinned Page post: the free template and calculator", "Pin it; links in the first comment."],
   ["fbp-reel-callout", "Reel: the 5 a.m. call-out", "Same cut as the YouTube Short."],
-  ["fbp-question", "Page question: what takes the longest when you build the schedule?", "Turn the best answers into a tip post."],
+  ["fbp-question", "Page tip: who to ask first when someone calls out", "Same tip as Post 9."],
   ["fbp-before-after", "Before and after: a messy spreadsheet vs. a published week", "Two screenshots side by side."],
 ];
 
@@ -301,7 +301,7 @@ const PLAYS = [
     steps: [
       "Set it up once: logo, a cover that says what WiserShifts does in one line, the button set to Sign up, and a pinned post with the free templates and calculator.",
       "Invite friends and colleagues who work in care to like it; the first 50 to 100 followers make every later post look credible.",
-      "Post 3 times a week: a template or tip, a short video or Reel, and a question schedulers want to answer.",
+      "Post 3 times a week: a template or tip, a short video or Reel, and a before-and-after or a real example from a schedule.",
       "Put the useful part in the post itself and the link in the first comment.",
       "Join scheduler and CNA groups as the Page where groups allow it; the groups play is still where most people first see you.",
       "Reply to every comment and message the same day, and ask commenters what they use today.",
@@ -406,7 +406,7 @@ const META_V2 = {
 };
 
 const LINKEDIN_POSTS = require("./linkedinPosts.json");
-// Who each post speaks to most (posts 3, 8, 10, 13, 14 reach leaders too).
+// Who each post speaks to most (posts 3, 8, 10, 13, 14 reach leaders too). Posts 3, 9 and 14 were polls until version 23.
 const POST_AUDIENCE = (n) => ([3, 8, 10, 13, 14].includes(n) ? ["scheduler", "director"] : ["scheduler"]);
 
 const CONTENT_V2 = [
@@ -432,7 +432,7 @@ const CONTENT_V2 = [
     ["short-sunday", "Short: the Sunday schedule, before and after", "From Post 1."],
   ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "short_video", channel: "youtube", audience: ["scheduler"], status: "idea", play: "youtube-howto", notes })),
   ...[
-    ["fb-poll-longest", "Ask the group: what takes the longest when you build the schedule?", "Same poll as Post 3; bring the answers back to Post 14."],
+    ["fb-poll-longest", "Share: three checks before you publish the schedule", "Same tip as Post 3, as a reply when someone's stuck on the schedule."],
     ["fb-template", "Share the printable weekly schedule template", "Answer a \"does anyone have a template\" question with it."],
     ["fb-first-week", "Offer: I'll build your first week with you", "Post 15, in plain words, where the group allows offers."],
   ].map(([seedKey, title, notes]) => ({ seedKey, title, format: "facebook_post", channel: "facebook", audience: ["scheduler"], status: "idea", play: "facebook-groups", notes })),

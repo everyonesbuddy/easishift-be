@@ -15,6 +15,13 @@ const DAY = 86400000;
 const NOW = new Date("2026-10-29T15:00:00Z");
 const ago = (d) => new Date(NOW - d * DAY);
 
+// There's no database in tests: unless a test stubs it, looking up content items finds none
+// (later playbook versions, like v23, read them while an older version's test runs).
+{
+  const HqContentItem = require("../models/hqContentItemModel");
+  HqContentItem.find = () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] });
+}
+
 /** Later playbook versions run after the one under test; this keeps v10 off the database. */
 function stubV10() {
   const HqContentItem = require("../models/hqContentItemModel");
@@ -1480,4 +1487,49 @@ test("playbook v22: the flat deal says monthly or yearly; a percentage deal is a
   const kept = await run(edited);
   assert.ok(kept.some((s) => s.body === "My own deal terms."), "an edited deal stays");
   assert.ok(kept.some((s) => s.label === v22.PERCENT.label));
+});
+
+test("playbook v23: polls become tips, only where untouched", async () => {
+  const v23 = require("../utils/hq/playbookNoPollsV23");
+  const HqSync = require("../models/hqSyncModel");
+  const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+  const HqContentItem = require("../models/hqContentItemModel");
+  const old = (p) => `When: ${p.when}\n\n${p.body}${p.visual ? `\n\nVisual: ${p.visual}` : ""}`;
+  const sets = {};
+  const orig = [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne, HqContentItem.find, HqContentItem.updateOne];
+  const q = (v) => ({ select: () => ({ lean: async () => v }), lean: async () => v });
+  HqSync.findOne = (x) => q(x.key === "playbook-seed" ? { data: { version: 22 } } : null);
+  HqSync.updateOne = async () => ({});
+  HqContentItem.find = () =>
+    q([
+      { _id: "p3", seedKey: "li-plan-3", title: `Post 3: ${v23.OLD.linkedin[3].title}`, notes: old(v23.OLD.linkedin[3]), status: "ready" },
+      { _id: "p9", seedKey: "li-plan-9", title: `Post 9: ${v23.OLD.linkedin[9].title}`, notes: "My own version", status: "ready" },
+      { _id: "p14", seedKey: "li-plan-14", title: `Post 14: ${v23.OLD.linkedin[14].title}`, notes: old(v23.OLD.linkedin[14]), status: "published" },
+      { _id: "fb", seedKey: "fb-poll-longest", title: v23.OLD.facebookTitles["fb-poll-longest"], notes: v23.OLD.facebook["fb-poll-longest"], status: "idea" },
+      { _id: "fbp", seedKey: "fbp-question", title: v23.OLD.facebookTitles["fbp-question"], notes: v23.OLD.facebookNotes["fbp-question"], status: "idea" },
+    ]);
+  HqContentItem.updateOne = async (f, u) => (sets[f._id] = u.$set);
+  HqPlaybookPlay.find = () =>
+    q([
+      { _id: "li", seedKey: "linkedin-posts", scripts: [{ label: "Post formula", body: v23.OLD.postFormula }, v23.OLD.pollFormula, { label: "Mine", body: "x" }] },
+      { _id: "page", seedKey: "facebook-page", steps: ["Set it up once.", v23.PAGE_STEP.from] },
+    ]);
+  HqPlaybookPlay.updateOne = async (f, u) => (sets[f._id] = u.$set);
+  try {
+    await require("../controllers/hqPlaybookController").ensureSeeded();
+  } finally {
+    [HqSync.findOne, HqSync.updateOne, HqPlaybookPlay.find, HqPlaybookPlay.updateOne, HqContentItem.find, HqContentItem.updateOne] = orig;
+  }
+  assert.equal(sets.p3.title, "Post 3: Three checks before you publish");
+  assert.doesNotMatch(sets.p3.notes, /poll/i);
+  assert.match(sets.p3.notes, /^When: Week 1/);
+  assert.equal(sets.p9, undefined, "your own draft stays");
+  assert.equal(sets.p14, undefined, "a published post stays");
+  assert.equal(sets.fb.title, v23.FACEBOOK["fb-poll-longest"].title);
+  assert.equal(sets.fbp.notes, v23.FACEBOOK["fbp-question"].notes);
+  assert.deepEqual(sets.li.scripts.map((x) => x.label), ["Post formula", "Tip formula", "Mine"]);
+  assert.doesNotMatch(sets.li.scripts[0].body, /question people can answer/);
+  assert.deepEqual(sets.page.steps, ["Set it up once.", v23.PAGE_STEP.to]);
+  const seedText = JSON.stringify(require("../utils/hq/linkedinPosts.json")) + JSON.stringify(require("../utils/hq/playbookDraftsV10")).replaceAll("fb-poll-longest", "");
+  assert.doesNotMatch(seedText, /\bpoll\b/i, "new setups get no polls either");
 });

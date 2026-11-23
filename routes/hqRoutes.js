@@ -134,6 +134,7 @@ router.delete("/content-plan/:id", contentPlan.deleteItem);
 router.get("/funnel", funnel.getFunnel);
 
 router.get("/signups", hq.getSignups);
+router.put("/signups/:tenantId/tag", hq.tagWorkspace);
 router.get("/content", hq.getContent);
 router.get("/web", hq.getWeb);
 router.get("/email", email.getEmail);

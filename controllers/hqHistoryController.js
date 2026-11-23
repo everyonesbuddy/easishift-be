@@ -4,6 +4,7 @@
  * every call, email, post and Facebook touch, newest first.
  */
 const HqPlaybookPlay = require("../models/hqPlaybookPlayModel");
+const { realOnly } = require("../utils/hq/workspaceTags");
 const HqActivity = require("../models/hqActivityModel");
 const HqContentItem = require("../models/hqContentItemModel");
 const HqFacility = require("../models/hqFacilityModel");
@@ -29,7 +30,7 @@ exports.getHistory = async (req, res, next) => {
       HqPlaybookPlay.find({}).sort({ order: 1, createdAt: 1 }).lean(),
       HqActivity.find({ at: inRange }).select("playId facilityId contactId fbGroupId fbPersonId fbAction kind outcome notes at count step").sort({ at: -1 }).lean(),
       HqContentItem.find({ status: "published", publishedAt: inRange }).select("title playId publishedAt url channel").lean(),
-      Tenant.countDocuments({ createdAt: inRange }),
+      realOnly({ createdAt: inRange }).then((q) => Tenant.countDocuments(q)),
     ]);
     const board = new Map((await scoreboard(plays, [{ start: r.start, end: r.end }])).map((s) => [s.playId, s.weeks[0]]));
 

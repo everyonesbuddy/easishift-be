@@ -5,6 +5,7 @@
  * A management view, not accounting.
  */
 const mongoose = require("mongoose");
+const { taggedIds } = require("../utils/hq/workspaceTags");
 const Stripe = require("stripe");
 const { parse } = require("csv-parse/sync");
 const HqExpense = require("../models/hqExpenseModel");
@@ -52,8 +53,11 @@ async function stripeYear(year, refresh) {
       Tenant.find({ $or: [{ stripeCustomerId: { $ne: null } }, { stripeSubscriptionId: { $ne: null } }] }).select("stripeCustomerId stripeSubscriptionId").lean(),
     ]);
     const hidden = await HqMoneyHidden.find().lean();
+    // Workspaces tagged as tests, reviewers or demos don't count either.
+    const tagged = new Set((await taggedIds()).map(String));
+    const taggedCustomers = tenants.filter((t) => tagged.has(String(t._id)) && t.stripeCustomerId).map((t) => t.stripeCustomerId);
     // Only WiserShifts' own subscriptions and customers count, less the ones hidden as tests.
-    const { subs, customers, hiddenSubs } = money.wiserShifts({ subs: allSubs, tenants, hidden: hidden.map((h) => h.customerId) });
+    const { subs, customers, hiddenSubs } = money.wiserShifts({ subs: allSubs, tenants, hidden: [...hidden.map((h) => h.customerId), ...taggedCustomers] });
     const names = Object.fromEntries(products.map((p) => [p.id, p.name]));
     for (const sub of subs) for (const it of sub.items?.data || []) if (it.price && typeof it.price.product === "string") it.price.product = { id: it.price.product, name: names[it.price.product] || "" };
 

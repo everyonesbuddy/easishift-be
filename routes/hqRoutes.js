@@ -10,6 +10,7 @@ const rateLimit = require("express-rate-limit");
 const { hqAuth } = require("../middleware/hqAuthMiddleware");
 const hq = require("../controllers/hqController");
 const hqAuthController = require("../controllers/hqAuthController");
+const team = require("../controllers/hqTeamController");
 const sheets = require("../controllers/hqSheetsController");
 const playbook = require("../controllers/hqPlaybookController");
 const contentPlan = require("../controllers/hqContentPlanController");
@@ -135,6 +136,8 @@ router.get("/funnel", funnel.getFunnel);
 
 router.get("/signups", hq.getSignups);
 router.put("/signups/:tenantId/tag", hq.tagWorkspace);
+router.get("/team", team.list);
+router.get("/team/:tenantId", team.get);
 router.get("/content", hq.getContent);
 router.get("/web", hq.getWeb);
 router.get("/email", email.getEmail);

@@ -269,6 +269,8 @@ const ROUTES = [
   ["get", "/hq/funnel", "HQ", "Numbers: 12 weeks of people coming in, moving through and dropping off; where everyone is now; where signups and leads come from"],
   ["get", "/hq/signups", "HQ", "Every workspace with how it's doing (setup, active, leadership reached, plan, trial, signup answers, test/demo tag) and recent calculator leads"],
   ["put", "/hq/signups/{tenantId}/tag", "HQ", "Tag a workspace as not a real customer (test, app_review, demo, other) or back to real; tagged ones are left out of customer success, check-ins, signup counts and money", { body: { kind: "test", note: "Apple reviewer" } }],
+  ["get", "/hq/team", "HQ", "Each workspace with how many people it has, how many opened the app or their link this week, and how many never have (test and demo workspaces with all=1)", { query: ["all"] }],
+  ["get", "/hq/team/{tenantId}", "HQ", "Everyone in one workspace and how they use WiserShifts: last seen in the app or on their link, devices, whether texts reach them, shifts, clock-ins, call-outs picked up, swaps and time off, plus a team summary with what to fix"],
   ["get", "/hq/content", "HQ", "Blog posts (Contentful, with GA4 views), YouTube channel and videos, LinkedIn posts", { query: ["refresh"] }],
   ["get", "/hq/web", "HQ", "Website (GA4) and Google search (Search Console), last 28 days", { query: ["refresh"] }],
   ["get", "/hq/email", "HQ", "Klaviyo: totals, how Klaviyo's list lines up with the CRM, and people in one group (real clickers, scanner-only, no clicks, unsubscribed, stopped, only in Klaviyo, only in the CRM)", { query: ["view", "q", "page", "limit"] }],

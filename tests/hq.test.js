@@ -15,6 +15,8 @@ const DAY = 86400000;
 const NOW = new Date("2026-10-29T15:00:00Z");
 const ago = (d) => new Date(NOW - d * DAY);
 
+// There's no database in tests: unless a test stubs it, no workspace is tagged as a test or demo.
+require("../models/hqWorkspaceTagModel").find = () => ({ select: () => ({ lean: async () => [] }), lean: async () => [] });
 // There's no database in tests: unless a test stubs it, looking up content items finds none
 // (later playbook versions, like v23, read them while an older version's test runs).
 {
@@ -1532,4 +1534,37 @@ test("playbook v23: polls become tips, only where untouched", async () => {
   assert.deepEqual(sets.page.steps, ["Set it up once.", v23.PAGE_STEP.to]);
   const seedText = JSON.stringify(require("../utils/hq/linkedinPosts.json")) + JSON.stringify(require("../utils/hq/playbookDraftsV10")).replaceAll("fb-poll-longest", "");
   assert.doesNotMatch(seedText, /\bpoll\b/i, "new setups get no polls either");
+});
+
+test("workspace tags: tagged workspaces drop out of HQ's lists and counts; real is the default", async () => {
+  const tags = require("../utils/hq/workspaceTags");
+  const HqWorkspaceTag = require("../models/hqWorkspaceTagModel");
+  const Tenant = require("../models/tenantModel");
+  const User = require("../models/userModel");
+  const Schedule = require("../models/scheduleModel");
+  const LaborSettings = require("../models/laborSettingsModel");
+  const { loadWorkspaces } = require("../utils/hq/productSignals");
+  const q = (v) => ({ select: () => ({ lean: async () => v, sort: () => ({ lean: async () => v }) }), lean: async () => v });
+  const orig = [HqWorkspaceTag.find, Tenant.find, User.find, User.aggregate, Schedule.aggregate, LaborSettings.find];
+  HqWorkspaceTag.find = () => q([{ tenantId: "t2", kind: "app_review", note: "Apple reviewer" }]);
+  Tenant.find = (query) => q([{ _id: "t1", name: "Silver Comet", createdAt: new Date() }, { _id: "t2", name: "Apple review", createdAt: new Date() }].filter((t) => !query?._id?.$in || query._id.$in.includes(t._id)));
+  User.find = () => q([]);
+  User.aggregate = async () => [];
+  Schedule.aggregate = async () => [];
+  LaborSettings.find = () => q([]);
+  try {
+    assert.deepEqual(await tags.realOnly({ plan: "x" }), { plan: "x", _id: { $nin: ["t2"] } });
+    assert.deepEqual(await tags.realOnly({ _id: "t1" }), { $and: [{ _id: "t1" }, { _id: { $nin: ["t2"] } }] }, "an _id already in the query is kept");
+    const real = await loadWorkspaces();
+    assert.deepEqual(real.map((w) => w.name), ["Silver Comet"], "tagged ones are left out by default");
+    const all = await loadWorkspaces({ includeTagged: true });
+    assert.deepEqual(all.map((w) => [w.name, w.tag?.kind || "real"]), [["Silver Comet", "real"], ["Apple review", "app_review"]]);
+    const one = await loadWorkspaces({ tenantIds: ["t2"] });
+    assert.equal(one[0].tag.note, "Apple reviewer", "asking for a workspace by id always finds it");
+    HqWorkspaceTag.find = () => q([]);
+    assert.deepEqual(await tags.realOnly({ plan: "x" }), { plan: "x" }, "nothing tagged: the query is unchanged");
+  } finally {
+    [HqWorkspaceTag.find, Tenant.find, User.find, User.aggregate, Schedule.aggregate, LaborSettings.find] = orig;
+  }
+  assert.ok(tags.KINDS.real && tags.KINDS.test && tags.KINDS.app_review && tags.KINDS.demo);
 });

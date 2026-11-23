@@ -14,6 +14,9 @@ const HqEmailSignal = require("../models/hqEmailSignalModel");
 const HqSync = require("../models/hqSyncModel");
 const HqLinkedinPost = require("../models/hqLinkedinPostModel");
 const { loadWorkspaces } = require("../utils/hq/productSignals");
+const { KINDS } = require("../utils/hq/workspaceTags");
+const HqWorkspaceTag = require("../models/hqWorkspaceTagModel");
+const Tenant = require("../models/tenantModel");
 const { buildPlays } = require("../utils/hq/plays");
 const { buildContentPlays } = require("../utils/hq/contentPlays");
 const { lastWeeks, dayToDate } = require("../utils/hq/weeks");
@@ -592,15 +595,42 @@ exports.importCsv = async (req, res, next) => {
 // ── Signups & leads ────────────────────────────────────────────────────────
 exports.getSignups = async (req, res, next) => {
   try {
-    const workspaces = await loadWorkspaces();
-    await linkSignups(workspaces);
+    // Every workspace, tagged ones too (so they can be untagged); counts elsewhere leave tagged ones out.
+    const workspaces = await loadWorkspaces({ includeTagged: true });
+    await linkSignups(workspaces.filter((w) => !w.tag));
     const facilities = await HqFacility.find({ tenantId: { $in: workspaces.map((w) => w.tenantId) } }).select("tenantId group tier").lean();
     const fBy = new Map(facilities.map((f) => [String(f.tenantId), f]));
     const leads = await HqLead.find({}).sort({ createdAt: -1 }).limit(200).lean();
     res.json({
       workspaces: workspaces.map((w) => ({ ...w, facilityId: fBy.get(w.tenantId)?._id || null, group: fBy.get(w.tenantId)?.group || "" })),
       leads,
+      tagKinds: KINDS,
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/**
+ * PUT /hq/signups/:tenantId/tag { kind: "real" | "test" | "app_review" | "demo" | "other", note? }
+ * Real (the default) removes the tag. Tagged workspaces drop out of customer
+ * success, check-ins, signup counts and money; nothing in the workspace changes.
+ */
+exports.tagWorkspace = async (req, res, next) => {
+  try {
+    const { tenantId } = req.params;
+    if (!isId(tenantId)) return res.status(400).json({ message: "Which workspace?" });
+    const kind = String(req.body?.kind || "");
+    if (!KINDS[kind]) return res.status(400).json({ message: `Tag must be one of: ${Object.keys(KINDS).join(", ")}` });
+    if (!(await Tenant.exists({ _id: tenantId }))) return res.status(404).json({ message: "That workspace isn't here." });
+    if (kind === "real") await HqWorkspaceTag.deleteOne({ tenantId });
+    else
+      await HqWorkspaceTag.updateOne(
+        { tenantId },
+        { $set: { kind, note: String(req.body?.note || "").slice(0, 200), by: by(req) } },
+        { upsert: true },
+      );
+    res.json({ tenantId, tag: kind === "real" ? null : { kind, note: String(req.body?.note || "").slice(0, 200) } });
   } catch (err) {
     next(err);
   }

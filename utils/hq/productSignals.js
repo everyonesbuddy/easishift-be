@@ -51,17 +51,24 @@ function summarizeWorkspace({ tenant, members = [], staffCount = 0, shifts14 = 0
   };
 }
 
-async function loadWorkspaces({ now = new Date(), tenantIds = null } = {}) {
+/**
+ * Every workspace with its signals. Workspaces tagged as not real (tests,
+ * reviewers, demos) are left out unless includeTagged; when included, each
+ * carries its tag. Asking for specific tenantIds always includes them.
+ */
+async function loadWorkspaces({ now = new Date(), tenantIds = null, includeTagged = false } = {}) {
   const Tenant = require("../../models/tenantModel");
   const User = require("../../models/userModel");
   const Schedule = require("../../models/scheduleModel");
   const LaborSettings = require("../../models/laborSettingsModel");
 
+  const tags = await require("./workspaceTags").tagMap();
   const tq = tenantIds ? { _id: { $in: tenantIds } } : {};
-  const tenants = await Tenant.find(tq)
+  const all = await Tenant.find(tq)
     .select("name email facilityType createdAt setupCompletedAt plan subscriptionStatus trialEndsAt signupRole heardAbout heardAboutOther signupSource")
     .sort({ createdAt: -1 })
     .lean();
+  const tenants = tenantIds || includeTagged ? all : all.filter((t) => !tags.has(String(t._id)));
   const ids = tenants.map((t) => t._id);
   const since = new Date(now - 14 * DAY);
   const [members, staffCounts, shiftCounts, settings] = await Promise.all([
@@ -92,14 +99,18 @@ async function loadWorkspaces({ now = new Date(), tenantIds = null } = {}) {
   const settingsBy = new Map(settings.map((s) => [String(s.tenantId), s]));
   return tenants.map((tenant) => {
     const k = String(tenant._id);
-    return summarizeWorkspace({
-      tenant,
-      members: membersBy.get(k) || [],
-      staffCount: staffBy.get(k) || 0,
-      shifts14: shiftsBy.get(k) || 0,
-      laborSettings: settingsBy.get(k) || null,
-      now,
-    });
+    const tag = tags.get(k);
+    return {
+      ...summarizeWorkspace({
+        tenant,
+        members: membersBy.get(k) || [],
+        staffCount: staffBy.get(k) || 0,
+        shifts14: shiftsBy.get(k) || 0,
+        laborSettings: settingsBy.get(k) || null,
+        now,
+      }),
+      tag: tag ? { kind: tag.kind, note: tag.note || "" } : null,
+    };
   });
 }
 

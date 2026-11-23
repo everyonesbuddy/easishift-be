@@ -10,6 +10,7 @@ const HqEmailSignal = require("../models/hqEmailSignalModel");
 const HqSync = require("../models/hqSyncModel");
 const Tenant = require("../models/tenantModel");
 const { loadWorkspaces } = require("../utils/hq/productSignals");
+const { realOnly } = require("../utils/hq/workspaceTags");
 const { lastWeeks, bucket } = require("../utils/hq/weeks");
 const google = require("../utils/hq/google");
 const klaviyo = require("../utils/hq/klaviyo");
@@ -57,7 +58,7 @@ exports.getFunnel = async (req, res, next) => {
     const [workspaces, leads, tenants, acts, emailWeekly, daily] = await Promise.all([
       loadWorkspaces({ now }),
       HqLead.find({ createdAt: { $gte: from } }).select("createdAt newsletter source").lean(),
-      Tenant.find({ $or: [{ createdAt: { $gte: from } }, { setupCompletedAt: { $gte: from } }] }).select("createdAt setupCompletedAt").lean(),
+      realOnly({ $or: [{ createdAt: { $gte: from } }, { setupCompletedAt: { $gte: from } }] }).then((q) => Tenant.find(q).select("createdAt setupCompletedAt").lean()),
       HqActivity.find({ at: { $gte: from } }).select("at kind count").lean(),
       HqSync.findOne({ key: "klaviyo-weekly" }).lean(),
       google.gaConfigured() ? cachedDaily() : null,

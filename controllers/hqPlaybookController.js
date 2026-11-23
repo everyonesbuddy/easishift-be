@@ -628,7 +628,9 @@ async function scoreboard(plays, weeks, { blogPosts = null } = {}) {
     HqActivity.find({ playId: { $in: ids }, at: { $gte: from, $lt: to } }).select("playId at count").lean(),
     HqContentItem.find({ playId: { $in: ids }, status: "published", publishedAt: { $gte: from, $lt: to } }).select("playId publishedAt title").lean(),
     HqLead.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
-    Tenant.find({ createdAt: { $gte: from, $lt: to } }).select("createdAt").lean(),
+    require("../utils/hq/workspaceTags")
+      .realOnly({ createdAt: { $gte: from, $lt: to } })
+      .then((q) => Tenant.find(q).select("createdAt").lean()),
   ]);
   const weekOf = (d) => weeks.findIndex((w) => d >= w.start && d < w.end);
   return plays.map((p) => {

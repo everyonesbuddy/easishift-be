@@ -4,6 +4,7 @@
  * next check-in and the log. Paying workspaces are added by themselves.
  */
 const mongoose = require("mongoose");
+const { realOnly, taggedIds } = require("../utils/hq/workspaceTags");
 const HqCustomer = require("../models/hqCustomerModel");
 const HqMoneyHidden = require("../models/hqMoneyHiddenModel");
 const Tenant = require("../models/tenantModel");
@@ -68,7 +69,8 @@ async function cachedSignals(tenant, now, refresh) {
 /** Make sure every paying workspace is here (skipping ones hidden as tests on the Money page). */
 async function addPaying(now = new Date()) {
   const hidden = (await HqMoneyHidden.find().select("customerId").lean()).map((h) => h.customerId);
-  const paying = await Tenant.find({ subscriptionStatus: { $in: PAYING }, plan: { $ne: "free" }, ...(hidden.length ? { stripeCustomerId: { $nin: hidden } } : {}) }).select("_id").lean();
+  const q = await realOnly({ subscriptionStatus: { $in: PAYING }, plan: { $ne: "free" }, ...(hidden.length ? { stripeCustomerId: { $nin: hidden } } : {}) });
+  const paying = await Tenant.find(q).select("_id").lean();
   for (const t of paying) {
     await HqCustomer.updateOne({ tenantId: t._id }, { $setOnInsert: { tenantId: t._id, stage: "onboarding", stageAt: now, startedAt: now, nextCheckInAt: new Date(now.getTime() + 2 * cs.DAY) } }, { upsert: true });
   }
@@ -106,7 +108,9 @@ async function shape(c, tenant, now, refresh) {
 
 async function load(now, refresh) {
   await addPaying(now);
-  const customers = await HqCustomer.find({}).lean();
+  // Workspaces tagged as tests, reviewers or demos: kept, but not looked after or counted.
+  const tagged = new Set((await taggedIds()).map(String));
+  const customers = ((await HqCustomer.find({}).lean()) || []).filter((c) => !tagged.has(String(c.tenantId)));
   const tenants = new Map((await Tenant.find({ _id: { $in: customers.map((c) => c.tenantId) } }).select(TENANT_FIELDS).lean()).map((t) => [String(t._id), t]));
   const out = [];
   for (const c of customers) out.push(await shape(c, tenants.get(String(c.tenantId)), now, refresh));

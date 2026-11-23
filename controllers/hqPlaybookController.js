@@ -25,7 +25,7 @@ const pick = (b) => {
   return out;
 };
 
-const SEED_VERSION = 22;
+const SEED_VERSION = 23;
 // What we say to each buyer (on each buyer in the playbook).
 const MESSAGE_FIELDS = ["promise", "pains", "proof", "angles", "cta", "avoid"];
 
@@ -109,6 +109,7 @@ async function runSeed() {
   if (version < 20) await migrateV20();
   if (version < 21) await migrateV21();
   if (version < 22) await migrateV22();
+  if (version < 23) await migrateV23();
   await HqSync.updateOne({ key: "playbook-seed" }, { $set: { data: { version: SEED_VERSION } } }, { upsert: true });
 }
 
@@ -131,7 +132,52 @@ function seededScriptKeys() {
   walk(require("../utils/hq/playbookReferralsV20").SCRIPTS);
   walk(require("../utils/hq/playbookReferralsV21").SCRIPTS);
   walk(require("../utils/hq/playbookReferralsV22"));
+  walk(require("../utils/hq/playbookNoPollsV23").OLD);
   return { keys, key };
+}
+
+/**
+ * Version 23: no polls. LinkedIn Posts 3, 9 and 14 and the two Facebook
+ * questions become how-to posts, the "Poll formula" becomes a "Tip formula",
+ * and the Post formula no longer ends on a question. Only what you never
+ * edited changes; anything you wrote or already posted stays.
+ */
+async function migrateV23() {
+  const v23 = require("../utils/hq/playbookNoPollsV23");
+  const { OLD } = v23;
+  const oldLinkedin = (p) => `When: ${p.when}\n\n${p.body}${p.visual ? `\n\nVisual: ${p.visual}` : ""}`;
+  const keys = [...Object.keys(v23.LINKEDIN).map((n) => `li-plan-${n}`), ...Object.keys(v23.FACEBOOK)];
+  const items = (await HqContentItem.find({ seedKey: { $in: keys } }).select("seedKey title notes status").lean()) || [];
+  for (const i of items) {
+    if (i.status === "published") continue; // already out there
+    const n = /^li-plan-(\d+)$/.exec(i.seedKey || "")?.[1];
+    if (n && OLD.linkedin[n]) {
+      const old = OLD.linkedin[n];
+      const fresh = v23.LINKEDIN[n];
+      if (i.title === `Post ${n}: ${old.title}` && (!i.notes || i.notes === oldLinkedin(old))) {
+        await HqContentItem.updateOne({ _id: i._id }, { $set: { title: `Post ${n}: ${fresh.title}`, notes: oldLinkedin(fresh) } });
+      }
+    } else if (v23.FACEBOOK[i.seedKey]) {
+      const untouchedTitle = i.title === OLD.facebookTitles[i.seedKey];
+      const untouchedNotes = !i.notes || [OLD.facebook[i.seedKey], OLD.facebookNotes[i.seedKey]].includes(i.notes);
+      if (untouchedTitle && untouchedNotes) await HqContentItem.updateOne({ _id: i._id }, { $set: { title: v23.FACEBOOK[i.seedKey].title, notes: v23.FACEBOOK[i.seedKey].notes } });
+    }
+  }
+
+  const plays = (await HqPlaybookPlay.find({ seedKey: { $in: ["linkedin-posts", "facebook-page"] } }).select("seedKey scripts steps").lean()) || [];
+  const li = plays.find((p) => p.seedKey === "linkedin-posts");
+  if (li) {
+    const scripts = (li.scripts || []).map((x) => {
+      if (x.label === OLD.pollFormula.label && String(x.body || "").trim() === OLD.pollFormula.body) return v23.TIP_FORMULA;
+      if (x.label === v23.POST_FORMULA.label && String(x.body || "").trim() === OLD.postFormula) return v23.POST_FORMULA;
+      return x;
+    });
+    if (JSON.stringify(scripts) !== JSON.stringify(li.scripts || [])) await HqPlaybookPlay.updateOne({ _id: li._id }, { $set: { scripts } });
+  }
+  const page = plays.find((p) => p.seedKey === "facebook-page");
+  if (page && (page.steps || []).includes(v23.PAGE_STEP.from)) {
+    await HqPlaybookPlay.updateOne({ _id: page._id }, { $set: { steps: page.steps.map((x) => (x === v23.PAGE_STEP.from ? v23.PAGE_STEP.to : x)) } });
+  }
 }
 
 /**

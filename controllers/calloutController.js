@@ -11,6 +11,7 @@ const Coverage = require("../models/coverageModel");
 const ScheduleWeek = require("../models/scheduleWeekModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const CalloutOffer = require("../models/calloutOfferModel");
+const TimeEntry = require("../models/timeEntryModel");
 const {
   getCompatibleFacilityConfig,
   eligibleStaffForCoverage,
@@ -91,6 +92,11 @@ const toCandidate = (row) => ({
   smsStatus: row.staff.smsConsent?.status || "none",
 });
 
+const AFTER_SHIFT_DAYS = 30;
+// Statuses an ended shift can be changed from: closed out as a no-show, or as
+// completed when time tracking is off (nobody actually confirmed they worked).
+const AFTER_SHIFT_FROM = new Set(["scheduled", "no_show", "completed"]);
+
 exports.markCallOut = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -101,17 +107,34 @@ exports.markCallOut = async (req, res, next) => {
       tenantId: req.tenantId,
     });
     if (!schedule) return res.status(404).json({ message: "Schedule not found" });
-    if (new Date(schedule.endTime) <= new Date()) {
-      return res.status(400).json({ message: "This shift has already ended" });
+
+    // After the fact: they called the scheduler, who didn't get to mark it in
+    // time. The shift is over (often closed out as a no-show), so just record
+    // the call-out; there's nobody to find for it any more.
+    const ended = new Date(schedule.endTime) <= new Date();
+    if (ended) {
+      if (Date.now() - new Date(schedule.endTime).getTime() > AFTER_SHIFT_DAYS * 86400000) {
+        return res.status(400).json({ message: `Call-outs can be marked up to ${AFTER_SHIFT_DAYS} days after the shift` });
+      }
+      if (schedule.status !== "call_out" && !AFTER_SHIFT_FROM.has(schedule.status)) {
+        return res.status(400).json({ message: "This shift was worked, so it can't be a call-out" });
+      }
+      if (schedule.status !== "call_out" && (await TimeEntry.exists({ tenantId: req.tenantId, scheduleId: schedule._id }))) {
+        return res.status(400).json({ message: "They clocked in for this shift, so it can't be a call-out" });
+      }
     }
 
     if (schedule.status !== "call_out") {
-      schedule.status = "call_out";
       schedule.meta = schedule.meta || {};
+      schedule.meta.statusBeforeCallOut = schedule.status;
+      schedule.status = "call_out";
       schedule.meta.calledOutAt = new Date();
       schedule.meta.callOutReason = String(req.body?.reason || "").trim().slice(0, 300);
+      if (ended) schedule.meta.calloutMarkedAfterShift = true;
+      schedule.markModified("meta");
       await schedule.save();
     }
+    if (ended) return res.json({ schedule, coverage: null, candidates: [], afterShift: true });
 
     let coverage = schedule.coverageId
       ? await Coverage.findOne({ _id: schedule.coverageId, tenantId: req.tenantId }).lean()
@@ -127,6 +150,36 @@ exports.markCallOut = async (req, res, next) => {
       coverage: { ...coverage, remaining },
       candidates: candidates.map(toCandidate),
     });
+  } catch (err) {
+    next(err);
+  }
+};
+
+/** Undo a call-out marked after the shift by mistake: back to what it was. */
+exports.undoCallOut = async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ message: "Schedule not found" });
+    }
+    const schedule = await Schedule.findOne({ _id: req.params.id, tenantId: req.tenantId });
+    if (!schedule) return res.status(404).json({ message: "Schedule not found" });
+    if (schedule.status !== "call_out") return res.json({ schedule });
+    schedule.meta = schedule.meta || {};
+    // Only after-the-fact marks: before a shift, a call-out may already have
+    // texted people or brought in a replacement, and undoing it would double-book.
+    if (!schedule.meta.calloutMarkedAfterShift) {
+      return res.status(400).json({ message: "This call-out was handled before the shift. Change it from the shift's edit form if it's wrong." });
+    }
+    const before = schedule.meta.statusBeforeCallOut;
+    // A shift that has ended goes back to how it was closed out; one still ahead goes back to scheduled.
+    schedule.status = before && before !== "call_out" ? before : "scheduled";
+    schedule.meta.calledOutAt = undefined;
+    schedule.meta.callOutReason = undefined;
+    schedule.meta.statusBeforeCallOut = undefined;
+    schedule.meta.calloutMarkedAfterShift = undefined;
+    schedule.markModified("meta");
+    await schedule.save();
+    res.json({ schedule });
   } catch (err) {
     next(err);
   }

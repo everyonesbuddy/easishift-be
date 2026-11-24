@@ -85,6 +85,8 @@ const scheduleSchema = new mongoose.Schema(
       reminderSentAt: Date,
       calledOutAt: Date,
       callOutReason: String,
+      statusBeforeCallOut: String, // to undo a call-out marked by mistake
+      calloutMarkedAfterShift: Boolean, // marked after the shift ended (they called, it wasn't logged in time)
     },
   },
   { timestamps: true },

@@ -20,7 +20,7 @@ const {
   respondToShiftSwapRequest,
 } = require("../controllers/scheduleController");
 
-const { markCallOut } = require("../controllers/calloutController");
+const { markCallOut, undoCallOut } = require("../controllers/calloutController");
 const { requireFeature } = require("../middleware/planMiddleware");
 const auth = require("../middleware/authMiddleware");
 const tenant = require("../middleware/tenantMiddleware");
@@ -88,6 +88,11 @@ router.post(
   "/:id/call-out",
   requirePermission("schedule.manage"),
   markCallOut,
+);
+router.post(
+  "/:id/undo-call-out",
+  requirePermission("schedule.manage"),
+  undoCallOut,
 );
 
 // SHIFT SWAP REQUESTS (schedulers approve; staff use their link)

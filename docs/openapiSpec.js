@@ -96,7 +96,7 @@ const ROUTES = [
   ["delete", "/schedules/{id}", "Schedule", "Remove a shift"],
   ["delete", "/schedules/bulk", "Schedule", "Remove many", { body: { ids: [] } }],
   ["post", "/schedules/{id}/call-out", "Call-outs", "Mark someone out; returns who can cover. After the shift (up to 30 days, from scheduled, no-show or completed with no clock-in) it just records the call-out: afterShift true, nobody to find.", { body: { reason: "sick" } }],
-  ["post", "/schedules/{id}/undo-call-out", "Call-outs", "Undo a call-out marked after the shift by mistake: back to how it was closed out"],
+  ["post", "/schedules/{id}/undo-call-out", "Call-outs", "Undo a call-out marked by mistake (before or after the shift): back to how it was. 409 SPOT_FILLED with replacements if someone was added and the spot is full; stops open call-out texts once it's covered again"],
   ["get", "/schedules/swap-requests", "Requests", "Swap requests"],
   ["post", "/schedules/swap-requests/{swapRequestId}/respond", "Requests", "Approve / deny a swap", { body: { decision: "approve" } }],
   ["post", "/schedules/{id}/swap-requests", "Requests", "Request a swap on someone's behalf", { body: { receiverStaffId: "..." } }],

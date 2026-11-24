@@ -12,6 +12,7 @@ const ScheduleWeek = require("../models/scheduleWeekModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const CalloutOffer = require("../models/calloutOfferModel");
 const TimeEntry = require("../models/timeEntryModel");
+const { COVERAGE_OCCUPYING_STATUSES } = require("../utils/scheduleUtils");
 const {
   getCompatibleFacilityConfig,
   eligibleStaffForCoverage,
@@ -155,7 +156,13 @@ exports.markCallOut = async (req, res, next) => {
   }
 };
 
-/** Undo a call-out marked after the shift by mistake: back to what it was. */
+/**
+ * Undo a call-out marked by mistake, before or after the shift: the person
+ * goes back to how they were. If someone was added to the spot since and it's
+ * full, nothing changes: the answer lists who, so the scheduler can choose to
+ * keep them or remove them (that removal tells them) and undo again. Texts
+ * still going out for a spot that's full again stop.
+ */
 exports.undoCallOut = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
@@ -165,21 +172,46 @@ exports.undoCallOut = async (req, res, next) => {
     if (!schedule) return res.status(404).json({ message: "Schedule not found" });
     if (schedule.status !== "call_out") return res.json({ schedule });
     schedule.meta = schedule.meta || {};
-    // Only after-the-fact marks: before a shift, a call-out may already have
-    // texted people or brought in a replacement, and undoing it would double-book.
-    if (!schedule.meta.calloutMarkedAfterShift) {
-      return res.status(400).json({ message: "This call-out was handled before the shift. Change it from the shift's edit form if it's wrong." });
-    }
     const before = schedule.meta.statusBeforeCallOut;
-    // A shift that has ended goes back to how it was closed out; one still ahead goes back to scheduled.
-    schedule.status = before && before !== "call_out" ? before : "scheduled";
+    const next = before && before !== "call_out" ? before : "scheduled";
+
+    const coverage = schedule.coverageId ? await Coverage.findOne({ _id: schedule.coverageId, tenantId: req.tenantId }).lean() : null;
+    // Putting them back takes a place on the spot: is there still one?
+    if (coverage && COVERAGE_OCCUPYING_STATUSES.includes(next) && (await remainingFor(coverage)) <= 0) {
+      const since = schedule.meta.calledOutAt ? new Date(schedule.meta.calledOutAt) : null;
+      const others = await Schedule.find({
+        tenantId: req.tenantId,
+        coverageId: coverage._id,
+        _id: { $ne: schedule._id },
+        status: { $in: COVERAGE_OCCUPYING_STATUSES },
+      })
+        .populate("staffId", "name")
+        .lean();
+      const added = since ? others.filter((o) => new Date(o.createdAt) >= since) : others;
+      return res.status(409).json({
+        message: added.length
+          ? `${added.map((o) => o.staffId?.name || "Someone").join(" and ")} ${added.length === 1 ? "was" : "were"} added to cover this shift. Keep them, or remove them first to put this person back.`
+          : "This spot is full now. Remove someone from it first to put this person back.",
+        errorCode: "SPOT_FILLED",
+        replacements: added.map((o) => ({ scheduleId: o._id, name: o.staffId?.name || "Someone" })),
+      });
+    }
+
+    schedule.status = next;
     schedule.meta.calledOutAt = undefined;
     schedule.meta.callOutReason = undefined;
     schedule.meta.statusBeforeCallOut = undefined;
     schedule.meta.calloutMarkedAfterShift = undefined;
     schedule.markModified("meta");
     await schedule.save();
-    res.json({ schedule });
+
+    // The spot is covered again: stop the "can you cover?" texts.
+    let textsStopped = false;
+    if (coverage && (await remainingFor(coverage)) <= 0) {
+      const r = await CalloutOffer.updateMany({ tenantId: req.tenantId, coverageId: coverage._id, status: "open" }, { $set: { status: "cancelled" } });
+      textsStopped = (r?.modifiedCount ?? r?.nModified ?? 0) > 0;
+    }
+    res.json({ schedule, textsStopped });
   } catch (err) {
     next(err);
   }

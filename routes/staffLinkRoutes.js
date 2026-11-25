@@ -26,6 +26,8 @@ router.use(
 router.use(staffLink);
 
 router.get("/me", portal.getMe);
+// "Text me my schedule": their own yes (or no) to texts, from their page.
+router.post("/text-consent", portal.setTextConsent);
 
 // PIN (when the facility requires one). Tighter limit on guesses.
 const pinLimiter = rateLimit({

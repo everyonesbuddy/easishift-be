@@ -42,7 +42,7 @@ function textingOf(user, failed30, lastError) {
   if (consent === "opted_out") return { ok: false, why: "Replied STOP" };
   if (failed30 > 0) return { ok: false, why: `Texts failing${lastError ? `: ${lastError}` : ""}` };
   if (consent === "opted_in") return { ok: true, why: "Opted in" };
-  return { ok: true, why: consent === "pending" ? "Asked to opt in" : "Has a number" };
+  return { ok: true, why: consent === "pending" ? "Invited earlier, hasn't opted in" : "Hasn't opted in yet" };
 }
 
 /**

@@ -8,6 +8,9 @@ const Schedule = require("../models/scheduleModel");
 const Message = require("../models/messageModel");
 const FacilityPreferences = require("../models/facilityPreferencesModel");
 const { hasFeature } = require("../config/plans");
+const { sendSMS } = require("../utils/sendSMS");
+const { recordOptIn, staffConfirmText, logMessage } = require("../utils/notify");
+const { getStaffLinkUrl } = require("../utils/staffLinks");
 const { getWeekSettings } = require("../utils/weekService");
 const {
   weekStartFor,
@@ -50,6 +53,7 @@ exports.getMe = async (req, res, next) => {
         name: req.user.name,
         roles: req.user.roles,
         hasPhone: Boolean(req.user.phoneE164),
+        phoneLast4: req.user.phoneE164 ? String(req.user.phoneE164).slice(-4) : null,
         hasEmail: Boolean(req.user.email),
         smsStatus: req.user.smsConsent?.status || "none",
       },
@@ -286,6 +290,37 @@ exports.signOutDevice = async (req, res, next) => {
       await req.staffDevice.updateOne({ $set: { revokedAt: new Date() } });
     }
     res.json({ signedOut: true });
+  } catch (err) {
+    next(err);
+  }
+};
+
+// The words next to the box on the schedule page (kept with their yes).
+const STAFF_CONSENT_WORDING =
+  "Text me my schedule: shift reminders, schedule changes, open shifts I can pick up and replies to my requests. Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help.";
+exports.STAFF_CONSENT_WORDING = STAFF_CONSENT_WORDING;
+
+/**
+ * POST /staff-link/text-consent { agree: true|false }: they ticked (or
+ * unticked) "Text me my schedule" on their own page. Yes is recorded with
+ * the wording, time and device, then confirmed by text; no stops texts.
+ */
+exports.setTextConsent = async (req, res, next) => {
+  try {
+    const me = req.user;
+    if (!me.phoneE164) return res.status(400).json({ message: "There's no mobile number on file for you. Ask your scheduler to add it." });
+    if (req.body?.agree === false) {
+      await User.updateOne({ _id: me._id }, { $set: { smsConsent: { status: "opted_out", updatedAt: new Date(), method: "web_form" } } });
+      return res.json({ smsStatus: "opted_out" });
+    }
+    if (req.body?.agree !== true) return res.status(400).json({ message: "Tick the box to agree." });
+    if (!hasFeature(req.plan.key, "sms")) return res.status(400).json({ message: "Your workplace doesn't send texts yet." });
+    if (me.smsConsent?.status === "opted_in") return res.json({ smsStatus: "opted_in" });
+    await recordOptIn({ person: me, method: "web_form", wording: STAFF_CONSENT_WORDING, req });
+    const link = await getStaffLinkUrl(me).catch(() => null);
+    const result = await sendSMS(me.phoneE164, staffConfirmText(req.tenant.name, link)).catch((e) => ({ success: false, error: e?.message }));
+    await logMessage({ tenantId: req.tenantId, staffId: me._id, kind: "opt_in_confirm", refId: null, channel: "sms", to: me.phoneE164, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
+    res.json({ smsStatus: "opted_in", confirmationSent: Boolean(result?.success) });
   } catch (err) {
     next(err);
   }

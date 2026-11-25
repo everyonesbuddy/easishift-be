@@ -12,12 +12,12 @@ const { escapeHtml } = require("../utils/notify");
 const Tenant = require("../models/tenantModel");
 const { buildE164Number, digitsOnly } = require("../utils/phone");
 const { getStaffLinkUrl } = require("../utils/staffLinks");
-const { sendToStaff } = require("../utils/notify");
+const { sendToStaff, SMS_NUMBER, prettyNumber } = require("../utils/notify");
 const { getEffectivePlanKey } = require("../config/plans");
 
+// Texts only reach people who've opted in; anyone else can text JOIN to get it.
 const GENERIC = {
-  message:
-    "If that phone or email is on a schedule, we've sent the link to it. It can take a minute.",
+  message: `If that phone or email is on a schedule, we've sent the link to it. It can take a minute. Not getting our texts yet? Text JOIN to ${prettyNumber(SMS_NUMBER)} from that phone.`,
 };
 
 const findStaffByContact = async (contact) => {

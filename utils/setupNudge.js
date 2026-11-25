@@ -7,6 +7,7 @@
 const plural = (n, one, many = `${one}s`) => `${n} ${n === 1 ? one : many}`;
 
 // Steps about getting started stop after this long, so an abandoned signup isn't nagged forever.
+const { SMS_NUMBER, prettyNumber } = require("./notify");
 const GETTING_STARTED_DAYS = 45;
 
 /**
@@ -38,7 +39,7 @@ function nextStep(s, link, now = new Date()) {
   }
   if (s.smsPlan && s.staffWithPhone >= 3 && s.optedIn / s.staffWithPhone < 0.5) {
     const waiting = s.staffWithPhone - s.optedIn;
-    return { key: "optin", text: `${plural(waiting, "staff member")} haven't said yes to WiserShifts texts, so they won't hear about open shifts. Ask them to reply YES to the text from WiserShifts.`, link: link("/staffs") };
+    return { key: "optin", text: `${plural(waiting, "staff member")} haven't said yes to WiserShifts texts, so they won't hear about open shifts. Ask them to text JOIN to ${prettyNumber(SMS_NUMBER)}, or tick "Text me my schedule" on their schedule page.`, link: link("/staffs") };
   }
   return null;
 }

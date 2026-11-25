@@ -5,8 +5,11 @@
  *
  *   Paid plan (sms feature) and the person opted in to texts  -> SMS
  *   otherwise, if they have an email                     -> email
- *   Paid plan with a phone but no answer yet                  -> one opt-in text
  *   otherwise                                            -> not reached (reason)
+ *
+ * We never text anyone who hasn't opted in first, not even to ask. People
+ * opt in themselves: by texting JOIN or START to our number, or by ticking
+ * the (unticked) box on their schedule page or, for managers, in Settings.
  *
  * notifySchedulers emails the owner and schedulers.
  */
@@ -20,12 +23,16 @@ const { findSchedulers } = require("./schedulers");
 const { hasFeature } = require("../config/plans");
 const { normalizeZone } = require("./timezoneUtils");
 
-const optInText = (facilityName) =>
-  `${facilityName} uses WiserShifts to send your work schedule. Reply START to get schedule texts. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+// Our texting number, for "text JOIN to …" in emails and on posters.
+const SMS_NUMBER = process.env.SMS_PUBLIC_NUMBER || process.env.TWILIO_PHONE_NUMBER || "+18554498584";
+const prettyNumber = (e164) => {
+  const d = String(e164 || "").replace(/\D/g, "").replace(/^1(?=\d{10}$)/, "");
+  return d.length === 10 ? `(${d.slice(0, 3)}) ${d.slice(3, 6)}-${d.slice(6)}` : e164;
+};
 
-// Managers get their own opt-in: what they'll be texted about.
-const managerOptInText = (facilityName) =>
-  `${facilityName} uses WiserShifts. Reply START to get texts when someone calls out or asks for time off, plus a short morning summary. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
+// The confirmation after someone opts in on the web (carriers expect frequency, rates, STOP/HELP).
+const staffConfirmText = (facilityName, link) =>
+  `You're subscribed to WiserShifts schedule texts from ${facilityName}.${link ? ` Your schedule: ${link}` : ""} Msg frequency varies. Msg & data rates may apply. Reply STOP to opt out, HELP for help.`;
 
 const firstName = (name) => String(name || "").trim().split(/\s+/)[0] || "there";
 
@@ -99,7 +106,6 @@ async function sendToStaff({
   emailHtml,
   refId = null,
   preferences, // optional pre-loaded Preferences doc
-  optInMessage = null, // the opt-in text to ask with (managers get their own)
 }) {
   try {
     const tenantId = tenant._id;
@@ -124,38 +130,18 @@ async function sendToStaff({
       // Fall through to email if the text failed.
     }
 
-    // On a texting plan, ask anyone with a phone who hasn't answered yet to
-    // opt in (once). Happens alongside email for people who have both.
-    const canAskOptIn =
-      planHasSms && phone && consent === "none" && smsAllowedByStaff;
-    const askOptIn = async () => {
-      const result = await sendSMS(phone, optInMessage || optInText(tenant.name));
-      await logMessage({ ...base, kind: "opt_in", channel: "sms", to: phone, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
-      if (result?.success) {
-        await User.updateOne(
-          { _id: staff._id },
-          { $set: { smsConsent: { status: "pending", updatedAt: new Date() } } },
-        );
-      }
-    };
-
     if (staff.email && emailAllowedByStaff && emailHtml) {
       const result = await sendEmail(staff.email, emailSubject, emailHtml, null, { tenantId });
       await logMessage({ ...base, channel: "email", to: staff.email, status: result?.success ? "sent" : "failed", error: result?.success ? null : String(result?.error || "") });
-      if (canAskOptIn) await askOptIn();
       if (result?.success) return { delivered: true, channel: "email" };
       return { delivered: false, reason: "send_failed" };
-    }
-
-    if (canAskOptIn) {
-      await askOptIn();
-      return { delivered: false, reason: "awaiting_opt_in" };
     }
 
     if (!phone && !staff.email) return { delivered: false, reason: "no_contact" };
     if (phone && consent === "opted_out") return { delivered: false, reason: "opted_out" };
     if (phone && !planHasSms) return { delivered: false, reason: "sms_needs_upgrade" };
-    if (phone && consent === "pending") return { delivered: false, reason: "awaiting_opt_in" };
+    // A phone, but they haven't opted in yet (we don't text to ask).
+    if (phone && planHasSms && (consent === "none" || consent === "pending")) return { delivered: false, reason: "awaiting_opt_in" };
     return { delivered: false, reason: "notifications_off" };
   } catch (err) {
     console.error(`sendToStaff(${kind}) failed for ${staff?._id}:`, err.message);
@@ -165,8 +151,10 @@ async function sendToStaff({
 
 /** Email the owner and schedulers (best-effort). */
 /**
- * Ask someone to opt in to texts now (HQ's button, or a manager's phone just
- * added). Only when they haven't answered STOP. Returns { sent, reason }.
+ * Invite someone to opt in to texts, by email (never by text: carriers
+ * require them to opt in before we text them at all). Staff get their
+ * schedule link and the JOIN keyword; managers get where to tick the box.
+ * Returns { sent, reason }.
  */
 async function requestOptIn({ tenant, planKey, person, manager = false }) {
   const phone = person.phoneE164 || null;
@@ -175,11 +163,38 @@ async function requestOptIn({ tenant, planKey, person, manager = false }) {
   const consent = person.smsConsent?.status || "none";
   if (consent === "opted_in") return { sent: false, reason: "already_opted_in" };
   if (consent === "opted_out") return { sent: false, reason: "opted_out" };
-  const result = await sendSMS(phone, manager ? managerOptInText(tenant.name) : optInText(tenant.name));
-  await logMessage({ tenantId: tenant._id, staffId: person._id, kind: "opt_in", refId: null, channel: "sms", to: phone, status: result?.success ? "sent" : "failed", segments: result?.segments ?? null, error: result?.success ? null : String(result?.error || "") });
+  if (!person.email) return { sent: false, reason: "no_email" };
+  const number = prettyNumber(SMS_NUMBER);
+  let how;
+  if (manager) {
+    how = `<p>Sign in to WiserShifts, open <strong>Settings → Members</strong>, find yourself and tick <em>Text me alerts</em>. Or text <strong>JOIN</strong> to <strong>${escapeHtml(number)}</strong> from ${escapeHtml(phone)}.</p>`;
+  } else {
+    const { getStaffLinkUrl } = require("./staffLinks");
+    const link = await getStaffLinkUrl(person);
+    how = `<p>Open your schedule page and tick <em>Text me my schedule</em>:</p><p><a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p><p>Or text <strong>JOIN</strong> to <strong>${escapeHtml(number)}</strong> from ${escapeHtml(phone)}.</p>`;
+  }
+  const html = `<p>Hi ${escapeHtml(firstName(person.name))},</p><p>${escapeHtml(tenant.name)} uses WiserShifts for ${manager ? "call-out and time-off alerts" : "the work schedule"}. If you'd like ${manager ? "those alerts" : "your shifts, reminders and open shifts"} by text:</p>${how}<p>We only text you after you say yes. Message frequency varies; message and data rates may apply. Reply STOP any time to stop.</p>`;
+  const result = await sendEmail(person.email, `Get ${tenant.name} ${manager ? "alerts" : "schedule"} texts`, html, null, { tenantId: tenant._id });
+  await logMessage({ tenantId: tenant._id, staffId: person._id, kind: "opt_in", refId: null, channel: "email", to: person.email, status: result?.success ? "sent" : "failed", segments: null, error: result?.success ? null : String(result?.error || "") });
   if (!result?.success) return { sent: false, reason: "send_failed" };
-  await User.updateOne({ _id: person._id }, { $set: { smsConsent: { status: "pending", updatedAt: new Date() } } });
-  return { sent: true };
+  return { sent: true, channel: "email" };
+}
+
+/**
+ * Record a "yes" someone gave themselves, with what they agreed to and where
+ * (that record is the documented opt-in carriers ask for), then send the
+ * confirmation text. method: "web_form" | "in_app" | "keyword".
+ */
+async function recordOptIn({ person, method, wording = null, req = null }) {
+  const evidence = {
+    at: new Date(),
+    method,
+    wording: wording ? String(wording).slice(0, 600) : null,
+    ip: req ? String(req.headers?.["x-forwarded-for"] || req.ip || "").split(",")[0].trim() || null : null,
+    userAgent: req ? String(req.headers?.["user-agent"] || "").slice(0, 300) || null : null,
+  };
+  await User.updateOne({ _id: person._id }, { $set: { smsConsent: { status: "opted_in", updatedAt: evidence.at, method, evidence } } });
+  return evidence;
 }
 
 /** After someone opts in from inside the app: the confirmation carriers expect, with how to stop. */
@@ -203,10 +218,12 @@ async function notifySchedulers({ tenantId, subject, html, excludeUserIds = [] }
 module.exports = {
   sendToStaff,
   notifySchedulers,
-  optInText,
-  managerOptInText,
+  staffConfirmText,
   managerConfirmText,
   requestOptIn,
+  recordOptIn,
+  SMS_NUMBER,
+  prettyNumber,
   logMessage,
   overSmsCap,
   shortShift,

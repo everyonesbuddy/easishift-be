@@ -1,6 +1,6 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { shortShift, shortWeek, firstName, optInText } = require("../utils/notify");
+const { shortShift, shortWeek, firstName, staffConfirmText, prettyNumber } = require("../utils/notify");
 
 test("formats shifts and weeks for texts", () => {
   assert.equal(
@@ -16,10 +16,12 @@ test("formats shifts and weeks for texts", () => {
   assert.equal(firstName("  Kim  Tran "), "Kim");
 });
 
-test("opt-in text names the facility and how to stop", () => {
-  const text = optInText("Sunrise Care");
-  assert.match(text, /^Sunrise Care uses WiserShifts/);
-  assert.match(text, /Reply START/);
+test("the confirmation after opting in names the facility, frequency, rates and how to stop", () => {
+  const text = staffConfirmText("Sunrise Care", "https://wisershifts.com/s/abc");
+  assert.match(text, /subscribed to WiserShifts schedule texts from Sunrise Care/);
+  assert.match(text, /frequency varies/);
+  assert.match(text, /data rates may apply/);
   assert.match(text, /STOP/);
   assert.match(text, /HELP/);
+  assert.equal(prettyNumber("+18554498584"), "(855) 449-8584");
 });

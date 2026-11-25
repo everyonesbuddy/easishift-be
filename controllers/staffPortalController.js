@@ -64,6 +64,7 @@ exports.getMe = async (req, res, next) => {
         currentWeekStart: weekStartFor(new Date(), timezone, weekStartsOn),
       },
       features: {
+        texts: hasFeature(planKey, "sms"),
         swaps: hasFeature(planKey, "swaps"),
         pickup: hasFeature(planKey, "pickup"),
         timeOff: true,

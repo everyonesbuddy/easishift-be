@@ -29,8 +29,8 @@ const KIND_LABEL = {
   morning_summary: "Morning summaries and nudges",
   timeoff_alert: "Time-off alerts (managers)",
   timeoff: "Time-off answers",
-  opt_in: "Opt-in texts",
-  opt_in_confirm: "Opt-in texts",
+  opt_in: "Opt-in invites (older ones were texts)",
+  opt_in_confirm: "Opt-in confirmations",
   link: "Staff links",
   message: "Messages",
 };
@@ -62,7 +62,7 @@ const monthStart = (now = new Date()) => new Date(Date.UTC(now.getUTCFullYear(),
 const fail = (res, status, message) => res.status(status).json({ message });
 const TENANT_FIELDS = "name createdAt setupCompletedAt plan subscriptionStatus trialEndsAt";
 const REASONS = {
-  awaiting_opt_in: "Sent the opt-in text; texts start once they reply YES",
+  awaiting_opt_in: "Hasn't opted in to texts yet (they text JOIN or tick the box themselves)",
   sms_needs_upgrade: "This plan doesn't include texting, so email only",
   opted_out: "They replied STOP, so no texts",
   no_contact: "No phone or email on file",
@@ -161,7 +161,7 @@ exports.sendTest = async (req, res, next) => {
   }
 };
 
-/** POST /hq/customers/:tenantId/opt-in { userId? }: send the managers' opt-in text now. */
+/** POST /hq/customers/:tenantId/opt-in { userId? }: email the managers how to opt in to texts (never a text: they must opt in first). */
 exports.sendOptIn = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.tenantId)) return fail(res, 404, "Workspace not found.");
@@ -170,12 +170,12 @@ exports.sendOptIn = async (req, res, next) => {
     const planKey = getEffectivePlanKey(tenant);
     let managers = await findSchedulers(tenant._id).select("name phoneE164 smsConsent loginEnabled").lean();
     if (req.body?.userId) managers = managers.filter((m) => String(m._id) === String(req.body.userId));
-    const NOTE = { no_phone: "No phone: add it on Members", sms_needs_upgrade: "This plan doesn't include texting", already_opted_in: "Already gets texts", opted_out: "Said STOP, so we can't text them", send_failed: "The text failed to send" };
+    const NOTE = { no_phone: "No phone: add it on Members", no_email: "No email to send the invite to", sms_needs_upgrade: "This plan doesn't include texting", already_opted_in: "Already gets texts", opted_out: "Said STOP, so we can't text them", send_failed: "The email failed to send" };
     const results = [];
     for (const m of managers) {
       if (m.loginEnabled === false) continue;
       const r = await requestOptIn({ tenant, planKey, person: m, manager: true });
-      results.push({ name: m.name, delivered: r.sent, note: r.sent ? "Sent the opt-in text. Texts start once they reply START or YES." : NOTE[r.reason] || r.reason });
+      results.push({ name: m.name, delivered: r.sent, note: r.sent ? "Emailed how to opt in. Texts start once they tick the box or text JOIN." : NOTE[r.reason] || r.reason });
     }
     res.json({ sent: results.filter((r) => r.delivered).length, results });
   } catch (err) {

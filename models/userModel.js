@@ -111,8 +111,17 @@ const userSchema = new mongoose.Schema(
         default: "none",
       },
       updatedAt: { type: Date, default: null },
-      // How they said yes: "reply" (START or YES to our text) or "in_app" (ticked "Text me alerts" on their own number).
+      // How they said yes: "keyword" (texted JOIN/START), "reply" (YES to a shift text),
+      // "web_form" (ticked the box on their schedule page) or "in_app" (a manager, in Settings).
       method: { type: String, default: null },
+      // The documented opt-in: when, how, the words they agreed to, and from where.
+      evidence: {
+        at: { type: Date, default: null },
+        method: { type: String, default: null },
+        wording: { type: String, default: null },
+        ip: { type: String, default: null },
+        userAgent: { type: String, default: null },
+      },
     },
     notes: {
       type: String,

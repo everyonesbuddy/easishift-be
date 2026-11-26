@@ -117,14 +117,17 @@ test("morning summary: carries the next step, and links to it on an otherwise qu
   assert.equal(s.needsYou, 1);
 });
 
-test("opt-in for managers: asks once with the managers' wording; skips no phone, no texting plan, STOP and already yes", async () => {
+test("opt-in invites go by email, never by text; skip no phone, no email, no texting plan, STOP and already yes", async () => {
   const smsMod = require("../utils/sendSMS");
+  const emailMod = require("../utils/sendEmail");
   const User = require("../models/userModel");
   const OutboundMessage = require("../models/outboundMessageModel");
-  const orig = [smsMod.sendSMS, User.updateOne, OutboundMessage.create];
+  const orig = [smsMod.sendSMS, emailMod.sendEmail, User.updateOne, OutboundMessage.create];
   const texts = [];
+  const emails = [];
   const updates = [];
   smsMod.sendSMS = async (to, body) => (texts.push({ to, body }), { success: true });
+  emailMod.sendEmail = async (to, subject, html) => (emails.push({ to, subject, html }), { success: true });
   User.updateOne = async (f, u) => updates.push([f, u]);
   OutboundMessage.create = async () => ({});
   delete require.cache[require.resolve("../utils/notify")];
@@ -132,17 +135,20 @@ test("opt-in for managers: asks once with the managers' wording; skips no phone,
     const { requestOptIn } = require("../utils/notify");
     const tenant = { _id: "t1", name: "Little Bonanza" };
     const paid = "growth";
-    const p = (consent, phone = "+14705550100") => ({ _id: "m1", phoneE164: phone, smsConsent: { status: consent } });
+    const p = (consent, phone = "+14705550100", email = "m@example.com") => ({ _id: "m1", name: "Mel", email, phoneE164: phone, smsConsent: { status: consent } });
     assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("none", null), manager: true }), { sent: false, reason: "no_phone" });
     assert.deepEqual(await requestOptIn({ tenant, planKey: "free", person: p("none"), manager: true }), { sent: false, reason: "sms_needs_upgrade" });
     assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("opted_out"), manager: true }), { sent: false, reason: "opted_out" });
     assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("opted_in"), manager: true }), { sent: false, reason: "already_opted_in" });
-    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("pending"), manager: true }), { sent: true }, "asking again is allowed (HQ's button)");
-    assert.match(texts[0].body, /^Little Bonanza uses WiserShifts\. Reply START to get texts when someone calls out or asks for time off, plus a short morning summary\./);
-    assert.match(texts[0].body, /Reply STOP to opt out, HELP for help\.$/);
-    assert.equal(updates[0][1].$set.smsConsent.status, "pending");
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("none", "+14705550100", null), manager: true }), { sent: false, reason: "no_email" });
+    assert.deepEqual(await requestOptIn({ tenant, planKey: paid, person: p("pending"), manager: true }), { sent: true, channel: "email" });
+    assert.equal(texts.length, 0, "never a text before they opt in");
+    assert.equal(emails[0].to, "m@example.com");
+    assert.match(emails[0].html, /Settings → Members/);
+    assert.match(emails[0].html, /text <strong>JOIN<\/strong> to <strong>\(855\) 449-8584<\/strong>/);
+    assert.equal(updates.length, 0, "an invite doesn't change their consent");
   } finally {
-    [smsMod.sendSMS, User.updateOne, OutboundMessage.create] = orig;
+    [smsMod.sendSMS, emailMod.sendEmail, User.updateOne, OutboundMessage.create] = orig;
     delete require.cache[require.resolve("../utils/notify")];
   }
 });
@@ -169,17 +175,20 @@ test("members: edit name, email and phone together; a taken email or blank name 
   }
 });
 
-test("members: ticking Text me alerts on your own number opts you in now; someone else's number still gets asked", async () => {
+test("members: ticking Text me alerts on your own number opts you in (recorded); someone else's number is never texted", async () => {
   const smsMod = require("../utils/sendSMS");
-  const notify = require("../utils/notify");
+  const emailMod = require("../utils/sendEmail");
   const OutboundMessage = require("../models/outboundMessageModel");
   const User = require("../models/userModel");
-  const orig = [smsMod.sendSMS, OutboundMessage.create, User.updateOne, User.findById];
+  const orig = [smsMod.sendSMS, emailMod.sendEmail, OutboundMessage.create, User.updateOne, User.findById];
   const texts = [];
+  const emails = [];
+  const consentWrites = [];
   smsMod.sendSMS = async (to, body) => (texts.push({ to, body }), { success: true });
+  emailMod.sendEmail = async (to, subject) => (emails.push({ to, subject }), { success: true });
   OutboundMessage.create = async () => ({});
-  User.updateOne = async () => ({});
-  User.findById = () => ({ select: () => ({ lean: async () => ({ smsConsent: { status: "pending" } }) }) });
+  User.updateOne = async (f, u) => (consentWrites.push(u), {});
+  User.findById = () => ({ select: () => ({ lean: async () => ({ smsConsent: { status: "none" } }) }) });
   delete require.cache[require.resolve("../utils/notify")];
   delete require.cache[require.resolve("../controllers/memberController")];
   try {
@@ -187,18 +196,21 @@ test("members: ticking Text me alerts on your own number opts you in now; someon
     const tenant = { _id: "t1", name: "Little Bonanza", plan: "growth", subscriptionStatus: "active" };
     const m = (id) => ({ _id: id, name: "J", email: "j@example.com", passwordHash: "x", smsConsent: { status: "none" }, save: async () => {} });
     const me = m("u1");
-    await applyContact({ user: { _id: "u1" }, tenant, tenantId: "t1", body: { userPhone: "3045550100", userPhoneCountryCode: "+1", textConsent: true } }, me);
+    const req = { user: { _id: "u1" }, tenant, tenantId: "t1", headers: { "user-agent": "Safari" }, ip: "1.2.3.4" };
+    await applyContact({ ...req, body: { userPhone: "3045550100", userPhoneCountryCode: "+1", textConsent: true } }, me);
     assert.equal(me.smsConsent.status, "opted_in");
     assert.equal(me.smsConsent.method, "in_app");
+    assert.match(me.smsConsent.evidence.wording, /^Text me when someone calls out/);
+    assert.equal(me.smsConsent.evidence.ip, "1.2.3.4");
     assert.match(texts[0].body, /^You're set: Little Bonanza will text you/);
     const other = m("u2");
-    await applyContact({ user: { _id: "u1" }, tenant, tenantId: "t1", body: { userPhone: "3045550101", userPhoneCountryCode: "+1", textConsent: true } }, other);
+    await applyContact({ ...req, body: { userPhone: "3045550101", userPhoneCountryCode: "+1", textConsent: true } }, other);
     assert.notEqual(other.smsConsent.status, "opted_in", "you can't say yes for someone else");
-    assert.match(texts[1].body, /Reply START to get texts/);
+    assert.equal(texts.length, 1, "and they're not texted to ask");
+    assert.equal(emails.length, 1, "they're emailed how to opt in instead");
   } finally {
-    [smsMod.sendSMS, OutboundMessage.create, User.updateOne, User.findById] = orig;
+    [smsMod.sendSMS, emailMod.sendEmail, OutboundMessage.create, User.updateOne, User.findById] = orig;
     delete require.cache[require.resolve("../utils/notify")];
     delete require.cache[require.resolve("../controllers/memberController")];
   }
-  void notify;
 });

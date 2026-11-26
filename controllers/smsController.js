@@ -2,7 +2,9 @@
  * Inbound SMS (Twilio webhook): POST /api/v1/sms/inbound
  *
  *   STOP / STOPALL / UNSUBSCRIBE / CANCEL / END / QUIT -> opted out
- *   START / UNSTOP                                      -> opted in + link
+ *   JOIN / START / UNSTOP                               -> opted in + link
+ *               (they texted us first: that's the opt-in; unknown numbers
+ *               get told to ask their scheduler to add them)
  *   YES / Y   -> take the open call-out shift we texted them about
  *               (otherwise treated like START)
  *   HELP      -> help text
@@ -21,7 +23,7 @@ const { getWeekSettings } = require("../utils/weekService");
 const { claimCoverage } = require("./scheduleController");
 
 const STOP_WORDS = new Set(["STOP", "STOPALL", "UNSUBSCRIBE", "CANCEL", "END", "QUIT"]);
-const START_WORDS = new Set(["START", "UNSTOP"]);
+const START_WORDS = new Set(["START", "UNSTOP", "JOIN"]);
 const YES_WORDS = new Set(["YES", "Y", "YEP", "YEAH"]);
 
 const escapeXml = (value) =>
@@ -64,17 +66,18 @@ const markTooLate = async (offerId, matches) => {
   await offer.save();
 };
 
-const setConsent = (ids, status) =>
+const setConsent = (ids, status, method = null, evidence = null) =>
   User.updateMany(
     { _id: { $in: ids } },
-    { $set: { smsConsent: { status, updatedAt: new Date() } } },
+    { $set: { smsConsent: { status, updatedAt: new Date(), ...(method ? { method } : {}), ...(evidence ? { evidence } : {}) } } },
   );
 
-const optInReply = async (contacts) => {
+/** They texted a keyword (or YES): opted in, recorded with what they sent and when. */
+const optInReply = async (contacts, { body = "", method = "keyword" } = {}) => {
   const ids = contacts
     .filter((c) => c.smsConsent?.status !== "opted_in")
     .map((c) => c._id);
-  if (ids.length) await setConsent(ids, "opted_in");
+  if (ids.length) await setConsent(ids, "opted_in", method, { at: new Date(), method, wording: `Texted "${String(body).trim().slice(0, 60)}"`, ip: null, userAgent: null });
 
   const tenants = await Tenant.find({
     _id: { $in: contacts.map((c) => c.tenantId) },
@@ -126,7 +129,16 @@ exports.handleInbound = async (req, res, next) => {
       );
     }
 
-    if (!contacts.length) return twiml(res);
+    if (!contacts.length) {
+      // Someone texted JOIN/START from a number no workplace has added.
+      if (START_WORDS.has(word)) {
+        return twiml(
+          res,
+          "WiserShifts: we couldn't find this number at a workplace yet. Ask your scheduler to add your mobile number, then text JOIN again. Reply HELP for help.",
+        );
+      }
+      return twiml(res);
+    }
 
     if (YES_WORDS.has(word)) {
       const offer = await findOpenOfferForPhone(from);
@@ -135,7 +147,7 @@ exports.handleInbound = async (req, res, next) => {
         recipient && contacts.find((c) => String(c._id) === String(recipient.staffId));
       if (offer && staff) {
         // Saying YES to a shift also counts as agreeing to texts.
-        if (staff.smsConsent?.status !== "opted_in") await setConsent([staff._id], "opted_in");
+        if (staff.smsConsent?.status !== "opted_in") await setConsent([staff._id], "opted_in", "reply", { at: new Date(), method: "reply", wording: "Replied YES to a shift text", ip: null, userAgent: null });
 
         const result = await claimCoverage({
           tenantId: offer.tenantId,
@@ -163,11 +175,11 @@ exports.handleInbound = async (req, res, next) => {
         return twiml(res, "Sorry, that shift was already filled. Thanks for offering!");
       }
       // No offer: a plain YES means "yes, text me".
-      return twiml(res, await optInReply(contacts));
+      return twiml(res, await optInReply(contacts, { body: req.body?.Body }));
     }
 
     if (START_WORDS.has(word)) {
-      return twiml(res, await optInReply(contacts));
+      return twiml(res, await optInReply(contacts, { body: req.body?.Body }));
     }
 
     return twiml(res);
